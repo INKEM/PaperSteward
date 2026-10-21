@@ -1,6 +1,6 @@
 # P2 初始化协商与确认门
 
-> 状态：P2-S1–S4 完成（2026-10-21）；S5–S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
+> 状态：P2-S1–S5 完成（2026-10-21）；S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
 
 ## 小阶段卡片
 
@@ -16,6 +16,29 @@
 | S6 | S1–S5 API → 最小 CLI/HTMX 流程与阶段验收 | 薄 UI；完整 G1–G4 路径；错误可操作 | 完整阶段门（含 secret-scan） | 高级交互、多用户 |
 
 S2–S6 开工时补充实际文件与 fixture 清单；不得据本表提前实现。
+
+## S5 执行卡（2026-10-21）
+
+- 基线 S4 `5e843fc`；目标：固定 fixture 日报展示 → 参数/反馈协商 → 用户认可最新
+  版本 → G4 原子确认；真实 Uvicorn 走通 G1–G4，验证入队/推送/归档门禁。
+- 文件：新增 onboarding/dry_run.py（输入/参数/渲染）、dry_run_service.py（版本/
+  反馈/G4）、合成 dry_run fixture 与 unit/integration/e2e 测试；扩展 onboarding API
+  与事件枚举，更新 ADR/阶段 handoff/README/CHANGELOG/AGENTS。无依赖/迁移。
+- 输入：运行参数（时间/时区、安静时段、暂停、目标主标签占比、渠道/隐私）、P1
+  ScoringConfig（含配额/权重）、预选合成日报条目；只校验与展示，不排序/计算评分。
+- 以 append-only Event 保存递增整数版本、完整输入与 G3/文档绑定、结构化报告和
+  Markdown/hash；GET 重算验证。反馈独立追加，支持太多/太少/不准/分类不对；G4
+  只接受最新日报和最新认可反馈，须回传双 hash、revision=4 与显式用户确认。
+- G4 同事务写入选定 scoring（已有同版本须精确匹配）与 onboarding_runtime 配置、
+  认可快照、审计和 active/revision=5；任何失败回滚。参数时间/隐私仅确认意图，不启动
+  调度器或真实 provider；渠道限 local_markdown，备注禁止外发。
+- API：POST /onboarding/dry-runs；GET /onboarding/dry-runs/{version}；POST 同路径
+  /feedback、/confirm。没有虚构的发送接口；e2e 通过 HTTP 推进流程后调用真实仓储
+  验证 G4 前拒绝 enqueue/push/archive，G4 后放行并回滚测试操作。
+- 验收：make check/test-integration/migrate-check/e2e/demo/secret-scan；用 tmp_path
+  和 /dev/shm 临时库。覆盖参数跨字段约束、转义/可复现日报、反馈拒绝/过期、G3/
+  文档/配置漂移、旧版本选择、原子回滚与完整门禁链路。
+- 范围外：真实来源/摘要/评分/发送/调度、特殊桶实现、CLI/UI（S6）、再初始化。
 
 ## S4 执行卡（2026-10-21）
 
@@ -404,3 +427,94 @@ TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/paperstewa
   再 upgrade head 恢复工作；不可降级后手改状态绕过门禁。
 - 规模超过 ≤8 文件/≤400 行指引：本卡覆盖迁移/ORM/事件/API/纯指标/事务服务、
   独立合成 fixture、59 个测试及必要状态文档；这些共同支持可审计的 G3，未推进 S5。
+
+
+## S5 验收与 S6 handoff
+
+### 能做什么与 API 契约
+
+- 分支 `feat/p2-s5-dry-run-g4`，基线 S4 `5e843fc`；无依赖/迁移，head 仍为 0004。
+  决策见 [ADR 0005](../adr/0005-dry-run-g4.md)。S5 完成至 G4，不宣称 P2 整体验收。
+- POST `/onboarding/dry-runs`：仅 dry_run 阶段可创建；version 为 1–9999 的递增
+  整数，必须从 1 依次追加，不能覆盖/跳号。输入含 digest_date、sample_kind=synthetic、
+  source、parameters、P1 ScoringConfig 和预选 items。样例见
+  `tests/fixtures/dry_run/basic.json`；可读输出见同目录 digest.md。
+- parameters 必须提供 push_time（HH:MM）、IANA timezone、quiet_start/quiet_end
+  （同时为 null 表示关闭）、paused、target_shares、channel=local_markdown、
+  external_model_data=disabled|metadata_abstract、share_notes=false。安静时段为左闭
+  右开，支持跨午夜，不能包含计划推送时间；目标占比覆盖全部启用主标签、和为 1，
+  不静默归一化。不提供备注外发或 SMTP 渠道。
+- 每日上限、精读/粗读配额、每标签上限、相关度门槛、权重均复用 P1 ScoringConfig
+  校验。S5 主队列容量 5–10、特殊桶容量≤2；items 1–10 篇，不重复、不含未知标签、
+  不低于相关度门槛且不超任何配额。条目顺序和分数来自 fixture，未实现生产排序。
+  特殊桶容量仅作为待确认参数展示，本次不展示特殊桶条目。
+- items 含 ID/title/primary_tag/relevance/read_mode/summary（≤100 字符）/reason；
+  不要求这些合成展示元数据等于库中文献，也不写 Paper、Summary、Rating 或 Score。
+  日报对不可信标题/概括/理由作文本转义，禁止 HTML、链接或换行注入 Markdown 结构。
+- `onboarding.dry_run.created` 事件保存完整输入、G3 event/校准 hash/上游文档绑定、
+  完整结构化报告与 Markdown/hash。GET `/onboarding/dry-runs/{version}` 重算校验
+  当前依据，报告改变或选定配置版本内容冲突时拒绝。所有日报标为“仅流程验证”。
+- POST 同路径 `/feedback`：report_hash、reviewed_by、accepted、issues、可选 comment；
+  issues 可用 too_many（太多）、too_few（太少）、inaccurate（不准）、wrong_category
+  （分类不对）。未认可须有问题或说明；认可不能含未解决问题。仅能反馈最新日报。
+  `onboarding.dry_run.feedback` 事件按独立 sequence 追加；旧意见不覆盖，GET 返回
+  feedback_history、最新 feedback 及其 feedback_hash。
+- 负面反馈不推进门禁；可修改参数/条目追加新版重新反馈，也可对同版明确重新审阅并
+  认可，保留完整历史。最新意见覆盖“当前是否认可”的判断，不删除此前拒绝意见。
+- POST 同路径 `/confirm`：confirmed=true、confirmed_by/change_summary、
+  expected_revision=4、report_hash、feedback_hash；只接受最新日报与该版最新认可意见。
+  新版本或新反馈使旧确认依据失效；缺 G3/前序漂移/未认可/配置冲突均不激活。
+- G4 同事务保存 scoring 选定版本（已有版本必须完全相同，否则拒绝）、
+  Config(key=onboarding_runtime, version=日报整数的字符串, value_json=parameters)、
+  config.updated 事件、G4 确认快照和 active/revision=5。预览不写 Config；审计失败
+  不残留配置或半激活状态，支持调用方捕获失败后提交/外层事务回滚。
+- G4 evidence 含 version、完整 report/hash、feedback/hash/history、scoring_version
+  与 runtime_version；G4 产物 artifact_id=dry-run / artifact_version=日报版本字符串。
+  这些引用是选定配置的依据，不可用另一个文档 ID 的 latest 或 ConfigRepository.latest
+  替代。已有更新日期更晚的其他 scoring 版本不会改变本次明确选定的版本。
+
+### 验收证据（2026-10-21）
+
+- `make check`：ruff format/check、strict mypy（65 源文件），539 个非 e2e 测试通过。
+- `make test-integration`：198 个通过；本轮新增 54 项测试（29 unit、24 integration、
+  1 e2e）。覆盖参数时间/占比/配额/权重校验、日报 golden 与文本注入、四类负面反馈、
+  最新认可、版本不可覆盖、过期双 hash/revision、G3/档案/分类法/论文/校准/日报/配置
+  漂移、审计冲突/时间倒退、G4 配置与状态原子回滚，以及已有评分版本复用。
+- `make e2e`：2 个通过（P0 walking skeleton + 新 G1–G4 链路）。新测试使用真实
+  localhost Uvicorn 和迁移后的临时 SQLite，依次核对 seeds/profile/taxonomy/
+  calibration/dry_run 阶段的真实 PaperRepository 入队、推送、归档均抛 G4 错误且
+  不写事件；拒绝未认可/负面反馈，调整为日报 v2 并认可后通过 G4；ACTIVE 后真实
+  仓储迁移允许，测试回滚探针操作，不产生实际发送或永久测试归档。
+- 当前没有 enqueue/push HTTP 端点；e2e 不把 404 当门禁证据，也未新增虚构发送端点。
+- `make migrate-check`：base→0004→base→0004 通过；模型一致性集成测试通过。
+- `make demo`：临时库迁移/seed/health/papers 正常；`make secret-scan` 与
+  `git diff --check` 通过。Docker/CI 本轮未重跑；保留 P1 F5 httpx 弃用警告。
+- 延续前序 /dev/shm 测试库避免当前工作区 fsync 阻塞，未改 SQLite 同步设置，未触碰
+  var/papersteward.db。可复制验收：
+
+  ```bash
+  make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s5-check'
+  make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s5-integration'
+  TMPDIR=/dev/shm make migrate-check
+  TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s5-e2e'
+  task_demo_dir=$(mktemp -d /dev/shm/papersteward-p2-s5-demo.XXXXXX)
+  PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:///$task_demo_dir/demo.db" make demo DEMO_PORT=8777
+  rm -rf "$task_demo_dir"
+  make secret-scan
+  ```
+
+### S6 可直接使用的输入、限制与回滚
+
+- S1–S5 的 API 完整覆盖 start/status、档案/G1、分类法/G2、独立校准/G3、参数与
+  试运行反馈/G4；下一步只做薄 CLI/页面与阶段验收，不复制校验器或新增直通门禁。
+- 最小客户端按响应 stage/next_gate/revision 驱动，编辑时用新版本；确认必须让用户
+  审阅真实返回的全文/参数/报告，原样回传 hash，不把测试认可操作自动用于用户数据。
+- `tests/e2e/test_onboarding_gates.py` 是可直接复用的全链路示例；三套合成 fixture
+  分别提供 taxonomy、calibration、dry_run 输入。真实用户校准仍须独立标注。
+- ACTIVE 只表示门禁确认，不启动抓取、调度、发信或外部模型调用。后续 P3/P6
+  调度/发送器必须读取 G4 选定版本并执行暂停/安静时段/配额/渠道/隐私规则。
+  本轮未实现真实来源、摘要/评分、正式推送/归档编排、特殊桶、鉴权、再协商/重置。
+- 无 schema 回滚；完整撤销激活或退回旧事件枚举代码须停应用并恢复 S5 前备份。
+  仅回代码不会撤销 Config/ACTIVE，不可降级 0004 或手改状态充当 S5 回滚。
+- 规模超过 ≤8 文件/≤400 行指引：参数/渲染、事件版服务、API、合成输入与 golden、
+  54 项测试及必要状态/ADR/交接文档共同构成 G4 竖切，未推进 S6 或生产算法。

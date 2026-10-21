@@ -22,6 +22,13 @@ from papersteward.onboarding.calibration_service import (
     read_round,
     submit_labels,
 )
+from papersteward.onboarding.dry_run import DryRunFeedback, DryRunRequest
+from papersteward.onboarding.dry_run_service import (
+    confirm_g4,
+    create_preview,
+    read_preview,
+    record_feedback,
+)
 from papersteward.onboarding.profile import (
     MAX_PROFILE_BYTES,
     confirm_g1,
@@ -275,6 +282,62 @@ def confirm_calibration_g3(
             expected_report_hash=body.report_hash,
             accept_deviations=body.accept_deviations,
             known_biases=body.known_biases,
+            event_id=f"evt-onboarding-{uuid4().hex}",
+            occurred_at=utc_now(),
+        )
+    return OnboardingRead(stage=state.stage, revision=state.revision, next_gate=state.next_gate)
+
+
+class DryRunView(BaseModel):
+    version: int
+    report: dict[str, Any]
+    report_hash: str
+    feedback: dict[str, Any] | None
+    feedback_hash: str | None
+    feedback_history: list[dict[str, Any]]
+
+
+class ConfirmDryRunRequest(InputModel):
+    confirmed: Literal[True]
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    change_summary: str = Field(min_length=1, max_length=2000)
+    expected_revision: int = Field(ge=1)
+    report_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feedback_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/dry-runs", response_model=DryRunView, status_code=201)
+def create_dry_run(body: DryRunRequest, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return create_preview(session, body, occurred_at=utc_now())
+
+
+@router.get("/dry-runs/{version}", response_model=DryRunView)
+def review_dry_run(version: int, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors():
+        return read_preview(session, version)
+
+
+@router.post("/dry-runs/{version}/feedback", response_model=DryRunView)
+def submit_dry_run_feedback(
+    version: int, body: DryRunFeedback, session: SessionDep
+) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return record_feedback(session, version, body, occurred_at=utc_now())
+
+
+@router.post("/dry-runs/{version}/confirm", response_model=OnboardingRead)
+def confirm_dry_run_g4(
+    version: int, body: ConfirmDryRunRequest, session: SessionDep
+) -> OnboardingRead:
+    with _onboarding_errors(), session.begin():
+        state = confirm_g4(
+            session,
+            version,
+            GateApproval(body.confirmed_by, "dry-run", str(version), body.change_summary),
+            expected_revision=body.expected_revision,
+            expected_report_hash=body.report_hash,
+            expected_feedback_hash=body.feedback_hash,
             event_id=f"evt-onboarding-{uuid4().hex}",
             occurred_at=utc_now(),
         )

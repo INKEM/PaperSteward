@@ -177,6 +177,8 @@ class EventType(StrEnum):
     ONBOARDING_G3_CONFIRMED = "onboarding.g3.confirmed"
     ONBOARDING_G4_CONFIRMED = "onboarding.g4.confirmed"
     ONBOARDING_TAXONOMY_DRAFTED = "onboarding.taxonomy.drafted"
+    ONBOARDING_DRY_RUN_CREATED = "onboarding.dry_run.created"
+    ONBOARDING_DRY_RUN_FEEDBACK = "onboarding.dry_run.feedback"
     ONBOARDING_SEEDS_IMPORTED = "onboarding.seeds.imported"
     ONBOARDING_CALIBRATION_CREATED = "onboarding.calibration.created"
     ONBOARDING_AGENT_LABELED = "onboarding.calibration.agent_labeled"

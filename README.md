@@ -2,7 +2,7 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P2 初始化协商与确认门（S1–S4 完成）**：P0 的配置、API、CLI 与演示链路
+当前处于 **P2 初始化协商与确认门（S1–S5 完成）**：P0 的配置、API、CLI 与演示链路
 已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
 评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
@@ -12,7 +12,8 @@ P2-S1 已提供持久化初始化状态、G1–G4 顺序确认接口与统一执
 P2-S2 已接入档案草案/版本编辑/审阅与 G1 显式确认，确认后进入分类法阶段。
 P2-S3 已接入分类法草案、覆盖率/均衡/边界校验、影响预览和 G2 确认。
 P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 确认，进入 dry_run。
-试运行及 G4 确认留给 S5，当前尚不能激活自动推送。
+P2-S5 已接入参数、版本化试运行日报、反馈和 G4 显式确认，确认后进入 ACTIVE。
+当前没有真实发送器或调度器；最小初始化 CLI/页面及 P2 整体验收留给 S6。
 详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
 
 ## 当前能力
@@ -36,6 +37,14 @@ P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 
   阅读方式一致率、争议及档案/rubric 建议；合成数据标记“仅流程验证”；
 - `POST /onboarding/calibration/{round}/confirm`：confirmed=true、确认者、摘要、
   expected_revision=3、report_hash；低指标需 accept_deviations=true 和 known_biases；
+- `POST /onboarding/dry-runs`：提交运行参数、完整 scoring 配置与预选合成条目，
+  生成只展示的版本化日报（version 从 1 依次追加）；
+- `GET /onboarding/dry-runs/{version}`：查看 Markdown、参数、报告 hash 与反馈历史；
+- `POST /onboarding/dry-runs/{version}/feedback`：以 report_hash 绑定反馈，支持
+  too_many/too_few/inaccurate/wrong_category；accepted=true 须无未解决问题；
+- `POST /onboarding/dry-runs/{version}/confirm`：显式确认最新已认可日报，携带
+  confirmed=true、确认者、摘要、expected_revision=4、report_hash 和 feedback_hash；
+  原子保存选定配置/审计并通过 G4，预览和负面反馈不会激活流程；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
@@ -49,6 +58,16 @@ P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
 - LLM 网关：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
 - Makefile、Docker Compose、GitHub Actions CI。
+
+## 初始化链路演示
+
+```bash
+.venv/bin/pytest tests/e2e/test_onboarding_gates.py -m e2e -q
+```
+
+该命令在临时 SQLite 和真实 localhost Uvicorn 上跑完 G1–G4、负面反馈与参数新版，
+验证 G4 前真实仓储入队/推送/归档均拒绝，确认后允许。没有正式发送动作。
+初始化页面/CLI 在 S6 提供；当前可通过 API 的 `/docs` 查看输入字段。
 
 ## 环境要求
 
@@ -283,9 +302,9 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1 完成领域/文档/LLM 网关；P2-S1–S4 完成初始化 API 至 G3；S5 试运行与 S6 体验尚未开始；
-- P1 Docker/CI 已验收；本轮 P2-S4 未重新验证 Docker/CI；
-- 不采集真实文献、不调用真实 LLM、不生成摘要/评分/日报；FakeLLM 仅用于契约/演示；
+- P1 完成领域/文档/LLM 网关；P2-S1–S5 完成初始化 API 至 G4；S6 体验与阶段验收尚未开始；
+- P1 Docker/CI 已验收；本轮 P2-S5 未重新验证 Docker/CI；
+- 不采集真实文献、不调用真实 LLM、不执行真实摘要/评分或正式日报发送；试运行展示固定 fixture；
 - `/papers` 只读；导入通过 onboarding API；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
 - Docker 健康检查使用 Python `urllib`，不依赖镜像内 curl；
@@ -293,6 +312,10 @@ docs/             # 设计与阶段文档
   角色分开提交用于避免界面泄题，当前无身份鉴权；rubric_version 是输入版本标识；
 - 合成校准示例为 `tests/fixtures/calibration/basic.json`：包含 cohort、agent_batch、
   user_batch，分别提交；样本元数据由策展者提供，服务校验结构，不判断论文真实相关性；
+- 试运行示例：`tests/fixtures/dry_run/basic.json`；可读日报：
+  [digest.md](tests/fixtures/dry_run/digest.md)。日报只校验输入配额/标签/相关度，不运行排序；
+- 运行参数确认时间/时区、安静时段、暂停、主标签目标占比、渠道/隐私；配额/权重复用
+  scoring 配置。渠道限本地 Markdown，备注不外发；ACTIVE 不会自动发起外部调用；
 - 生产部署、备份/恢复、成本治理在 P8。
 
 ## 文档
