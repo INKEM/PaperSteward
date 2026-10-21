@@ -14,6 +14,14 @@ from papersteward.core.entities import utc_now
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.core.onboarding import Gate, GateApproval, OnboardingStage
 from papersteward.errors import ConflictError, InvalidRequestError
+from papersteward.onboarding.calibration import AgentBatch, CalibrationPaper, InputModel, UserBatch
+from papersteward.onboarding.calibration_service import (
+    confirm_g3,
+    create_round,
+    import_seeds,
+    read_round,
+    submit_labels,
+)
 from papersteward.onboarding.profile import (
     MAX_PROFILE_BYTES,
     confirm_g1,
@@ -86,7 +94,7 @@ def _onboarding_errors() -> Iterator[None]:
     try:
         yield
     except IntegrityError as exc:
-        raise ConflictError("文档版本已存在或状态已变化，请重新审阅") from exc
+        raise ConflictError("记录已存在或状态已变化，请重新审阅") from exc
     except DomainError as exc:
         details: dict[str, Any] = {"field": exc.field}
         line = getattr(exc, "line", None)
@@ -183,6 +191,90 @@ def confirm_taxonomy_g2(
             content_hash=body.content_hash,
             review_hash=body.review_hash,
             expected_revision=body.expected_revision,
+            event_id=f"evt-onboarding-{uuid4().hex}",
+            occurred_at=utc_now(),
+        )
+    return OnboardingRead(stage=state.stage, revision=state.revision, next_gate=state.next_gate)
+
+
+class CreateCalibrationRequest(InputModel):
+    round_number: int = Field(ge=1, le=2)
+    papers: list[CalibrationPaper] = Field(min_length=15, max_length=20)
+    sample_kind: Literal["user", "synthetic"]
+    rubric_version: str = Field(min_length=1, max_length=64)
+
+
+class CalibrationView(BaseModel):
+    round_number: int
+    status: str
+    agent_submitted: bool
+    user_submitted: bool
+    papers: list[dict[str, Any]]
+    report: dict[str, Any] | None
+    report_hash: str | None
+
+
+class ConfirmCalibrationRequest(InputModel):
+    confirmed: Literal[True]
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    change_summary: str = Field(min_length=1, max_length=2000)
+    expected_revision: int = Field(ge=1)
+    report_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accept_deviations: bool = Field(default=False, strict=True)
+    known_biases: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+@router.post("/seeds/import")
+def import_onboarding_seeds(session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return import_seeds(session, occurred_at=utc_now())
+
+
+@router.post("/calibration/rounds", response_model=CalibrationView, status_code=201)
+def create_calibration_round(body: CreateCalibrationRequest, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return create_round(
+            session,
+            body.round_number,
+            body.papers,
+            sample_kind=body.sample_kind,
+            rubric_version=body.rubric_version,
+            occurred_at=utc_now(),
+        )
+
+
+@router.get("/calibration/{round_number}", response_model=CalibrationView)
+def review_calibration(round_number: int, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors():
+        return read_round(session, round_number)
+
+
+@router.post("/calibration/{round_number}/agent-labels", response_model=CalibrationView)
+def submit_agent_labels(round_number: int, body: AgentBatch, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return submit_labels(session, round_number, body, occurred_at=utc_now())
+
+
+@router.post("/calibration/{round_number}/user-labels", response_model=CalibrationView)
+def submit_user_labels(round_number: int, body: UserBatch, session: SessionDep) -> dict[str, Any]:
+    with _onboarding_errors(), session.begin():
+        return submit_labels(session, round_number, body, occurred_at=utc_now())
+
+
+@router.post("/calibration/{round_number}/confirm", response_model=OnboardingRead)
+def confirm_calibration_g3(
+    round_number: int, body: ConfirmCalibrationRequest, session: SessionDep
+) -> OnboardingRead:
+    with _onboarding_errors(), session.begin():
+        state = confirm_g3(
+            session,
+            round_number,
+            confirmed_by=body.confirmed_by,
+            change_summary=body.change_summary,
+            expected_revision=body.expected_revision,
+            expected_report_hash=body.report_hash,
+            accept_deviations=body.accept_deviations,
+            known_biases=body.known_biases,
             event_id=f"evt-onboarding-{uuid4().hex}",
             occurred_at=utc_now(),
         )

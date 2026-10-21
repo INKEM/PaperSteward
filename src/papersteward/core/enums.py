@@ -177,6 +177,11 @@ class EventType(StrEnum):
     ONBOARDING_G3_CONFIRMED = "onboarding.g3.confirmed"
     ONBOARDING_G4_CONFIRMED = "onboarding.g4.confirmed"
     ONBOARDING_TAXONOMY_DRAFTED = "onboarding.taxonomy.drafted"
+    ONBOARDING_SEEDS_IMPORTED = "onboarding.seeds.imported"
+    ONBOARDING_CALIBRATION_CREATED = "onboarding.calibration.created"
+    ONBOARDING_AGENT_LABELED = "onboarding.calibration.agent_labeled"
+    ONBOARDING_USER_LABELED = "onboarding.calibration.user_labeled"
+    ONBOARDING_CALIBRATION_REPORTED = "onboarding.calibration.reported"
 
 
 class RecalculationTrigger(StrEnum):

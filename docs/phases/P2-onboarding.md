@@ -1,6 +1,6 @@
 # P2 初始化协商与确认门
 
-> 状态：P2-S1–S3 完成（2026-10-21）；S4–S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
+> 状态：P2-S1–S4 完成（2026-10-21）；S5–S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
 
 ## 小阶段卡片
 
@@ -16,6 +16,30 @@
 | S6 | S1–S5 API → 最小 CLI/HTMX 流程与阶段验收 | 薄 UI；完整 G1–G4 路径；错误可操作 | 完整阶段门（含 secret-scan） | 高级交互、多用户 |
 
 S2–S6 开工时补充实际文件与 fixture 清单；不得据本表提前实现。
+
+## S4 执行卡（2026-10-21）
+
+- 目标：G2 精确种子依据 → 幂等导入；独立留出 cohort → 双方盲标 → 校准报告 → G3。
+  依赖 S3（0fda9b6）；只做 S4，不实现日报、G4、真实采集/评分或初始化 UI/CLI。
+- 新文件：onboarding/calibration.py（输入/纯指标）、calibration_service.py（事务与
+  绑定）、0004 迁移、合成 calibration fixture、unit/integration 测试；扩展 models、
+  事件枚举和 onboarding API，并更新迁移 head 测试与必要状态文档。无新增依赖。
+- API：POST /onboarding/seeds/import；POST /onboarding/calibration/rounds；GET
+  /onboarding/calibration/{round}；POST 同路径 /agent-labels、/user-labels、/confirm。
+- seed 导入只读 G2 draft_event_id 的完整清单，重复导入幂等，ID 内容冲突整批回滚。
+- cohort 15–20 篇，与 G2 种子分离；按 ADR 0004 检查分层、标签覆盖、边界/负例。
+  首轮编号 1；首轮报告完整后才能建第 2 轮；禁止第 3 轮，旧轮不能覆盖或挑选确认。
+- 输入：固定 cohort（ID/title/abstract、参考主标签、分层/边界标签/负例元数据）、
+  Agent R 0–100/主标签/阅读方式/理由、用户相关度 0–3/愿读/主标签/阅读方式。
+  角色提交各自不可变完整批次；双方完成前不回显对方标注或 cohort 参考答案。
+- 报告：Spearman/Top-5、分类和阅读方式一致率、边界争议、方向/rubric 调整建议；
+  常数向量、并列排序和输入乱序均有固定结果；不写评分/权重/阅读反馈表。
+- G3：confirmed=true、用户/摘要、expected_revision=3、report_hash；未达标还需
+  accept_deviations=true 与非空 known_biases。结构或绑定错误永不由接受偏差绕过。
+- 测试：golden/并列/常数/反例、幂等和冲突导入、隐藏对方标注、错样本/重复提交、
+  两轮上限、陈旧报告/版本漂移、书面接受、事务失败回滚、迁移升降及模型一致性。
+- 验收：make check/test-integration/migrate-check、API 演示、secret-scan；风险/
+  回滚见 ADR 0004。规模超指引时在 handoff 说明。
 
 ## S3 执行卡（2026-10-21）
 
@@ -293,3 +317,90 @@ TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/paperstewa
 - 本次修改 12 个文件、超过 400 行指引：包含完整 G2 校验/影响预览/审计竖切、28 个
   失败与回滚测试、合成 fixture、必要 ADR/交接/能力说明。无无关重构，未推进 S4。
 - P1 F5（Starlette/httpx 弃用警告）继续保留为非阻断依赖债务。
+
+
+## S4 验收与 S5 handoff
+
+### 能做什么与持久化契约
+
+- 分支 `feat/p2-s4-calibration-harness`，基线 S3 `0fda9b6`；迁移 head `0004`。
+  设计决策见 [ADR 0004](../adr/0004-calibration-rounds.md)，无新增依赖。
+- `POST /onboarding/seeds/import` 无输入清单，只导入 G2 evidence.draft_event_id
+  的种子。重复调用返回 created=0/existing=N，审计事件只追加一次。相同 ID/标题保留
+  既有摘要、作者、状态；标题冲突整批回滚。只新增 discovered 元数据。
+- `POST /onboarding/calibration/rounds` 接收 round_number=1|2、sample_kind=user|
+  synthetic、rubric_version、papers；cohort 必须与 G2 种子 ID 分离。新导入文献与
+  cohort 标题/摘要必须精确一致；缺摘要不能覆盖既有摘要。cohort 结构校验不能豁免。
+  首轮报告完整后才允许第二轮；只允许确认最新轮，最多两轮，不覆盖历史。
+- 表 onboarding_calibration 独立保存 cohort、G2 event FK、profile/taxonomy 内容
+  哈希绑定、rubric 标识、双方批次和报告。两轮上限、sample_kind 与报告需双方标注
+  由 CHECK/FK 约束；应用服务负责完整性/顺序与单方提交 CAS。
+- Agent 输入 source + labels（paper_id、R relevance=0–100、primary_tag 或 null、
+  read_mode、reason）；用户输入 submitted_by + labels（relevance=0–3 严格整数、
+  willing_to_read 布尔、primary_tag 或 null、read_mode）。各方须恰好完整标注一次；
+  不接收夹带另一角色字段。阅读方式使用 P1 ReadMode（deep/skim）。
+- 双方完成前 GET 和提交响应只返回论文 ID/标题/摘要、提交标记与空报告，隐藏参考标签、
+  抽样分层、负例标记、双方标注。双方完成后报告包含这些 cohort 依据和完整配对标注。
+  无多用户鉴权；这保证接口展示独立性，不提供身份隔离，也不能验证操作者是否看过答案。
+- Spearman 使用平均并列秩；任一方恒定时返回 null，不能自动通过。Top-5 按分数降序、
+  paper_id 升序破并列；报告还含主标签/阅读方式一致率、边界争议列表与数量、复核建议。
+  高 R 而不愿读/低相关优先建议修档案，较大分差建议查 rubric；这只是启发式诊断，
+  不自动修改权重、档案或 rubric。rubric_version/source 是提交者提供的溯源标识，
+  当前不解析 rubric 正文，不做真实 Agent 推理。
+- `POST /onboarding/calibration/{round}/confirm` 必须显式 confirmed=true，携带
+  confirmed_by/change_summary、expected_revision=3 和审阅返回的 report_hash。
+  Spearman≥0.6 且 Top-5≥3 自动满足指标；否则必须 accept_deviations=true 且
+  known_biases 非空。接受偏差只豁免指标，不能豁免结构/缺标/版本或报告漂移。
+- G3 可信校验器重算并核对报告；同事务推进 dry_run/revision=4/next_gate=g4，
+  追加 onboarding.g3.confirmed，evidence 包含完整报告/hash、已知偏差与接受标记。
+  校准创建/双方提交/报告各有追加事件。任何审计失败均回滚相应标注/报告或门禁状态。
+- G2 或 cohort 任一为 synthetic，报告都标记“仅流程验证”；不会用 metrics_passed
+  声称真实模型能力。标注保存在独立校准表，可供后续偏好功能读取，不写 Rating、
+  PaperTag、ScoreSnapshot、推送或归档表。
+
+### 验收证据（2026-10-21）
+
+- `make check`：ruff format/check、严格 mypy（63 源文件）、486 个非 e2e 测试通过。
+- `make test-integration`：174 个通过；本轮新增 59 个测试（unit 26/integration 33），
+  覆盖 golden/并列/常数/乱序、独立留出/结构失败、幂等/冲突导入、盲标/角色完整性、
+  低指标书面接受、两轮/最新轮限制、陈旧报告/revision、档案/分类法/论文/报告漂移、
+  标签/报告/门禁审计冲突、倒退时间、调用方捕获失败后提交与外层 rollback、DDL 约束。
+- `make migrate-check`：base→0004→base→0004；模型一致性检查通过；有数据的
+  0004→0003→0004 保留 Paper 与审计事件，校准表被删除后重新创建为空。
+- `make e2e`：1 个真实 Uvicorn walking skeleton 回归通过（完整门槛 e2e 留给 S5）。
+- `make demo`：临时库迁移/幂等 seed/health/papers 正常。
+- 另以临时 SQLite + 127.0.0.1 Uvicorn 实测合成 G1→G2→种子导入→独立标注→G3：
+  种子首次 created=20、再次 created=0/existing=20；校准 20 篇，Spearman=
+  0.9694584179118516、Top-5=5、主标签一致率=1、阅读方式一致率=0.95；
+  G3 后 dry_run/revision=4，40 篇均 discovered；无评分/入队/推送/归档。
+- `make secret-scan`、`git diff --check` 通过；仍有 P1 F5 httpx 弃用警告（非阻断）。
+  本轮未验证 Docker/CI，不声称 P2 整体验收。
+- SQLite 验证沿用 S3 的 /dev/shm 临时库，以规避当前工作区 fsync 阻塞；未降低
+  SQLite 同步设置，也未触碰 var/papersteward.db。复现命令：
+
+  ```bash
+  make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s4-check'
+  make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s4-integration'
+  TMPDIR=/dev/shm make migrate-check
+  TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s4-e2e'
+  task_demo_dir=$(mktemp -d /dev/shm/papersteward-p2-s4-demo.XXXXXX)
+  PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:///$task_demo_dir/demo.db" make demo DEMO_PORT=8776
+  rm -rf "$task_demo_dir"
+  make secret-scan
+  ```
+
+### S5 可直接使用的输入、限制与回滚
+
+- S5 从 dry_run/revision=4 开始；查最近 onboarding.g3.confirmed 的 evidence 获取
+  report/hash、round_number、binding（G2/profile/taxonomy）与 sample_kind。验证前序
+  文档仍匹配，试运行参数与日报需要新的版本化证据，不把调用方 passed=true 当校验。
+- 合成 `tests/fixtures/calibration/basic.json` 可用于 S5 全链路：拆开 cohort 的建轮
+  请求与 agent_batch/user_batch，不把 fixture 用户答案自动复制为真实反馈。种子清单
+  沿用 G2 证据；导入是单独显式操作，建校准不依赖导入事件存在。
+- 当前尚无试运行日报、G4 确认 API、初始化 CLI/页面、再协商/重置入口；G3 后仍禁止
+  正式入队/推送/归档。需要改已选档案/分类法时须在后续设计再协商，不可静默换版本。
+- 回滚：停应用/先备份，`alembic downgrade 0003` 删除校准表；Paper/事件/门禁状态
+  留存，不能假定 G3 被撤回。完整撤销或回旧代码须恢复 S4 前备份（旧枚举不认识新事件），
+  再 upgrade head 恢复工作；不可降级后手改状态绕过门禁。
+- 规模超过 ≤8 文件/≤400 行指引：本卡覆盖迁移/ORM/事件/API/纯指标/事务服务、
+  独立合成 fixture、59 个测试及必要状态文档；这些共同支持可审计的 G3，未推进 S5。
