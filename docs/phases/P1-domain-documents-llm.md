@@ -1,7 +1,7 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S6 完成（本地阶段门通过；F6/F7 未关闭，暂不打 P1 tag）
-> **独立验收**：[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（2026-10-21，有条件通过；F1–F5 返工见 §7）
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S6 完成；整体验收 F1–F3 已返工，F4/F5 未闭合，暂不打 P1 tag
+> **独立验收**：整体 [P1-acceptance.md](P1-acceptance.md)（2026-10-21，有条件通过）；S1–S3 历史报告 [P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（F1–F5 已返工）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
 > **上一阶段交接**：[P0-baseline.md](P0-baseline.md) §8.2
@@ -557,8 +557,8 @@ P1-S3 分支内返工；F6（httpx 弃用警告）与 F7（Docker/CI 运行证�
 
 ### 8.1 目标
 
-建立可版本化、可审计的评分配置加载/校验，以及分类、摘要、评分、事件四类
-Agent 输出的 JSON schema；非法配置和非法 JSON 不进入业务表。
+建立可版本化、可审计的评分配置加载/校验，以及分类、摘要、评分（主题/特殊桶）、
+事件四类 Agent 输出的 JSON schema；非法配置和非法 JSON 不进入业务表。
 
 ### 8.2 交付物
 
@@ -566,13 +566,13 @@ Agent 输出的 JSON schema；非法配置和非法 JSON 不进入业务表。
 |------|------|
 | `src/papersteward/scoring/config.py` | scoring YAML 模型、字段/范围校验、跨字段权重和/门槛/上限 |
 | `src/papersteward/scoring/service.py` | 配置版本追加写、`config.updated` 事件、读取时复验 |
-| `src/papersteward/schemas/models.py` | 分类/摘要/评分快照/事件 Pydantic schema 与校验入口 |
+| `src/papersteward/schemas/models.py` | 分类/摘要/主题与特殊桶评分/事件 Pydantic schema 与校验入口 |
 | `src/papersteward/schemas/__init__.py` | schema 注册表导出 |
 | `src/papersteward/cli/config.py` | `config validate/import`、`schema show/validate` |
 | `src/papersteward/cli/main.py` | 新子命令接线 |
 | `tests/fixtures/configs/*.yaml` | 合法配置、违反 wR 下限、子权重和错误 |
 | `tests/unit/test_scoring_config.py` | 配置正反例、字段/行号、策略分支 |
-| `tests/contract/test_json_schemas.py` | 四类 schema 正反例 |
+| `tests/contract/test_json_schemas.py` | 五类 schema 正反例 |
 | `tests/integration/test_scoring_service.py`、`test_cli_config.py` | 版本/事件/CLI |
 
 ### 8.3 评分配置契约
@@ -599,7 +599,8 @@ Agent 输出的 JSON schema；非法配置和非法 JSON 不进入业务表。
 |--------|----------------|
 | `classification` | `primary_tag` 稳定代码、`primary_confidence` 0–1、副标签 ≤5（facet/name/confidence）、特殊桶候选 ≤3、`boundary_note` |
 | `summary` | `summary_100` ≤100 非空白字符、what/how/finding/limitation 非空、evidence ≥1（field/quote） |
-| `scoring` | paper/date/三版本；static R/A/E/S、dynamic F/H/D、quasi U/confidence、priority P/rank_score 均 0–100（confidence 0–1）；explanation ≥1 |
+| `scoring` | 主题桶：paper/date/三版本；static R/A/E/S、dynamic F/H/D、quasi U/confidence、priority P/rank_score 均 0–100（confidence 0–1）；explanation ≥1 |
+| `special_scoring` | 特殊桶：同主题桶字段，但用 `tier`（high/medium/low）替代 `priority`，不计算 P |
 | `event` | `EventType`、payload object、带时区 `created_at`；`paper.*` 事件必须有 `paper_id` |
 
 所有模型 `extra="forbid"`；`schema_for(name)` 生成标准 JSON Schema，
@@ -615,6 +616,7 @@ papersteward schema show classification
 papersteward schema validate classification /tmp/classification.json
 papersteward schema validate summary /tmp/summary.json
 papersteward schema validate scoring /tmp/score.json
+papersteward schema validate special_scoring /tmp/special-score.json
 papersteward schema validate event /tmp/event.json
 ```
 
@@ -813,7 +815,7 @@ papersteward llm ping --fake --json
 
 | 文件 | 作用 |
 |------|------|
-| `tests/contract/test_p1_freeze.py` | 枚举、14 张表/约束、迁移版本、schema、prompt、CLI 命令面冻结 |
+| `tests/contract/test_p1_freeze.py` | 枚举、14 张表/约束、迁移版本、5 个 schema、prompt、CLI 命令面冻结 |
 | `tests/integration/test_p1_acceptance.py` | profile/taxonomy/config + FakeLLM 分类/摘要 + 标签/桶/摘要落库的端到端验收 |
 | `docs/phases/P1-domain-documents-llm.md` | 本记录与 P2 handoff |
 | `README.md`、`AGENTS.md`、`CHANGELOG.md` | 当前状态、能力边界与变更记录 |
@@ -836,9 +838,9 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 
 2026-10-21 在本地执行：
 
-- `make check`：**336 passed**，ruff/mypy 通过；
-- `make test-integration`：**101 passed**；
-- `pytest -q`（含 e2e）：**337 passed**；
+- `make check`：**339 passed**，ruff/mypy 通过（S6 初始 336；P1 验收返工新增 3 个测试）；
+- `make test-integration`：**102 passed**；
+- `pytest -q`（含 e2e）：**340 passed**；
 - `make migrate-check`：upgrade/downgrade/upgrade OK；
 - `alembic check`：No new upgrade operations detected；
 - `alembic heads`：`0002 (head)`；
@@ -853,18 +855,20 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 ### 10.5 Schema review 结论
 
 - 14 张表、0002 迁移、枚举值、PaperTag/PaperBucket 部分唯一索引、score_snapshot
-  复合主键与 S1 实体一致；
+  复合主键与 S1 实体一致；评分 schema 分为主题桶 `scoring` 与特殊桶
+  `special_scoring`（tier，无 P）；
 - `test_migration_matches_models` 与 `alembic check` 均无差异；
-- classification/summary/scoring/event 四类 schema 与 S4 契约一致；
+- classification/summary/scoring/special_scoring/event 五类 schema 与 S4 契约一致；
 - prompt registry 的 classification/summary/repair 版本与绑定 schema 冻结；
 - P1 结束不修改 2.5 节契约；后续字段变更必须走迁移 + ADR。
 
 ### 10.6 未关闭事项
 
-- **F6**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属依赖债务；
-- **F7**：Docker/CI 运行证据未取得。本轮已修复 Dockerfile 的非 root 读权限问题，
-  但当前环境的 Docker daemon 不可访问，无法补 build/run 证据；CI 也没有可用运行记录。
-  **不得声称 Docker/CI 验收通过，也不打 P1 阶段 tag。**
+- **F5**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属依赖债务；
+- **F4/F6**：Docker build 已由用户于 2026-10-21 手动验证通过，`docker compose config`
+  解析通过；本环境仍无法连接 Docker daemon，因此没有容器内 `/health`/`/papers`
+  运行证据；GitHub Actions API 显示 `total_count: 0`。CI/容器运行证据仍未闭合，
+  **不得声称完整 Docker/CI 验收通过，也不打 P1 阶段 tag。**
 - 真实 LLM provider、真实文献源、摘要/分类/评分算法、P2 UI 均不在 P1 范围。
 
 ### 10.7 交接给 P2
@@ -874,7 +878,7 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 - 领域实体/枚举/状态机/不变量（S1）；
 - 0002 schema、13 个仓储、事件日志、事务边界（S2）；
 - profile/taxonomy 解析、版本确认/归档、diff、CLI（S3）；
-- scoring.yaml 校验、配置版本/事件、四类 JSON schema（S4）；
+- scoring.yaml 校验、配置版本/事件、五类 JSON schema（S4）；
 - LLM provider 协议、FakeLLM、prompt registry、修复重试、usage（S5）；
 - P1 freeze/acceptance 测试与本地阶段门证据（S6）。
 
@@ -904,10 +908,45 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 
 ### 10.8 P1 最终状态
 
-P1 的**实现与本地可执行验收完成**；F6/F7 是依赖/发布证据债务，未关闭前保持
-“P1 代码完成、阶段 tag 待补证据”的状态。P2 可以从本 handoff 直接开始。
+P1 的**实现与本地可执行验收完成**；P1 整体验收 F1–F3 已返工（见 §11），
+F4（容器运行/CI 证据）与 F5（httpx 弃用警告）未关闭。保持“P1 代码完成、阶段 tag
+待补证据”的状态；P2 可以从本 handoff 直接开始。
 
-## 11. 风险与待确认
+## 11. P1 整体验收返工记录
+
+独立整体验收报告见 [P1-acceptance.md](P1-acceptance.md)。本轮修复 F1–F3；F4 的
+Docker build 部分由用户手动验证，F5 保留为依赖债务。
+
+| ID | 状态 | 修复 |
+|----|------|------|
+| F1 | **已修复** | `save_scoring_config()` 写入前调用 `validate_scoring_config()`；非法配置不写 `Config`、不写事件 |
+| F2 | **已修复** | 新增 `special_scoring` schema（tier，无 P）；主题桶 `scoring` 仍要求 priority；freeze/契约测试同步更新 |
+| F3 | **已修复** | 最终 provider 失败时 `LLMProviderError/LLMTimeoutError` 携带 `usage`（calls/retries），可审计失败调用 |
+| F4 | **部分关闭** | 用户手动验证 `docker compose build` 通过；`docker compose config` 通过；本环境无 daemon，容器运行与 CI 证据仍缺 |
+| F5 | **保留** | Starlette/httpx 弃用警告，依赖升级窗口处理 |
+| F6 | **保留** | P0 Docker/CI 证据与 F4 一并处理 |
+
+### 11.1 验证
+
+- `save_scoring_config` 非法配置：`test_save_scoring_config_revalidates_before_writing`；
+- 特殊桶 schema：`test_special_scoring_uses_tier_without_priority` + freeze test；
+- provider 失败 usage：`test_all_provider_attempts_fail_with_usage`；
+- 更新后的完整阶段门见 §11.2。
+
+### 11.2 返工后阶段门
+
+- `make check`：**339 passed**；
+- `make test-integration`：**102 passed**；
+- `pytest -q`（含 e2e）：**340 passed**；
+- `make migrate-check`：OK；
+- `alembic check`：无待生成迁移；
+- `make e2e`：1 passed；
+- `make demo`：`/health`、`/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=core/documents/storage/scoring/schemas/llm`：**97%**；
+- Docker：`docker compose build` 用户手动通过；`docker compose config` 通过；容器运行与 CI 无证据。
+
+## 12. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
@@ -922,8 +961,9 @@ P1 的**实现与本地可执行验收完成**；F6/F7 是依赖/发布证据债
   `content_md`；P2 若需要结构化边界案例，应扩展模型并走迁移/ADR。
 - **版本字符串**：不解析 semver；`1.10` 与 `1.9` 的排序由用户输入决定，P2 需要
   版本序号时再引入明确规则。
-- **F6**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
-- **F7**：Docker/CI 运行证据仍未在本地关闭；打发布 tag 前必须补齐。
+- **F5**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
+- **F4/F6**：容器运行与 CI 运行证据仍未关闭；打发布 tag 前必须补齐。Docker build
+  已由用户手动验证，但不能替代 `/health`/`/papers` 容器运行证据。
 - **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在后续阶段
   增加 `schema export` 与版本快照。
 - **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与

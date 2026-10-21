@@ -36,6 +36,8 @@ def save_scoring_config(
     updated_at: datetime | None = None,
 ) -> Config:
     """追加一个配置版本并写入 ``config.updated`` 事件；不 commit。"""
+    # service API 可能绕过 YAML loader，写入前必须重新跑跨字段校验。
+    validate_scoring_config(config, source=f"config:{CONFIG_KEY}@{config.version}")
     timestamp = updated_at or utc_now()
     entity = Config(
         key=CONFIG_KEY,

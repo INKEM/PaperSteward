@@ -91,7 +91,13 @@ def test_migration_revision_freeze() -> None:
 
 
 def test_schema_registry_freeze() -> None:
-    assert set(SCHEMA_MODELS) == {"classification", "summary", "scoring", "event"}
+    assert set(SCHEMA_MODELS) == {
+        "classification",
+        "summary",
+        "scoring",
+        "special_scoring",
+        "event",
+    }
     assert set(schema_for("classification")["required"]) == {
         "primary_tag",
         "primary_confidence",
@@ -114,6 +120,18 @@ def test_schema_registry_freeze() -> None:
         "dynamic",
         "quasi",
         "priority",
+        "explanation",
+    }
+    assert set(schema_for("special_scoring")["required"]) == {
+        "paper_id",
+        "date",
+        "profile_version",
+        "taxonomy_version",
+        "config_version",
+        "static",
+        "dynamic",
+        "quasi",
+        "tier",
         "explanation",
     }
     assert "type" in schema_for("event")["properties"]

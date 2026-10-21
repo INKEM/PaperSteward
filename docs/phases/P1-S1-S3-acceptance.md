@@ -1,10 +1,12 @@
 # P1-S1–S3 独立验收报告
 
-> **验收对象**：P1-S1 领域模型 / P1-S2 正式 schema 与仓储 / P1-S3 文档解析与版本确认  
-> **验收 commit**：`8e91026`（`feat(p1-s3): add document parsing, diff, and version confirmation`）  
-> **验收日期**：2026-10-21  
-> **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、手工契约检查、边界用例与静态审查  
+> **验收对象**：P1-S1 领域模型 / P1-S2 正式 schema 与仓储 / P1-S3 文档解析与版本确认
+> **验收 commit**：`8e91026`（`feat(p1-s3): add document parsing, diff, and version confirmation`）
+> **验收日期**：2026-10-21
+> **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、手工契约检查、边界用例与静态审查
 > **结论**：**有条件通过（Conditional Pass）**。本地阶段门与正常业务流程通过；发现 4 个契约边界缺陷（另有 1 个需决策的聚合校验风险），其中“确认分类法未复检 5–9 主标签结构”建议在 P1-S4 前修复。
+>
+> **后续状态**：F1–F5 已在 P1-S3 返工修复（见 [P1 handoff](P1-domain-documents-llm.md) §7）；P1 整体复核见 [P1-acceptance.md](P1-acceptance.md)。
 
 ---
 
@@ -131,8 +133,8 @@ git status --short       → 空
 | **F6** | 信息 | 仍有 `StarletteDeprecationWarning`（httpx → httpx2） | `make check` 每次出现 | 作为依赖债务处理，不阻塞 P1-S1–S3 |
 | **F7** | 继承风险 | P0 的 Docker/CI 运行时证据仍未关闭；本地无 Docker。P0 F1（500 缺失 `X-Request-ID` 头）已由 `fa7d931` 修复，本次复测 500 响应头与 body 的 request_id 一致 | 见 [P0 独立验收报告](P0-acceptance.md) F2/F3；500 复测为 `req-boom / req-boom` | 不阻塞 P1 本地开发；打发布 tag 前必须补 Docker/CI 证据 |
 
-> F1 的正常 CLI 路径不会触发（`taxonomy import` 的 parser 已拒绝 4 主标签）；但它绕过了“确认即保证结构合法”的服务边界，P2 若直接用仓储构造 draft 会踩到。  
-> F2 是静默数据丢失风险：用户以为 6 个标签都被接受，实际只入库 5 个。  
+> F1 的正常 CLI 路径不会触发（`taxonomy import` 的 parser 已拒绝 4 主标签）；但它绕过了“确认即保证结构合法”的服务边界，P2 若直接用仓储构造 draft 会踩到。
+> F2 是静默数据丢失风险：用户以为 6 个标签都被接受，实际只入库 5 个。
 > F3/F5 是数据完整性风险，不是当前测试失败；建议至少在 P3 前明确由哪个服务层负责。
 
 ---

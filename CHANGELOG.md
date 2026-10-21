@@ -58,6 +58,12 @@
   不再打印 traceback。
 - 验收返工 F5：标签/桶仓储写入执行聚合校验（恰好一个主标签 / filing、副标签
   ≤5、批量必须同一文献），非法中间态需回滚。
+- P1 整体验收返工 F1：`save_scoring_config()` 写入前重新执行跨字段校验，非法配置
+  不写 `Config`、不写 `config.updated` 事件。
+- P1 整体验收返工 F2：新增 `special_scoring` schema（tier，无 P），主题桶
+  `scoring` 继续要求 priority；freeze/契约测试同步。
+- P1 整体验收返工 F3：最终 provider 失败时 `LLMProviderError`/`LLMTimeoutError`
+  携带 usage（calls/retries），可审计失败调用。
 
 ### Changed
 
@@ -71,8 +77,8 @@
 - 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
   只追加，schema 使用 `extra="forbid"`。
 - 新增 `llm ping --fake`；P1 不提供真实 provider，超时由 provider 实现。
-- P1 实现与本地验收完成（`337 passed`）；F6（httpx 弃用警告）与 F7（Docker/CI
-  运行证据）未关闭，因此暂不打 P1 阶段 tag。
+- P1 实现与本地验收完成（返工后 `340 passed`）；F4（Docker 容器运行/CI 证据）
+  与 F5（httpx 弃用警告）未关闭，因此暂不打 P1 阶段 tag。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -86,9 +92,9 @@
   正式表数据并恢复空的 stub 表；
 - P1-S5/S6 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法、真实文献源与
   P2 onboarding 在后续阶段；
-- Docker/CI 运行证据未取得；本地 `docker compose build` 因 daemon 不可访问未执行；
-- 独立验收 F6（httpx/Starlette 弃用警告）与 F7（Docker/CI 运行证据）仍保留为
-  依赖/发布债务；
+- Docker build 已由用户手动验证；本环境无 daemon，容器运行/CI 证据未取得；
+- 独立验收 F4（Docker 容器运行/CI 证据）与 F5（httpx/Starlette 弃用警告）仍未
+  关闭；`docker compose build` 已由用户手动验证；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
 - Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。

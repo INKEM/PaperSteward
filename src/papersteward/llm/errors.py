@@ -10,7 +10,16 @@ class LLMError(Exception):
 
 
 class LLMProviderError(LLMError):
-    """provider 失败；可由网关重试。"""
+    """provider 失败；可由网关重试。最终失败时附 ``usage`` 供成本审计。"""
+
+    def __init__(self, message: str = "provider 调用失败", *, usage: Any = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+    def __str__(self) -> str:
+        if self.usage is None:
+            return str(self.args[0]) if self.args else "provider 调用失败"
+        return f"{self.args[0]} (calls={self.usage.calls}, retries={self.usage.retries})"
 
 
 class LLMTimeoutError(LLMProviderError):

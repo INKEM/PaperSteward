@@ -15,10 +15,10 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from papersteward.core.enums import EventType, SpecialBucketKind
+from papersteward.core.enums import EventType, ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainValidationError
 
-SchemaName = Literal["classification", "summary", "scoring", "event"]
+SchemaName = Literal["classification", "summary", "scoring", "special_scoring", "event"]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
 
@@ -122,6 +122,19 @@ class ScoreSnapshotOutput(_OutputModel):
     explanation: list[str] = Field(min_length=1)
 
 
+class SpecialScoreSnapshotOutput(_OutputModel):
+    paper_id: str = Field(min_length=1)
+    date: date
+    profile_version: str = Field(min_length=1)
+    taxonomy_version: str = Field(min_length=1)
+    config_version: str = Field(min_length=1)
+    static: StaticScoreOutput
+    dynamic: DynamicScoreOutput
+    quasi: QuasiScoreOutput
+    tier: ScoreTier
+    explanation: list[str] = Field(min_length=1)
+
+
 class EventEnvelope(_OutputModel):
     type: EventType
     paper_id: str | None = None
@@ -147,6 +160,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "classification": ClassificationOutput,
         "summary": SummaryOutput,
         "scoring": ScoreSnapshotOutput,
+        "special_scoring": SpecialScoreSnapshotOutput,
         "event": EventEnvelope,
     }
 )
@@ -211,6 +225,7 @@ __all__ = [
     "ScoreSnapshotOutput",
     "SecondaryTagOutput",
     "SpecialCandidateOutput",
+    "SpecialScoreSnapshotOutput",
     "StaticScoreOutput",
     "SummaryOutput",
     "schema_for",

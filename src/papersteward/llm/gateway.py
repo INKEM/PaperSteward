@@ -125,22 +125,23 @@ class LLMGateway:
         return self._provider
 
     def _call_with_retries(self, prompt: str, usage: LLMUsage) -> tuple[str, int]:
-        last_error: LLMProviderError | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 completion = self._provider.complete(prompt, timeout_s=self._timeout_s)
             except LLMProviderError as exc:
                 usage.calls += 1
-                last_error = exc
                 if attempt < self._max_attempts:
                     usage.retries += 1
                     self._sleep(self._backoff_s * (2 ** (attempt - 1)))
                     continue
+                exc.usage = usage
                 raise
             usage.calls += 1
             usage.add_completion(completion)
             return completion.text, attempt
-        raise last_error or LLMProviderError("provider 调用失败")
+        fallback = LLMProviderError("provider 调用失败")
+        fallback.usage = usage
+        raise fallback
 
     def _input_hash(self, prompt: str) -> str:
         return hashlib.sha256(prompt.encode("utf-8")).hexdigest()

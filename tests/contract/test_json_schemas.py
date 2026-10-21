@@ -66,6 +66,13 @@ def _scoring() -> dict[str, object]:
     }
 
 
+def _special_scoring() -> dict[str, object]:
+    payload = _scoring()
+    del payload["priority"]
+    payload["tier"] = "high"
+    return payload
+
+
 def _event() -> dict[str, object]:
     return {
         "type": "paper.done",
@@ -76,7 +83,13 @@ def _event() -> dict[str, object]:
 
 
 def test_schema_registry_and_generated_json_schema() -> None:
-    assert set(SCHEMA_MODELS) == {"classification", "summary", "scoring", "event"}
+    assert set(SCHEMA_MODELS) == {
+        "classification",
+        "summary",
+        "scoring",
+        "special_scoring",
+        "event",
+    }
 
     classification = schema_for("classification")
     assert classification["additionalProperties"] is False
@@ -94,6 +107,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         ("classification", _classification()),
         ("summary", _summary()),
         ("scoring", _scoring()),
+        ("special_scoring", _special_scoring()),
         ("event", _event()),
     ],
 )
@@ -162,6 +176,22 @@ def test_scoring_rejects_out_of_range_and_missing_explanation() -> None:
     with pytest.raises(SchemaError) as exc_info:
         validate_mapping("scoring", payload)
     assert exc_info.value.field == "schema.scoring.explanation"
+
+
+def test_special_scoring_uses_tier_without_priority() -> None:
+    payload = _special_scoring()
+    assert validate_mapping("special_scoring", payload)
+
+    payload["priority"] = {"P": 75.1, "rank_score": 74.6}
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("special_scoring", payload)
+    assert exc_info.value.field == "schema.special_scoring.priority"
+
+    payload = _special_scoring()
+    del payload["tier"]
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("special_scoring", payload)
+    assert exc_info.value.field == "schema.special_scoring.tier"
 
 
 def test_event_requires_paper_id_for_paper_events_and_aware_time() -> None:

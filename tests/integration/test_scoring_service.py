@@ -4,12 +4,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
 from papersteward.core.entities import Config
 from papersteward.core.enums import AssignedBy, EventType
-from papersteward.scoring import ConfigError, import_scoring_config, read_scoring_config
+from papersteward.scoring import (
+    ConfigError,
+    ScoringConfig,
+    import_scoring_config,
+    read_scoring_config,
+    save_scoring_config,
+)
 from papersteward.storage import (
     ConfigRepository,
     EventRepository,
@@ -118,3 +125,15 @@ def test_stored_config_is_revalidated_on_read(migrated_engine: Engine) -> None:
 
     with session_scope(factory) as session, pytest.raises(ConfigError, match="schema"):
         read_scoring_config(session, version="broken")
+
+
+def test_save_scoring_config_revalidates_before_writing(migrated_engine: Engine) -> None:
+    factory = create_session_factory(migrated_engine)
+    data = yaml.safe_load(INVALID.read_text(encoding="utf-8"))
+    invalid = ScoringConfig.model_validate(data)
+
+    with session_scope(factory) as session:
+        with pytest.raises(ConfigError, match="wR"):
+            save_scoring_config(session, invalid, updated_at=T1)
+        assert ConfigRepository(session).versions("scoring") == []
+        assert EventRepository(session).recent(limit=10) == []
