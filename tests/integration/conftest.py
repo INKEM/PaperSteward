@@ -6,10 +6,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from papersteward.storage import Base, create_db_engine, create_session_factory
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -26,6 +30,17 @@ def sqlite_engine(tmp_path: Path) -> Iterator[Engine]:
 def schema_engine(sqlite_engine: Engine) -> Engine:
     """已按当前模型建表的 SQLite 文件库，供仓储测试使用。"""
     Base.metadata.create_all(sqlite_engine)
+    return sqlite_engine
+
+
+@pytest.fixture
+def migrated_engine(sqlite_engine: Engine) -> Engine:
+    """已执行 Alembic upgrade head 的临时 SQLite 文件库。"""
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
+    with sqlite_engine.connect() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
     return sqlite_engine
 
 

@@ -26,6 +26,9 @@ dev = [
   "ruff>=0.6,<1.0",
 ]
 
+[project.scripts]
+papersteward = "papersteward.cli.main:main"
+
 [tool.setuptools.dynamic]
 version = { attr = "papersteward.__version__" }
 

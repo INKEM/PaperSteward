@@ -1,6 +1,6 @@
 # P0 工程基线与 Walking Skeleton
 
-> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1、P0-S2、P0-S3 完成）
+> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1–P0-S4 完成）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P0
 > **最后更新**：2026-10-21
 
@@ -16,7 +16,7 @@
 | P0-S1 | 包结构、配置、日志、错误响应 | **完成** | — | ruff/mypy/pytest；配置错误可定位 |
 | P0-S2 | DB 连接、Alembic、临时测试库 | **完成** | S1 | 迁移 up/down；仓储 CRUD |
 | P0-S3 | API 骨架、health、papers stub | **完成** | S1/S2 | `curl /health`；`GET /papers` |
-| P0-S4 | CLI 骨架、demo seed | 待开始 | S1–S3 | `papersteward doctor`；`demo seed` |
+| P0-S4 | CLI 骨架、demo seed | **完成** | S1–S3 | `papersteward doctor`；`demo seed` |
 | P0-S5 | Makefile、Docker、CI、AGENTS/README | 待开始 | S1–S4 | `make check` / `make demo` |
 
 > **顺序说明**：`make check` 属于 P0-S5，因此 S1–S4 先使用等价的分项命令验收；
@@ -365,28 +365,149 @@ curl -s "http://127.0.0.1:8000/papers?limit=10"
 - 本地单用户、无鉴权、无 CORS 配置，符合 P0 范围。
 - 仍未引入 CLI/Makefile/Docker/CI，这些属于 S4/S5。
 
-## 6. 交接给 P0-S4
+## 6. P0-S4 执行记录
+
+### 6.1 目标
+
+提供可直接运行的 `papersteward` CLI：`doctor` 检查配置/数据库/迁移状态，`demo seed`
+幂等写入 P0 演示文献，使 `GET /papers` 能看到演示数据；CLI 失败时给出可操作提示，
+不静默建表或执行迁移。
+
+### 6.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `pyproject.toml` | 新增 `[project.scripts] papersteward = "papersteward.cli.main:main"` |
+| `src/papersteward/cli/main.py` | argparse 子命令、doctor/demo seed 输出与退出码 |
+| `src/papersteward/cli/doctor.py` | 配置、数据库、迁移三项检查与 `DoctorReport` |
+| `src/papersteward/cli/demo.py` | `p001` 演示数据与幂等 `seed_demo_data()` |
+| `src/papersteward/storage/migrations.py` | 查找 `alembic.ini`、读取 current/head |
+| `src/papersteward/cli/__init__.py` | CLI 包说明 |
+| `tests/integration/conftest.py` | 新增 `migrated_engine` 临时迁移库 fixture |
+| `tests/integration/test_cli.py` | 14 个 doctor / demo seed / CLI 失败路径测试 |
+
+### 6.3 CLI 契约
+
+```bash
+papersteward --version
+papersteward doctor
+papersteward demo seed
+```
+
+**`doctor`**
+
+- 检查项：`配置`、`数据库连接`、`迁移版本`；
+- 配置错误展示具体 `PAPERSTEWARD_*` 变量，不打印配置对象或密钥；
+- 数据库检查执行 `SELECT 1`；失败时迁移项标记为“无法检查”；
+- 迁移检查比较 Alembic current 与脚本 head，**只读不升级**；
+- 全部通过退出 0，否则退出 1；不自动修复、不自动迁移；
+- 典型输出：
+
+```text
+PaperSteward 0.1.0.dev0
+[OK] 配置: env=dev, data_dir=/.../var
+[OK] 数据库连接: ok
+[OK] 迁移版本: current=0001 head=0001
+结果：通过
+```
+
+**`demo seed`**
+
+- 固定写入 `p001` / “Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks”；
+- 已存在时不更新、不重复插入，输出“已存在”；
+- 使用 `session_scope` + `PaperRepository`，单次事务提交；
+- 数据库未迁移/不可用时返回 1，并提示运行 `alembic upgrade head`；
+- 配置非法时返回 1，并输出环境变量级错误；
+- 不自动建表、不自动迁移。
+
+**命令骨架**
+
+- `demo` 是父命令，`seed` 是子命令；后续可在 `demo` 下扩展；
+- 暂不提供 `serve`；启动 API 仍使用
+  `uvicorn papersteward.main:app --host 127.0.0.1 --port 8000`；
+- `argparse` 实现，未引入新的 CLI 依赖。
+
+### 6.4 验收命令与结果
+
+```bash
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/pytest -q
+.venv/bin/pytest tests/integration/test_cli.py -q
+```
+
+2026-10-21 本地结果：
+
+- `ruff format --check`：44 个 Python 文件已格式化；
+- `ruff check`：通过；
+- `mypy`（strict）：30 个源文件无错误；
+- `pytest`：**83 passed**，0 failed；其中 CLI 集成测试 14 个；
+- 覆盖率：整体 94%；`cli/main.py` 89%、`cli/doctor.py` 94%、
+  `storage/migrations.py` 79%（未覆盖多 head / 无脚本分支）；
+- 唯一警告仍是上游 `starlette.testclient` 的 `httpx2` 迁移提示。
+
+实际验收链路（临时数据库）：
+
+```bash
+export PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:////tmp/papersteward-s4.db"
+.venv/bin/alembic upgrade head
+.venv/bin/papersteward doctor
+.venv/bin/papersteward demo seed
+.venv/bin/papersteward demo seed
+.venv/bin/uvicorn papersteward.main:app --host 127.0.0.1 --port 8125
+curl -s http://127.0.0.1:8125/papers
+```
+
+观察结果：
+
+- `doctor` 退出 0，显示 `current=0001 head=0001`；
+- 第一次 `demo seed`：`已插入演示文献 p001（当前共 1 篇）`；
+- 第二次：`演示文献 p001 已存在（当前共 1 篇）`，总数仍为 1；
+- `/papers` 返回 `p001`，`total=1`，`created_at=2026-10-21T08:00:00Z`；
+- 未迁移数据库时 `doctor` / `demo seed` 均退出 1，后者提示
+  `alembic upgrade head`；
+- 非法配置（如 `PAPERSTEWARD_API_PORT=70000`）退出 1 并指出对应变量。
+
+### 6.5 已知限制与偏差
+
+- `alembic.ini` 与 `migrations/` 位于仓库根目录；CLI 先查当前目录，再查包所在
+  仓库根目录。仅安装 wheel、未带迁移文件的部署会无法完成 `doctor` 迁移检查；
+  S5 的 Docker 镜像必须复制 `alembic.ini` 与 `migrations/`。
+- `doctor` 只诊断，不自动执行迁移；这是有意的安全边界。
+- 演示数据固定为 `p001`，不提供自定义 fixture 参数；后续 `demo` 子命令可扩展。
+- 没有 `serve` 子命令；Uvicorn 启动命令见上。
+- CLI 输出为中文人类可读文本，暂无 `--json` / `--quiet`。
+- Makefile/Docker/CI/README 仍属于 S5。
+
+## 7. 交接给 P0-S5
 
 **已就绪**
 
-- `create_app()` 与 `papersteward.main:app`；uvicorn 可直接启动；
-- `/health`、`GET /papers`、请求 ID 中间件、统一错误信封；
-- 每请求 Session 依赖与 lifespan Engine 管理；
-- 临时 SQLite 测试 fixture 与 API 集成测试模式；
-- `Settings`、`PaperRepository`、Alembic `0001`。
+- 控制台命令 `papersteward`，以及 `doctor` / `demo seed` 子命令；
+- `alembic upgrade head`、`alembic downgrade base` 与迁移 current/head 查询；
+- `uvicorn papersteward.main:app` 可启动的 API、`/health`、`GET /papers`；
+- 临时 SQLite 测试 fixture：`sqlite_engine`、`schema_engine`、`migrated_engine`、
+  `db_session`；
+- 可直接串联的验收链：migrate → doctor → demo seed → API 验证。
 
-**P0-S4 需要完成**
+**P0-S5 需要完成**
 
-- CLI 骨架与 `pyproject.toml` 的 `papersteward` 入口点；
-- `papersteward doctor`：校验配置、数据库连接、迁移 current/head；
-- `papersteward demo seed`：在已迁移数据库上幂等写入 `p001` fixture，
-  通过 `session_scope`/`PaperRepository`，不重复插入；
-- 未迁移或数据库不可用时给出可操作错误，不静默建表；
-- CLI 测试使用临时数据库；不访问真实网络/LLM；
-- 可选的 `serve` 子命令：复用 `main.app` 与 `Settings.api_host/api_port`。
+- `Makefile`：`bootstrap`、`check`、`test`、`test-integration`、`migrate-check`、
+  `demo`、`e2e`；
+- `make bootstrap`：创建环境、安装依赖、准备 `.env`、执行 `alembic upgrade head`；
+- `make check`：ruff format check、ruff check、mypy、pytest；
+- `make demo`：迁移 → `papersteward demo seed` → 启动 API → 验证 `/health` 与
+  `/papers`；
+- `make migrate-check`：在临时库执行 upgrade head / downgrade base，不碰生产库；
+- Docker Compose：单机、绑定 `127.0.0.1`、数据卷持久化、启动前迁移、
+  healthcheck 使用 GET `/health`；
+- CI：Python 3.11/3.12 矩阵、无真实网络/LLM、ruff/mypy/pytest、secret scan；
+- README、AGENTS.md、CHANGELOG、`.env.example` 完整化；
+- 阶段门清单、`docs/phases/P0-*.md` handoff、tag `p0-done`。
 
 **不能做什么**
 
-- 还没有 Makefile/Docker/CI/README（S5）；
-- 不引入 P1 领域模型、真实来源、LLM、评分或 UI；
-- 不实现多用户/鉴权/Postgres。
+- 不引入 P1 领域模型、真实文献源、LLM、评分或 UI；
+- 不实现多用户/鉴权/Postgres；
+- 不在 S5 修复业务语义，只固化工程门禁与运行方式。
