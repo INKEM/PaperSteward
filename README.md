@@ -3,8 +3,12 @@
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
 当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
-已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 已把正式领域表、仓储与
-事件日志接入 SQLite。P1-S3–S6（文档解析、配置校验、LLM 网关）与后续阶段尚未实现。
+已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
+事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
+评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
+registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 实现与本地验收
+完成，整体验收 F1–F3 已返工；Docker 容器 build/run 已验证，但 CI 运行证据与依赖
+弃用警告仍是发布债务，P2 尚未开始。
 
 ## 当前能力
 
@@ -17,6 +21,10 @@
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：14 张表、部分唯一索引/CHECK/FK、事件与评分快照追加写；
+- profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
+- scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
+- Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
+- LLM 网关：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 环境要求
@@ -97,10 +105,35 @@ curl "http://127.0.0.1:8000/papers?limit=10"
 papersteward --version
 papersteward doctor
 papersteward demo seed
+
+papersteward profile validate tests/fixtures/profiles/basic.md
+papersteward taxonomy validate tests/fixtures/taxonomies/basic.md
+papersteward doc diff profile tests/fixtures/profiles/basic.md tests/fixtures/profiles/v2.md
+
+papersteward profile import tests/fixtures/profiles/basic.md
+papersteward profile confirm 1.0 --id demo-profile --at 2026-10-21T09:00:00Z
+papersteward profile archive 1.0 --id demo-profile
+papersteward doc diff profile 1.0 1.1 --id demo-profile
+
+papersteward config validate tests/fixtures/configs/scoring.yaml
+papersteward config import tests/fixtures/configs/scoring.yaml --at 2026-10-21T09:00:00Z
+papersteward schema show classification
+papersteward schema validate classification /tmp/classification.json
+
+papersteward llm ping --fake
+papersteward llm ping --fake --json
 ```
 
 - `doctor` 全部通过退出 0，否则退出 1；只诊断，不自动迁移；
 - `demo seed` 幂等；数据库未迁移时提示先执行 `alembic upgrade head`；
+- `profile/taxonomy validate` 只解析校验，不写库；`import` 写入 draft；
+  `confirm/archive` 经状态机并写事件；
+- `doc diff` 支持两个文件，或 `--id` + 两个数据库版本；`--json` 输出机器可读结果；
+- `config validate` 不写库；`config import` 追加版本并写 `config.updated` 事件；
+- `schema show/validate` 输出或校验分类/摘要/评分/事件 JSON schema；
+- `llm ping --fake` 使用确定性 FakeLLM；P1 不发起真实网络/LLM 调用；
+- P1 contract freeze 覆盖枚举/表/迁移/schema/prompt/CLI；端到端测试覆盖
+  profile/taxonomy/config + FakeLLM 分类/摘要落库；
 - 安装后可直接使用 `papersteward`；在仓库内也可用 `.venv/bin/papersteward`。
 
 ## API
@@ -177,6 +210,9 @@ docker compose down
 ```
 
 - 容器启动时先执行 `alembic upgrade head`；
+- 镜像构建时会为非 root 运行用户补齐源码/迁移的读权限，避免宿主严格 umask
+  导致 Alembic `PermissionError`；修改 Dockerfile 后请用 `docker compose up --build`
+  重建；
 - 数据保存在 `papersteward_data` 命名卷；
 - 端口只绑定 `127.0.0.1`；
 - 删除数据卷：`docker compose down -v`。
@@ -209,7 +245,11 @@ src/papersteward/
   observability/  # 结构化日志
   storage/        # Engine/Session、*Row ORM、mappers、仓储、迁移状态
   core/           # 领域实体/枚举/状态机/不变量（P1-S1）
-  documents/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/  # P1+ 占位
+  documents/      # profile/taxonomy 解析、diff、确认/归档服务（P1-S3）
+  scoring/        # scoring.yaml 校验、配置版本持久化（P1-S4）
+  schemas/        # 分类/摘要/评分/事件 JSON schema（P1-S4）
+  llm/            # provider 协议、FakeLLM、prompt、网关、成本（P1-S5）
+  sources/ pipeline/ delivery/ jobs/  # P1+ 占位
 migrations/       # Alembic 迁移
 tests/            # unit / contract / integration / e2e
 docs/             # 设计与阶段文档
@@ -218,8 +258,9 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1-S2 只完成持久化与仓储；文档解析/版本 diff/确认命令在 P1-S3；
-- 不采集真实文献、不调用 LLM、不生成摘要/评分/日报；
+- P1-S5/S6 完成 LLM 网关、FakeLLM 与阶段验收；真实 provider、真实文献源与 P2 onboarding 未开始；
+- Docker post-fix 镜像已启动验证：容器 healthy，`/health`、seed 后 `/papers` 正常；CI 运行证据仍缺；
+- 不采集真实文献、不调用真实 LLM、不生成摘要/评分/日报；FakeLLM 仅用于契约/演示；
 - API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
 - Docker 健康检查使用 Python `urllib`，不依赖镜像内 curl；
@@ -231,6 +272,7 @@ docs/             # 设计与阶段文档
 - [系统设计方案](docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md)
 - [P0 阶段记录与交接](docs/phases/P0-baseline.md)
 - [P1 阶段记录与交接](docs/phases/P1-domain-documents-llm.md)
+- [ADR 0001：YAML front matter 解析](docs/adr/0001-yaml-front-matter.md)
 
 ## 安全
 

@@ -1,0 +1,10 @@
+{
+  "summary_100": "针对长文档问答提出层次化检索与跨段重排；三个基准上 EM 提升 2–4 点；离线聚类带来较高延迟。",
+  "what": "长文档问答的检索与重排",
+  "how": "段落聚类召回 + 跨层注意力重排",
+  "finding": "三个基准 EM 提升 2–4 点",
+  "limitation": "离线聚类导致较高延迟",
+  "evidence": [
+    {"field": "finding", "quote": "improves EM by 2–4 points"}
+  ]
+}

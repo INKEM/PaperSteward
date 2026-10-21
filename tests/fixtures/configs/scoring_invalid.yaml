@@ -1,0 +1,36 @@
+version: 1.0.0
+static:
+  weight: 0.70
+  relevance: 0.40
+  authority: 0.20
+  extra_value: 0.40
+dynamic:
+  weight: 0.20
+  freshness: 0.60
+  hunger: 0.40
+  half_life_days:
+    default: 180
+    fast: 120
+    slow: 540
+  hunger_window_days: 28
+  prior_strength: 4
+quasi_dynamic:
+  weight: 0.10
+  update_weekday: SUN
+  shrinkage_lambda: 5
+  tag_weight: 0.70
+  author_weight: 0.20
+  venue_weight: 0.10
+gates:
+  min_relevance_for_push: 55
+  max_daily_push: 7
+  max_special_push: 2
+  max_per_primary_tag: 2
+  deep_cap: 2
+  skim_cap: 5
+  relevance_weight_floor: 0.50
+  static_weight_floor: 0.60
+  authority_weight_cap: 0.20
+stability:
+  rank_ema: 0.70
+  max_daily_delta: 8

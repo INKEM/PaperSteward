@@ -1,0 +1,9 @@
+{
+  "primary_tag": "T02",
+  "primary_confidence": 0.86,
+  "secondary_tags": [
+    {"facet": "method", "name": "sparse retrieval", "confidence": 0.92}
+  ],
+  "special_candidates": [],
+  "boundary_note": null
+}
