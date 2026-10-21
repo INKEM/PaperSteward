@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy.engine import Engine
 
+from papersteward.core.entities import Paper
+from papersteward.core.enums import PaperStatus
 from papersteward.storage import (
     PaperRepository,
     create_db_engine,
@@ -36,10 +38,13 @@ def seed_demo_data(*, engine: Engine | None = None) -> SeedResult:
             repository = PaperRepository(session)
             created = repository.get(DEMO_PAPER_ID) is None
             if created:
-                repository.create(
-                    DEMO_PAPER_ID,
-                    DEMO_PAPER_TITLE,
-                    created_at=DEMO_CREATED_AT,
+                repository.add(
+                    Paper(
+                        id=DEMO_PAPER_ID,
+                        title=DEMO_PAPER_TITLE,
+                        status=PaperStatus.DISCOVERED,
+                        first_seen_at=DEMO_CREATED_AT,
+                    )
                 )
             total = repository.count()
         return SeedResult(paper_id=DEMO_PAPER_ID, created=created, total=total)

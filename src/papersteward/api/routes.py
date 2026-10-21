@@ -1,4 +1,4 @@
-"""P0-S3 路由：健康检查与 papers stub 列表。"""
+"""健康检查与只读文献列表（P1-S2 起读取正式 ``paper`` 表）。"""
 
 from __future__ import annotations
 

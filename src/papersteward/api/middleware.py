@@ -9,9 +9,9 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from papersteward.api.constants import REQUEST_ID_HEADER
 from papersteward.observability.logging import request_id_context
 
-REQUEST_ID_HEADER = "X-Request-ID"
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 

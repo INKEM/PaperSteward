@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from papersteward.core.enums import PaperStatus
+
 
 class HealthResponse(BaseModel):
     """``/health`` 的响应；数据库不可用时状态为 degraded。"""
@@ -18,13 +20,13 @@ class HealthResponse(BaseModel):
 
 
 class PaperRead(BaseModel):
-    """论文列表项；P0 只暴露 stub 字段。"""
+    """论文列表项；字段保持 P0 信封，``status`` 为正式 ``PaperStatus`` 值。"""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     title: str
-    status: str
+    status: PaperStatus
     created_at: datetime
 
     @field_validator("created_at")

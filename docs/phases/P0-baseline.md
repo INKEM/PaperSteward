@@ -1,6 +1,7 @@
 # P0 工程基线与 Walking Skeleton
 
-> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1–P0-S4 完成）
+> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：P0-S1–P0-S5 完成；Docker 手动验收通过；F1 已修复；CI 运行证据待补
+> **独立验收**：[P0-acceptance.md](P0-acceptance.md)（2026-10-21，本地 + Docker 通过；F1 已修复）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P0
 > **最后更新**：2026-10-21
 
@@ -17,7 +18,7 @@
 | P0-S2 | DB 连接、Alembic、临时测试库 | **完成** | S1 | 迁移 up/down；仓储 CRUD |
 | P0-S3 | API 骨架、health、papers stub | **完成** | S1/S2 | `curl /health`；`GET /papers` |
 | P0-S4 | CLI 骨架、demo seed | **完成** | S1–S3 | `papersteward doctor`；`demo seed` |
-| P0-S5 | Makefile、Docker、CI、AGENTS/README | 待开始 | S1–S4 | `make check` / `make demo` |
+| P0-S5 | Makefile、Docker、CI、AGENTS/README | **完成** | S1–S4 | `make check` / `make demo` |
 
 > **顺序说明**：`make check` 属于 P0-S5，因此 S1–S4 先使用等价的分项命令验收；
 > S5 再把它们固化为 Makefile 与 CI，不改变各分项检查的语义。
@@ -480,34 +481,148 @@ curl -s http://127.0.0.1:8125/papers
 - CLI 输出为中文人类可读文本，暂无 `--json` / `--quiet`。
 - Makefile/Docker/CI/README 仍属于 S5。
 
-## 7. 交接给 P0-S5
+## 7. P0-S5 执行记录
+
+### 7.1 目标
+
+把 P0 的工程能力固化成可复制的工作流：一条 `make bootstrap` 完成环境与迁移，
+`make check` 做静态检查与测试，`make e2e`/`make demo` 做真实 walking skeleton，
+Docker Compose 提供单机运行方式，CI 在干净环境复验。
+
+### 7.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `Makefile` | bootstrap / check / test / test-integration / e2e / migrate-check / demo / secret-scan / docker 目标 |
+| `scripts/demo.sh` | 迁移 → seed → 启动 API → 验证 `/health`、`/papers` → 停止 |
+| `tests/e2e/test_walking_skeleton.py` | 子进程启动真实 Uvicorn 的 e2e，使用临时 SQLite |
+| `Dockerfile` | Python 3.12 slim、非 root 用户、数据目录 `/app/var` |
+| `docker-entrypoint.sh` | 启动前执行 `alembic upgrade head`，再 exec 应用命令 |
+| `docker-compose.yml` | 单服务、127.0.0.1:8000、命名卷、healthcheck |
+| `.dockerignore` | 排除 .git/.venv/tests/docs/本地数据 |
+| `.github/workflows/ci.yml` | Python 3.11/3.12 质量矩阵 + Docker Compose smoke |
+| `README.md` | 快速开始、CLI/API/配置/迁移/Docker/质量门与限制 |
+| `AGENTS.md` | coding agent 工作规则、契约、DoD 与阶段边界 |
+| `CHANGELOG.md` | P0-S1–S5 变更记录 |
+| `docs/phases/P0-baseline.md` | 本执行记录与 P1 交接 |
+
+### 7.3 工程门禁契约
+
+- `make bootstrap`：创建/复用 `.venv`、安装 `.[dev]`、复制 `.env`、执行迁移；
+- `make check`：`ruff format --check .`、`ruff check .`、`mypy`、非 e2e 测试；
+- `make test` / `make test-integration`：全量非 e2e / 仅集成；
+- `make migrate-check`：临时 SQLite 上 `upgrade → downgrade → upgrade`；
+- `make e2e`：启动真实 Uvicorn 子进程，验证迁移、seed、health、papers；
+- `make demo`：使用默认数据库完成同样的演示，并自动停止 API；
+- `make secret-scan`：基于 `git grep` 的常见密钥模式扫描；
+- Docker：容器启动前迁移、非 root、命名卷、仅绑定 `127.0.0.1`、
+  healthcheck 使用 Python `urllib` 请求 GET `/health`；
+- CI：`make check` + `migrate-check` + `e2e` + `secret-scan`，另有 Docker smoke。
+
+### 7.4 验收结果
+
+```text
+make bootstrap          OK（安装、.env、alembic upgrade head）
+make check              84 passed, 1 deselected（e2e 由单独目标执行）
+make test-integration   45 passed
+make migrate-check      upgrade/downgrade/upgrade OK
+make e2e                1 passed
+make demo               health=ok、papers 显示 p001、API 自动停止
+make secret-scan        OK
+ruff format --check     49 个 Python 文件
+mypy (strict)           31 个源文件无错误
+```
+
+`make demo` 输出摘要：
+
+```json
+{"status":"ok","version":"0.1.0.dev0","environment":"dev","database":"ok"}
+{"items":[{"id":"p001","title":"Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks","status":"new","created_at":"2026-10-21T08:00:00Z"}],"total":1,"limit":10,"offset":0}
+```
+
+Docker 验收状态：
+
+- 2026-10-21 用户在有 Docker 的环境手动检查通过（Compose 构建/启动、容器迁移、
+  `/health`、`/papers`）；
+- 本机没有 Docker daemon，因此未在验收 agent 环境重复构建；CI 的 Docker smoke
+  job 保留为持续回归；
+- F1 已修复：统一错误响应自身回写 `X-Request-ID`，覆盖最外层 500；
+  合同测试与集成测试均增加回归断言。
+
+全新 clone 验收（2026-10-21）：
+
+- `git clone --no-hardlinks . <tmp>` 后按 README 执行
+  `make bootstrap PYTHON=python3.12` 成功；
+- 同一 clone 中 `make check`（84 passed / 1 deselected）、`make migrate-check`、
+  `make e2e`、`make secret-scan`、`make demo` 全部通过；
+- 演示返回 `p001`，clone 工作区保持干净（`.env`/`var` 均被忽略）。
+
+测试数量备注：`make check` 排除 e2e，所以是 84 个；`make e2e` 单独跑 1 个；
+完整 `pytest -q` 会运行 85 个。唯一警告是上游 `starlette.testclient` 的
+`httpx2` 迁移提示。
+
+### 7.5 已知限制与偏差
+
+- S5 是工程收尾，文件数超过“≤8 个文件”指引；没有新增业务语义。
+- Docker 已由用户手动验证；本仓库 CI 的 Docker smoke job 尚无运行证据。
+- F1 已修复；500 响应现在同时包含错误体 `request_id` 与 `X-Request-ID` 响应头。
+- `make demo` 依赖 `curl`，并向默认数据库写入演示数据；重复执行幂等。
+- `make secret-scan` 是轻量正则扫描，不等同于专业密钥扫描器。
+- `make bootstrap` 默认使用 `python3`；若系统 Python <3.11，需
+  `make bootstrap PYTHON=python3.12`。
+- `make check` 刻意不跑 e2e；阶段门必须额外执行 `make e2e`。
+- Docker 镜像使用 Python 3.12；CI 质量矩阵覆盖 3.11/3.12。
+
+## 8. P0 阶段门与交接给 P1
+
+### 8.1 阶段门清单
+
+- [x] P0-S1–P0-S5 已合并；
+- [x] `make check` 通过；
+- [x] `make test-integration` 通过；
+- [x] `make migrate-check` 通过（up/down/up）；
+- [x] `make e2e` 通过；
+- [x] `make demo` 可复现；
+- [x] `make secret-scan` 通过；
+- [x] 全新 clone 按 README 完成 bootstrap/check/demo 验收；
+- [x] F1（500 响应 `X-Request-ID`）修复并有回归测试；
+- [x] Docker Compose 手动验收通过（用户 2026-10-21 确认）；
+- [x] README / AGENTS / CHANGELOG / 阶段 handoff 已更新；
+- [ ] CI `quality` / `docker` job 运行证据（待推送/触发）；
+- [ ] tag `p0-done`（待 CI 运行证据补齐后）。
+
+> 结论：P0 的本地可执行验收、Docker 手动验收与 F1 修复均已完成；CI 运行记录
+> 尚未取得，因此暂不打 `p0-done`。代码与文档已达到交接 P1 的状态。
+
+### 8.2 交接给 P1
 
 **已就绪**
 
-- 控制台命令 `papersteward`，以及 `doctor` / `demo seed` 子命令；
-- `alembic upgrade head`、`alembic downgrade base` 与迁移 current/head 查询；
-- `uvicorn papersteward.main:app` 可启动的 API、`/health`、`GET /papers`；
-- 临时 SQLite 测试 fixture：`sqlite_engine`、`schema_engine`、`migrated_engine`、
-  `db_session`；
-- 可直接串联的验收链：migrate → doctor → demo seed → API 验证。
+- 配置、日志、错误响应、SQLite/Alembic、API、CLI 的稳定 P0 骨架；
+- `make bootstrap/check/test-integration/migrate-check/e2e/demo`；
+- 临时数据库 fixture 与真实 Uvicorn e2e；
+- Docker/CI 工程模板（Docker 已手动验证；CI 运行证据待补）；
+- 明确的 stub 表边界：`papers` / `runs` 不在 P1 前扩展。
 
-**P0-S5 需要完成**
+**P1 需要完成**
 
-- `Makefile`：`bootstrap`、`check`、`test`、`test-integration`、`migrate-check`、
-  `demo`、`e2e`；
-- `make bootstrap`：创建环境、安装依赖、准备 `.env`、执行 `alembic upgrade head`；
-- `make check`：ruff format check、ruff check、mypy、pytest；
-- `make demo`：迁移 → `papersteward demo seed` → 启动 API → 验证 `/health` 与
-  `/papers`；
-- `make migrate-check`：在临时库执行 upgrade head / downgrade base，不碰生产库；
-- Docker Compose：单机、绑定 `127.0.0.1`、数据卷持久化、启动前迁移、
-  healthcheck 使用 GET `/health`；
-- CI：Python 3.11/3.12 矩阵、无真实网络/LLM、ruff/mypy/pytest、secret scan；
-- README、AGENTS.md、CHANGELOG、`.env.example` 完整化；
-- 阶段门清单、`docs/phases/P0-*.md` handoff、tag `p0-done`。
+- 领域实体、枚举、状态机、不变量；
+- `papers` / `runs` stub 表替换与正式迁移、仓储、事件日志；
+- research profile / taxonomy 的 Markdown + YAML 解析、版本、diff；
+- 评分 YAML 加载与校验；JSON schema；
+- LLM provider 接口、`FakeLLM`、prompt registry、schema 校验/修复重试；
+- 契约/迁移/不变量测试；不联网、不使用真实 LLM 密钥。
 
-**不能做什么**
+**P1 不能做**
 
-- 不引入 P1 领域模型、真实文献源、LLM、评分或 UI；
-- 不实现多用户/鉴权/Postgres；
-- 不在 S5 修复业务语义，只固化工程门禁与运行方式。
+- 初始化 UI/门槛编排（P2）；
+- 真实文献源采集（P3）；
+- 摘要/分类/评分实现（P4/P5）；
+- 日报推送、特殊桶、UI。
+
+**开工顺序**
+
+1. 阅读 `docs/PaperSteward_大阶段开发计划.md` P1 与设计文档 §3–§6；
+2. 在 `docs/phases/` 新建 P1 阶段文档并拆 5–8 个小阶段；
+3. 先冻结 schema/接口/迁移，再写实现；
+4. 每个小阶段跑 `make check`，P1 结束跑阶段门与 handoff。
