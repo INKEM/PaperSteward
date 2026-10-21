@@ -30,6 +30,10 @@
   Pydantic 契约与语义校验；基于实体的可读 diff；draft/confirm/archive 服务与
   `profile.*`/`taxonomy.*` 事件；`profile`/`taxonomy`/`doc diff` CLI；
   `tests/fixtures/profiles`/`taxonomies` 与测试。文档模块覆盖率 97%。
+- **P1-S4**：`scoring.yaml` 加载/校验（层级权重和、wR/wS/wA 策略、gates、
+  stability）；配置版本追加写与 `config.updated` 事件；分类/摘要/评分/事件
+  Pydantic JSON schema 与运行时校验；`config validate/import`、
+  `schema show/validate` CLI；正反例与字段级错误测试。
 - **依赖**：新增运行时 `PyYAML` 与开发依赖 `types-PyYAML`，见 ADR 0001。
 
 ### Fixed
@@ -58,6 +62,8 @@
 - `demo seed` 与 API 改用正式 `paper` 表；`doctor` 迁移版本显示 `0002`。
 - 新增文档命令：`profile/taxonomy validate|import|confirm|archive`、`doc diff`；
   确认新版本会自动归档同一文档的旧 confirmed 版本。
+- 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
+  只追加，schema 使用 `extra="forbid"`。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -69,7 +75,7 @@
 
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换；升级会迁移最小字段，降级会丢弃
   正式表数据并恢复空的 stub 表；
-- P1-S3 尚无评分 YAML 校验、JSON schema、LLM 调用或真实文献源；
+- P1-S4 尚无 LLM 网关；分类/摘要/评分算法与真实文献源在 P3–P5；
 - 独立验收 F6（httpx/Starlette 弃用警告）与 F7（Docker/CI 运行证据）仍保留为
   依赖/发布债务；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；

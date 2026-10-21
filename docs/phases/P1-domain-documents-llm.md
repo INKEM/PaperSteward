@@ -1,6 +1,6 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S3 完成（验收 F1–F5 已返工）；P1-S4–S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S4 完成（S1–S3 验收 F1–F5 已返工）；P1-S5–S6 待执行
 > **独立验收**：[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（2026-10-21，有条件通过；F1–F5 返工见 §7）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
@@ -22,7 +22,7 @@ P2、P3、P4/P5、P6。
 | P1-S1 | 实体、枚举、状态机、不变量 | **完成** | P0 | 单元测试；无 DB 依赖 |
 | P1-S2 | 正式迁移、仓储、事件日志 | **完成** | S1 | 迁移 up/down；约束与追加写 |
 | P1-S3 | profile/taxonomy 解析、版本、diff | **完成** | S1/S2 | validate/diff；确认事件 |
-| P1-S4 | 评分 YAML 校验、JSON schema | 待开始 | S1/S3 | 非法权重拒绝；schema 正反例 |
+| P1-S4 | 评分 YAML 校验、JSON schema | **完成** | S1/S3 | 非法权重拒绝；schema 正反例 |
 | P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | 待开始 | S1/S4 | 非法 JSON 不进入业务表 |
 | P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | 待开始 | S1–S5 | `make check` 等阶段门 |
 
@@ -553,7 +553,132 @@ P1-S3 分支内返工；F6（httpx 弃用警告）与 F7（Docker/CI 运行证�
 验收报告中的关闭条件 1–4 已全部处理；P1-S1–S3 可交回独立验收复核。F6/F7 仍按
 原报告保留。
 
-## 8. 风险与待确认
+## 8. P1-S4 执行记录
+
+### 8.1 目标
+
+建立可版本化、可审计的评分配置加载/校验，以及分类、摘要、评分、事件四类
+Agent 输出的 JSON schema；非法配置和非法 JSON 不进入业务表。
+
+### 8.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `src/papersteward/scoring/config.py` | scoring YAML 模型、字段/范围校验、跨字段权重和/门槛/上限 |
+| `src/papersteward/scoring/service.py` | 配置版本追加写、`config.updated` 事件、读取时复验 |
+| `src/papersteward/schemas/models.py` | 分类/摘要/评分快照/事件 Pydantic schema 与校验入口 |
+| `src/papersteward/schemas/__init__.py` | schema 注册表导出 |
+| `src/papersteward/cli/config.py` | `config validate/import`、`schema show/validate` |
+| `src/papersteward/cli/main.py` | 新子命令接线 |
+| `tests/fixtures/configs/*.yaml` | 合法配置、违反 wR 下限、子权重和错误 |
+| `tests/unit/test_scoring_config.py` | 配置正反例、字段/行号、策略分支 |
+| `tests/contract/test_json_schemas.py` | 四类 schema 正反例 |
+| `tests/integration/test_scoring_service.py`、`test_cli_config.py` | 版本/事件/CLI |
+
+### 8.3 评分配置契约
+
+`scoring.yaml` 固定结构（设计方案 §10.5），字段范围与跨字段规则：
+
+- 四个权重组：`static`、`dynamic`、`quasi_dynamic` 内部权重和 = 1.0；
+- `static.weight + dynamic.weight + quasi_dynamic.weight = 1.0`；
+- 全局策略：`static.relevance ≥ 0.50`、`static.weight ≥ 0.60`、
+  `static.authority ≤ 0.20`；
+- `gates.relevance_weight_floor ≥ 0.50`、`gates.static_weight_floor ≥ 0.60`、
+  `gates.authority_weight_cap ≤ 0.20`，实际权重必须满足对应 gate；
+- `deep_cap + skim_cap ≤ max_daily_push`、`max_per_primary_tag ≤ max_daily_push`；
+- `half_life_days` 满足 `fast ≤ default ≤ slow`；
+- 未知字段拒绝；`version` 可数字/字符串但统一为字符串；
+- 错误带 `source:line: field: message`。
+
+`config import` 在 `Config(key='scoring', version=...)` 追加一行，并在同一事务写入
+`config.updated` 事件；重复版本由主键拒绝；读取时重新跑 schema 与跨字段校验。
+
+### 8.4 JSON schema 契约
+
+| schema | 关键字段/规则 |
+|--------|----------------|
+| `classification` | `primary_tag` 稳定代码、`primary_confidence` 0–1、副标签 ≤5（facet/name/confidence）、特殊桶候选 ≤3、`boundary_note` |
+| `summary` | `summary_100` ≤100 非空白字符、what/how/finding/limitation 非空、evidence ≥1（field/quote） |
+| `scoring` | paper/date/三版本；static R/A/E/S、dynamic F/H/D、quasi U/confidence、priority P/rank_score 均 0–100（confidence 0–1）；explanation ≥1 |
+| `event` | `EventType`、payload object、带时区 `created_at`；`paper.*` 事件必须有 `paper_id` |
+
+所有模型 `extra="forbid"`；`schema_for(name)` 生成标准 JSON Schema，
+`schema validate` 校验 JSON 文件；S5 的 FakeLLM/修复重试复用
+`validate_json_text`。
+
+### 8.5 CLI
+
+```bash
+papersteward config validate tests/fixtures/configs/scoring.yaml
+papersteward config import tests/fixtures/configs/scoring.yaml --at 2026-10-21T09:00:00Z
+papersteward schema show classification
+papersteward schema validate classification /tmp/classification.json
+papersteward schema validate summary /tmp/summary.json
+papersteward schema validate scoring /tmp/score.json
+papersteward schema validate event /tmp/event.json
+```
+
+`config validate` 不写库；`config import` 追加版本并写事件；schema 校验失败退出 1，
+错误路径形如 `schema.summary.evidence.0.quote`。
+
+### 8.6 验收结果
+
+- `make check`：**309 passed**，ruff/mypy 通过；
+- `make test-integration`：**95 passed**；
+- `pytest -q`（含 e2e）：**310 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `make e2e`：1 passed；
+- `make demo`：`/health` 与 `/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=papersteward.scoring --cov=papersteward.schemas`：**99%**；
+- 未新增依赖；未访问网络或真实 LLM。
+
+### 8.7 与计划的偏差与限制
+
+- **schema 不落静态文件**：JSON Schema 由 Pydantic 模型在运行时生成，CLI `schema
+  show` 可导出；如外部系统需要冻结文件，后续可加 `schema export`。
+- **不引入 `jsonschema` 依赖**：运行时用 Pydantic 校验，避免新增依赖；边界仍是
+  JSON Schema 语义（`extra="forbid"`、required/enum/range）。
+- **评分公式不复算**：`scoring` schema 只校验字段/范围/结构；P/S/D 公式由 P5 实现。
+- **配置策略硬编码**：0.50/0.60/0.20 是设计文档约束，变更需 ADR + 测试。
+- **事件类型命名空间**：schema 使用 P1-S1 的 `paper.done` 等值，而不是设计示例的
+  裸 `done`，避免与文档/配置事件混淆。
+- **文件数超指引**：S4 新增配置、schema、CLI、fixtures 与三层测试，超过 8 文件/
+  400 行；按 handoff 说明。
+
+### 8.8 交接给 P1-S5
+
+**已就绪**
+
+- `schema_for` / `validate_mapping` / `validate_json_text`，错误字段可定位；
+- `FakeLLM` 可直接返回合法/非法 JSON，S5 只需调用校验入口；
+- `ConfigRepository` + `read_scoring_config`，可读取当前评分版本；
+- `config.updated` 事件与配置版本追加约定；
+- 配置/schema 的 CLI 与正反例 fixture。
+
+**P1-S5 需要完成**
+
+1. `LLMProvider` 协议、`FakeLLM`、prompt registry（版本化）；
+2. `complete_json` 风格的调用入口：超时/重试/修复重试/成本记录；
+3. 非法 JSON 不进入业务表；修复失败返回结构化错误；
+4. `llm ping --fake` 与 FakeLLM 契约测试；
+5. 记录模型、prompt、输入哈希（`Provenance`）。
+
+**S5 不能做**
+
+- 真实网络/真实 LLM 调用（默认禁用；live 测试手动运行）；
+- 摘要/分类/评分算法与队列（P4/P5）；
+- 真实文献源（P3）；
+- 初始化 UI/门槛（P2）。
+
+**实现提示**
+
+- 先校验再落库；`schemas.validate_json_text` 是唯一入口；
+- 修复重试最多 1 次，失败返回 `needs_review` 或结构化错误；
+- prompt registry 与配置一样版本化，变更记录 prompt_version；
+- 成本记录只存可审计的数字/模型名，不记录密钥或完整 prompt 中的敏感文本。
+
+## 9. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
@@ -570,3 +695,9 @@ P1-S3 分支内返工；F6（httpx 弃用警告）与 F7（Docker/CI 运行证�
   版本序号时再引入明确规则。
 - **F6**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
 - **F7**：Docker/CI 运行证据仍未在本地关闭；打发布 tag 前必须补齐。
+- **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在 P1-S5
+  或后续增加 `schema export` 与版本快照。
+- **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与
+  迁移/兼容说明。
+- **事件 schema 命名**：使用 `EventType` 命名空间值（如 `paper.done`），与设计示例
+  的裸状态值不同；事件落库与 schema 以此为准。

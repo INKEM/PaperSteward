@@ -5,7 +5,7 @@
 
 ## 1. 当前阶段
 
-- 当前：**P1 领域模型、版本化文档与 LLM 网关（P1-S1–S3 完成，P1-S4–S6 待执行）**；
+- 当前：**P1 领域模型、版本化文档与 LLM 网关（P1-S1–S4 完成，P1-S5–S6 待执行）**；
 - 下一阶段：P2 初始化协商与确认门；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 
@@ -16,7 +16,7 @@
 1. `docs/PaperSteward_大阶段开发计划.md`（阶段边界与验收）；
 2. `docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md`（产品语义）；
 3. `docs/phases/P0-baseline.md`（已完成契约与交接）；
-4. `docs/phases/P1-domain-documents-llm.md`（当前阶段契约与 S4 交接）；
+4. `docs/phases/P1-domain-documents-llm.md`（当前阶段契约与 S5 交接）；
 5. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
@@ -33,7 +33,8 @@ src/papersteward/
   observability/   # JSON/console 日志、request_id
   storage/         # db、*Row ORM、mappers、repositories、migrations 状态
   documents/       # profile/taxonomy 解析、diff、确认/归档服务
-  core/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/
+  scoring/ schemas/  # 评分配置/JSON schema（P1-S4）
+  core/ llm/ sources/ pipeline/ delivery/ jobs/
 migrations/        # Alembic env 与 versions
 tests/             # unit / contract / integration / e2e
 docs/              # 设计、计划、阶段 handoff

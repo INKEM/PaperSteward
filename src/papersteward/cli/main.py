@@ -11,6 +11,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from papersteward import __version__
+from papersteward.cli.config import (
+    run_config_import,
+    run_config_validate,
+    run_schema_show,
+    run_schema_validate,
+    schema_names,
+)
 from papersteward.cli.demo import seed_demo_data
 from papersteward.cli.doctor import DoctorReport, run_doctor
 from papersteward.cli.documents import (
@@ -59,6 +66,23 @@ def _build_parser() -> argparse.ArgumentParser:
     diff.add_argument("right", help="右文件路径，或数据库版本号")
     diff.add_argument("--id", dest="document_id", help="按数据库版本比较时的文档 ID")
     diff.add_argument("--json", action="store_true", help="输出 JSON")
+
+    config = subparsers.add_parser("config", help="评分配置校验与版本导入")
+    config_subparsers = config.add_subparsers(dest="config_command", required=True)
+    config_validate = config_subparsers.add_parser("validate", help="校验 scoring YAML")
+    config_validate.add_argument("path", help="scoring.yaml 路径")
+    config_validate.add_argument("--json", action="store_true", help="输出 JSON")
+    config_import = config_subparsers.add_parser("import", help="写入配置版本并记录事件")
+    config_import.add_argument("path", help="scoring.yaml 路径")
+    config_import.add_argument("--at", help="更新时间（ISO 8601，带时区）")
+
+    schema = subparsers.add_parser("schema", help="Agent 输出 JSON schema")
+    schema_subparsers = schema.add_subparsers(dest="schema_command", required=True)
+    schema_show = schema_subparsers.add_parser("show", help="输出 JSON Schema")
+    schema_show.add_argument("name", choices=schema_names(), help="schema 名称")
+    schema_validate = schema_subparsers.add_parser("validate", help="校验 JSON 文件")
+    schema_validate.add_argument("name", choices=schema_names(), help="schema 名称")
+    schema_validate.add_argument("path", help="JSON 文件路径")
     return parser
 
 
@@ -152,6 +176,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 document_id=args.document_id,
                 json_output=args.json,
             )
+        if args.command == "config":
+            if args.config_command == "validate":
+                return run_config_validate(args.path, json_output=args.json)
+            if args.config_command == "import":
+                return run_config_import(args.path, at=args.at)
+        if args.command == "schema":
+            if args.schema_command == "show":
+                return run_schema_show(args.name)
+            if args.schema_command == "validate":
+                return run_schema_validate(args.name, args.path)
     except KeyboardInterrupt:
         print("已取消", file=sys.stderr)
         return 130
