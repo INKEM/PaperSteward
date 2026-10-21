@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1–S4 完成并通过本地验收；S5–S7 未开始。日期：2026-10-22。
+> 状态：P3-S1–S5 完成并通过本地验收；S6/S7 未开始。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -178,3 +178,17 @@ make secret-scan
   make check（ruff/strict mypy，639 passed）、test-integration（210 passed）、
   migrate-check（base↔0004）、secret-scan 与 diff --check 通过；使用独立 /dev/shm 临时库。
   回滚代码即可；DB head 0004。
+
+## S5 handoff（2026-10-22）
+
+- 分支 feat/p3-s5-semantic-scholar（stacked S4）；ADR 0010，无新依赖/迁移。
+- Semantic Scholar bulk search 编译字面短语与 +/|/-，日期闭区间、token 分页、总结果
+  上限；保留引用数/外部ID/TLDR/raw metadata。TLDR不当摘要，缺精确日期不补1月1日。
+- 只支持 all 查询，字段关注列表显式 unsupported_query；不在第三来源重复做身份解析。
+  可选 SecretStr key 只放 x-api-key，HTTP client 绑定本来源host，禁止跨来源泄漏。
+- 官方接口依据：[Academic Graph API](https://api.semanticscholar.org/api-docs)，2026-10-22
+  查阅。没有真实key/来源调用；公共接口401/429明确失败，跨源隔离留S7。
+- 演示：pytest tests/contract/test_semantic_scholar_adapter.py；新增11项契约案例。
+  能做：离线召回与来源元数据解析；不能做：引文网络/摘要生成/生产入库。
+- 回滚本阶段代码即可；DB head0004。验收：make check（ruff/strict mypy，650 passed）、test-integration（210 passed）、
+  migrate-check（base↔0004）、secret-scan、diff --check 通过，沿用 /dev/shm 临时测试库。

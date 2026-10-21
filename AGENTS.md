@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P3 采集、去重与硬过滤（S1–S4 来源契约、查询生成器、arXiv/OpenAlex 完成本地验收；卡片见 P3-ingestion.md）**；
-- 下一小阶段：**P3-S5 Semantic Scholar 适配器（未开始）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
+- 当前：**P3 采集、去重与硬过滤（S1–S5 来源契约、查询生成器与三个来源适配器完成本地验收；卡片见 P3-ingestion.md）**；
+- 下一小阶段：**P3-S6 canonicalization 与去重（未开始）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0004`（独立 onboarding 与 calibration 表）；G4 前禁止入队/推送/归档。
 

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
 import httpx
+from pydantic import SecretStr
 
 from papersteward.sources.contracts import SourceError
 
@@ -23,6 +24,7 @@ class SourceHTTP:
         max_requests: int = 30,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        api_key: SecretStr | None = None,
     ) -> None:
         if (
             not math.isfinite(timeout)
@@ -38,12 +40,17 @@ class SourceHTTP:
         self.request_count = self.cache_hits = 0
         self._last: float | None = None
         self._cache: dict[str, tuple[float, bytes]] = {}
+        headers = {"User-Agent": "PaperSteward/0.1"}
+        if api_key is not None:
+            if source != "semantic_scholar":
+                raise ValueError("此来源不支持密钥头")
+            headers["x-api-key"] = api_key.get_secret_value()
         self._client = httpx.Client(
             transport=transport,
             timeout=timeout,
             trust_env=False,
             follow_redirects=False,
-            headers={"User-Agent": "PaperSteward/0.1"},
+            headers=headers,
         )
 
     def close(self) -> None:
@@ -51,12 +58,12 @@ class SourceHTTP:
 
     def get(self, url: str, params: Mapping[str, str | int]) -> bytes:
         target = httpx.URL(url)
-        if (
-            target.scheme != "https"
-            or target.userinfo
-            or target.host
-            not in {"export.arxiv.org", "api.openalex.org", "api.semanticscholar.org"}
-        ):
+        expected_host = {
+            "arxiv": "export.arxiv.org",
+            "openalex": "api.openalex.org",
+            "semantic_scholar": "api.semanticscholar.org",
+        }.get(self.source)
+        if target.scheme != "https" or target.userinfo or target.host != expected_host:
             raise SourceError(self.source, "invalid_response")
         key = str(target.copy_merge_params(sorted(params.items())))
         cached = self._cache.get(key)
