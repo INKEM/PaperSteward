@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1–S3 完成并通过本地验收；S4–S7 未开始。日期：2026-10-22。
+> 状态：P3-S1–S4 完成并通过本地验收；S5–S7 未开始。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -160,3 +160,21 @@ make secret-scan
 - 验收：新增19项离线测试；make check（ruff/strict mypy，626 passed）、
   make test-integration（210 passed）、migrate-check（base↔0004）、secret-scan 与
   diff --check 通过。临时库沿用 /dev/shm；未运行 live、Docker/CI。
+
+## S4 handoff（2026-10-22）
+
+- 分支 feat/p3-s4-openalex-adapter（stacked S3）；无新依赖/迁移，共6文件。
+- 实现 OpenAlex 搜索、日期过滤、保守100条基础分页、倒排摘要重建、作者/venue/引用/
+  OA/语言/类型映射；缺失字段为 None/()/unknown，保留完整 work 原始元数据。
+- 字段查询先解析作者/source/institution 的精确名称到唯一 ID；没有匹配为空结果，
+  同名歧义拒绝 unsupported_query，不擅自选人/机构；单个字段多个关键词也显式拒绝。
+- 查询字符串按字面短语引用；分页保持 per_page 恒定并裁切末页，重复页/损坏结构拒绝。
+- 官方依据（2026-10-22 查阅）：[基础分页](https://help.openalex.org/api/paging/)、
+  [搜索](https://help.openalex.org/api/searching/)、[字段](https://help.openalex.org/data/works/attributes/)。
+  旧 docs 域已迁移 help；不依赖已弃用200条页或需要密钥的跨页cursor。没有真实API调用。
+- 能做：离线元数据召回；不能做：生产入库/富化评分或同名实体自动消歧。
+  publication_date 是来源报告的主版本日期，不保证所有 locations 中最早；S6 跨源取最早。
+- 演示：`.venv/bin/pytest tests/contract/test_openalex_adapter.py -q`（13项）；
+  make check（ruff/strict mypy，639 passed）、test-integration（210 passed）、
+  migrate-check（base↔0004）、secret-scan 与 diff --check 通过；使用独立 /dev/shm 临时库。
+  回滚代码即可；DB head 0004。
