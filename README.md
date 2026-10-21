@@ -7,7 +7,7 @@
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
 评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
 registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 实现与本地验收
-完成，整体验收 F1–F3 已返工；Docker build 已手动验证，但容器运行/CI 证据与依赖
+完成，整体验收 F1–F3 已返工；Docker 容器 build/run 已验证，但 CI 运行证据与依赖
 弃用警告仍是发布债务，P2 尚未开始。
 
 ## 当前能力
@@ -259,7 +259,7 @@ docs/             # 设计与阶段文档
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
 - P1-S5/S6 完成 LLM 网关、FakeLLM 与阶段验收；真实 provider、真实文献源与 P2 onboarding 未开始；
-- `docker compose build` 已由用户手动验证通过；容器内 `/health`/`/papers` 与 CI 运行证据仍缺；
+- Docker post-fix 镜像已启动验证：容器 healthy，`/health`、seed 后 `/papers` 正常；CI 运行证据仍缺；
 - 不采集真实文献、不调用真实 LLM、不生成摘要/评分/日报；FakeLLM 仅用于契约/演示；
 - API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；

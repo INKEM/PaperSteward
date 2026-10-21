@@ -848,9 +848,16 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 - `make demo DEMO_PORT=8774`：`/health`、`/papers` 正常；
 - `make secret-scan`：OK；
 - P1 代码合并覆盖率（`core/documents/storage/scoring/schemas/llm`）：**97%**；
-- `docker compose config`：通过；`docker compose build` 因当前环境无法连接
-  `/var/run/docker.sock`（permission denied）未执行成功；
-- CI：无可用 `gh`/远端运行证据，未声称通过。
+- `docker compose config`：通过；
+- Docker build/run：使用 post-fix 镜像（created 2026-10-21T19:05:27+08:00）启动成功；
+  `docker compose up -d --force-recreate` 后容器为 `healthy`，`/health` 返回
+  `{"status":"ok","database":"ok"}`；容器内 `papersteward demo seed` 后 `/papers`
+  返回 p001（`discovered`）；`docker compose down` 正常停止且未删除 volume；
+- 容器内权限：UID 10001 可读取 `/app/src/papersteward/core/entities.py`（644 root），
+  `alembic current` 为 `0002 (head)`；
+- 本轮 `docker compose build` 重建尝试因 PyPI 读超时失败，但用户手动构建的同一
+  post-fix 镜像已用于上述运行验证；
+- CI：GitHub Actions API 返回 `total_count: 0`，仍无 CI 运行证据，未声称通过。
 
 ### 10.5 Schema review 结论
 
@@ -865,10 +872,10 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 ### 10.6 未关闭事项
 
 - **F5**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属依赖债务；
-- **F4/F6**：Docker build 已由用户于 2026-10-21 手动验证通过，`docker compose config`
-  解析通过；本环境仍无法连接 Docker daemon，因此没有容器内 `/health`/`/papers`
-  运行证据；GitHub Actions API 显示 `total_count: 0`。CI/容器运行证据仍未闭合，
-  **不得声称完整 Docker/CI 验收通过，也不打 P1 阶段 tag。**
+- **F4/F6**：Docker build/run 已验证：post-fix 镜像以 UID 10001 启动，容器 healthy，
+  `/health` 为 ok，seed 后 `/papers` 返回 p001；`docker compose config` 通过。
+  剩余缺口是 CI 运行证据：GitHub Actions API 为 `total_count: 0`。
+  **不得声称 CI 验收通过，也不打 P1 阶段 tag。**
 - 真实 LLM provider、真实文献源、摘要/分类/评分算法、P2 UI 均不在 P1 范围。
 
 ### 10.7 交接给 P2
@@ -922,7 +929,7 @@ Docker build 部分由用户手动验证，F5 保留为依赖债务。
 | F1 | **已修复** | `save_scoring_config()` 写入前调用 `validate_scoring_config()`；非法配置不写 `Config`、不写事件 |
 | F2 | **已修复** | 新增 `special_scoring` schema（tier，无 P）；主题桶 `scoring` 仍要求 priority；freeze/契约测试同步更新 |
 | F3 | **已修复** | 最终 provider 失败时 `LLMProviderError/LLMTimeoutError` 携带 `usage`（calls/retries），可审计失败调用 |
-| F4 | **部分关闭** | 用户手动验证 `docker compose build` 通过；`docker compose config` 通过；本环境无 daemon，容器运行与 CI 证据仍缺 |
+| F4 | **部分关闭（Docker 已关闭，CI 未闭合）** | `docker compose config`、post-fix 镜像 build/run、容器 healthy、`/health`、seed 后 `/papers` 均验证通过；CI `total_count: 0` |
 | F5 | **保留** | Starlette/httpx 弃用警告，依赖升级窗口处理 |
 | F6 | **保留** | P0 Docker/CI 证据与 F4 一并处理 |
 
@@ -944,7 +951,8 @@ Docker build 部分由用户手动验证，F5 保留为依赖债务。
 - `make demo`：`/health`、`/papers` 正常；
 - `make secret-scan`：OK；
 - `pytest --cov=core/documents/storage/scoring/schemas/llm`：**97%**；
-- Docker：`docker compose build` 用户手动通过；`docker compose config` 通过；容器运行与 CI 无证据。
+- Docker：`docker compose config`、post-fix 镜像 build/run、容器 healthy、`/health`、seed 后
+  `/papers` 均通过；CI 无运行证据。
 
 ## 12. 风险与待确认
 
@@ -962,8 +970,8 @@ Docker build 部分由用户手动验证，F5 保留为依赖债务。
 - **版本字符串**：不解析 semver；`1.10` 与 `1.9` 的排序由用户输入决定，P2 需要
   版本序号时再引入明确规则。
 - **F5**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
-- **F4/F6**：容器运行与 CI 运行证据仍未关闭；打发布 tag 前必须补齐。Docker build
-  已由用户手动验证，但不能替代 `/health`/`/papers` 容器运行证据。
+- **F4/F6**：Docker 容器运行证据已补齐（post-fix 镜像、UID 10001、healthy、
+  `/health`、seed 后 `/papers`）；CI 运行证据仍未取得，打发布 tag 前必须补齐。
 - **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在后续阶段
   增加 `schema export` 与版本快照。
 - **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与

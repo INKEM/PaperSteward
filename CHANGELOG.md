@@ -77,8 +77,8 @@
 - 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
   只追加，schema 使用 `extra="forbid"`。
 - 新增 `llm ping --fake`；P1 不提供真实 provider，超时由 provider 实现。
-- P1 实现与本地验收完成（返工后 `340 passed`）；F4（Docker 容器运行/CI 证据）
-  与 F5（httpx 弃用警告）未关闭，因此暂不打 P1 阶段 tag。
+- P1 实现与本地验收完成（返工后 `340 passed`）；Docker 容器 build/run 已闭环，
+  F4 仅剩 CI 运行证据，F5（httpx 弃用警告）未关闭，因此暂不打 P1 阶段 tag。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -92,9 +92,9 @@
   正式表数据并恢复空的 stub 表；
 - P1-S5/S6 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法、真实文献源与
   P2 onboarding 在后续阶段；
-- Docker build 已由用户手动验证；本环境无 daemon，容器运行/CI 证据未取得；
-- 独立验收 F4（Docker 容器运行/CI 证据）与 F5（httpx/Starlette 弃用警告）仍未
-  关闭；`docker compose build` 已由用户手动验证；
+- Docker post-fix 镜像 build/run 已验证；CI 运行证据未取得；
+- 独立验收 F4 的 Docker build/run 已闭环（healthy、`/health`、seed 后 `/papers`）；
+  CI 运行证据与 F5（httpx/Starlette 弃用警告）仍未关闭；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
 - Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。
