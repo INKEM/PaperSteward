@@ -4,10 +4,9 @@
 > **验收 commit**：`db814d0`（`test(p1-s6): freeze contracts and close P1 acceptance`）
 > **验收日期**：2026-10-21
 > **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、手工契约/边界检查、Docker/CI 静态证据复核
-> **结论**：**有条件通过（Conditional Pass）**。P1 的本地功能与阶段门通过；但仍有 2 个代码/契约缺口、1 个低优先级成本审计缺口，以及 Docker/CI 发布证据未闭合。**不建议打 P1 tag**，P2 可以在明确遗留项后启动。
+> **结论**：**有条件通过（Conditional Pass）**。本报告记录的是 `db814d0` 时点的历史验收结论；返工后的最终结论以 [P1-rework-acceptance.md](P1-rework-acceptance.md) 为准。
 >
-> **后续状态**：F1–F3 已返工（见 [P1 handoff](P1-domain-documents-llm.md) §11）；Docker
-> build/run 已闭环（healthy、`/health`、seed 后 `/papers`），仅剩 CI 运行证据。
+> **后续状态**：F1–F3 已返工；Docker 已闭环；CI run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808) 在 `bca7a7a` 上 3 个 job 全绿，F4 已关闭。F5（httpx 弃用警告）保留为非阻断依赖债务。**P1 最终判定：通过。**
 
 ---
 

@@ -91,6 +91,12 @@ from papersteward.storage.models import (
     SummaryRow,
     TaxonomyRow,
 )
+from papersteward.storage.onboarding import ensure_active
+
+
+def _check_execution_gate(session: Session, target: PaperStatus) -> None:
+    if target in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.ARCHIVED}:
+        ensure_active(session, action=target.value)
 
 
 class _Repository:
@@ -105,6 +111,7 @@ class PaperRepository(_Repository):
     """文献主记录与状态迁移。"""
 
     def add(self, paper: Paper) -> Paper:
+        _check_execution_gate(self._session, paper.status)
         self._session.add(paper_to_row(paper))
         self._flush()
         return paper
@@ -136,6 +143,7 @@ class PaperRepository(_Repository):
         if row is None:
             return None
         updated = transition_paper(paper_from_row(row), target)
+        _check_execution_gate(self._session, target)
         event = Event(
             id=event_id,
             event_type=PAPER_STATUS_EVENTS[target],
@@ -514,6 +522,7 @@ class ArchiveSnapshotRepository(_Repository):
     """只追加的归档快照；不提供 update/delete。"""
 
     def add(self, snapshot: ArchiveSnapshot) -> ArchiveSnapshot:
+        ensure_active(self._session, action="archive")
         self._session.add(archive_snapshot_to_row(snapshot))
         self._flush()
         return snapshot

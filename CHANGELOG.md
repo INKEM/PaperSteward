@@ -6,6 +6,33 @@
 
 ### Added
 
+- **P2-S6**：最小 onboarding CLI，覆盖草案/版本审阅、种子导入、独立校准、日报反馈与
+  G1–G4 显式确认。保存带校验和的私有审阅快照，确认只使用已审 hash/revision，
+  拒绝文件覆盖、跨服务器或意外编辑；本地 HTTP 禁用代理/重定向，不自动重试变更。
+  新增 CLI 真实子进程 e2e、操作指南与 P2 本地验收/P3 交接；无依赖/迁移。
+- **P2 验收**：独立复核本地阶段门与 Docker build/run 通过；CI 尚未触发，
+  `p2-done` tag 待补 CI 证据。
+- **P2-S5**：版本化试运行日报与运行参数 API，展示固定合成条目/Markdown，不发送；
+  支持“太多/太少/不准/分类不对”的追加反馈。G4 要求最新日报、最新认可反馈、
+  审阅双 hash 与显式确认，绑定 G3 及前序文档；原子保存所选配置、审计并进入 ACTIVE。
+  新增真实 Uvicorn G1–G4 门禁 e2e；无迁移/依赖，不启动真实采集、评分或调度。
+- **P2-S4**：G2 种子幂等导入、独立 15–20 篇校准集与双方不可覆盖标注 API；
+  迁移 `0004` 持久化最多两轮校准。报告包含平均并列秩 Spearman、确定性 Top-5、
+  标签/阅读方式一致率、边界争议与档案/rubric 建议；G3 绑定前序文档和完整报告，
+  低指标需书面接受已知偏差，确认后进入 dry_run，G4 门禁继续关闭。
+  合成 fixture 标记“仅流程验证”，无新依赖/真实调用，不生成生产评分或阅读反馈。
+- **P2-S3**：分类法草案/版本编辑/审阅与 G2 确认 API；校验 5–8 主标签、种子覆盖率
+  ≥90%、单标签占比 ≤50%、正例与边界判定；预览种子/队列/规则变化。草案绑定
+  G1 档案并追加不可变证据；确认重算报告并保存快照，拒绝过期审阅。无新迁移/依赖，
+  不导入论文、不执行重分类或真实调用；合成标注明确标为“仅流程验证”。
+- **P2-S2**：档案 Markdown 草案/版本编辑/全文审阅 API，返回结构化与 Markdown diff、
+  G1 缺项及最多 5 个协商问题；可信 G1 完整性校验、版本与内容哈希绑定的显式确认，
+  同事务确认文档/追加事件/推进至分类法阶段。保留旧版本，拒绝陈旧/重复确认；
+  UTF-8 文档限长并拒绝 YAML 引用展开，无新增依赖、迁移或真实模型调用。
+- **P2-S1**：独立 onboarding 状态与可逆迁移 `0003`；G1–G4 顺序确认、产物版本/
+  用户/变更摘要审计、revision 条件更新；`GET /onboarding` 与幂等
+  `POST /onboarding/start`；统一门禁阻止 G4 前入队/推送/归档。内部确认接口必须
+  注入可信业务证据校验器，具体校验与外部确认入口留给 S2–S5；无真实调用。
 - **P0-S1**：`src` 包结构；`Settings` 环境变量/`.env` 配置；JSON/console 结构化日志、
   request_id 上下文与敏感字段脱敏；统一 `AppError` / `ErrorResponse` 与 FastAPI
   错误处理器。
@@ -77,8 +104,9 @@
 - 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
   只追加，schema 使用 `extra="forbid"`。
 - 新增 `llm ping --fake`；P1 不提供真实 provider，超时由 provider 实现。
-- P1 实现与本地验收完成（返工后 `340 passed`）；Docker 容器 build/run 已闭环，
-  F4 仅剩 CI 运行证据，F5（httpx 弃用警告）未关闭，因此暂不打 P1 阶段 tag。
+- P1 实现与本地验收完成（返工后 `340 passed`）；Docker 容器 build/run 与 CI
+  run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  均通过，F4/F6 已闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，P1 整体验收通过。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -92,9 +120,10 @@
   正式表数据并恢复空的 stub 表；
 - P1-S5/S6 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法、真实文献源与
   P2 onboarding 在后续阶段；
-- Docker post-fix 镜像 build/run 已验证；CI 运行证据未取得；
-- 独立验收 F4 的 Docker build/run 已闭环（healthy、`/health`、seed 后 `/papers`）；
-  CI 运行证据与 F5（httpx/Starlette 弃用警告）仍未关闭；
+- Docker post-fix 镜像 build/run 与 CI run
+  [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  均已验证；F4/F6 闭环；
+- F5（httpx/Starlette 弃用警告）保留为非阻断依赖债务；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
-- Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。
+- Docker 配置已加入并纳入 CI smoke。

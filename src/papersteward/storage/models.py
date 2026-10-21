@@ -34,6 +34,56 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from papersteward.storage.db import Base, utc_now
 
 
+class OnboardingRow(Base):
+    """单用户初始化流程；门槛证据与确认者保存在追加写事件中。"""
+
+    __tablename__ = "onboarding"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint(
+            "(stage = 'profile' AND revision = 1) OR "
+            "(stage = 'taxonomy' AND revision = 2) OR "
+            "(stage = 'calibration' AND revision = 3) OR "
+            "(stage = 'dry_run' AND revision = 4) OR "
+            "(stage = 'active' AND revision = 5)",
+            name="stage_matches_revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CalibrationRoundRow(Base):
+    """P2 独立校准轮次；双方标注仅可各自写入一次。"""
+
+    __tablename__ = "onboarding_calibration"
+    __table_args__ = (
+        CheckConstraint("round_number IN (1, 2)", name="round_limit"),
+        CheckConstraint("sample_kind IN ('user', 'synthetic')", name="sample_kind_values"),
+        CheckConstraint(
+            "report_json IS NULL OR (agent_json IS NOT NULL AND user_json IS NOT NULL)",
+            name="report_requires_labels",
+        ),
+    )
+    round_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    g2_event_id: Mapped[str] = mapped_column(String(64), ForeignKey("event.id"), nullable=False)
+    binding_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    cohort_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    rubric_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    agent_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    user_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ResearchProfileRow(Base):
     """研究方向档案版本；``status='confirmed'`` 每个 id 只能有一条。"""
 
@@ -455,6 +505,7 @@ __all__ = [
     "ArchiveSnapshotRow",
     "BucketRow",
     "ConfigRow",
+    "CalibrationRoundRow",
     "EventRow",
     "PaperBucketRow",
     "PaperRow",

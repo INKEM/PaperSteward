@@ -1,7 +1,7 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S6 完成；整体验收 F1–F3 已返工，F4/F5 未闭合，暂不打 P1 tag
-> **独立验收**：整体 [P1-acceptance.md](P1-acceptance.md)（2026-10-21，有条件通过）；S1–S3 历史报告 [P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（F1–F5 已返工）
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S6 完成；整体验收通过（F5 依赖债务；未打 tag）
+> **独立验收**：返工复核 [P1-rework-acceptance.md](P1-rework-acceptance.md)（2026-10-21，通过）；历史报告 [P1-acceptance.md](P1-acceptance.md)、[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（F1–F5 已返工）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
 > **上一阶段交接**：[P0-baseline.md](P0-baseline.md) §8.2
@@ -857,7 +857,8 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
   `alembic current` 为 `0002 (head)`；
 - 本轮 `docker compose build` 重建尝试因 PyPI 读超时失败，但用户手动构建的同一
   post-fix 镜像已用于上述运行验证；
-- CI：GitHub Actions API 返回 `total_count: 0`，仍无 CI 运行证据，未声称通过。
+- CI：run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  在 `bca7a7a` 上 3 个 job 全绿（quality 3.11/3.12 + docker compose smoke）。
 
 ### 10.5 Schema review 结论
 
@@ -871,11 +872,12 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 
 ### 10.6 未关闭事项
 
-- **F5**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属依赖债务；
-- **F4/F6**：Docker build/run 已验证：post-fix 镜像以 UID 10001 启动，容器 healthy，
-  `/health` 为 ok，seed 后 `/papers` 返回 p001；`docker compose config` 通过。
-  剩余缺口是 CI 运行证据：GitHub Actions API 为 `total_count: 0`。
-  **不得声称 CI 验收通过，也不打 P1 阶段 tag。**
+- **F5**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属非阻断依赖债务；
+- **F4/F6**：已关闭。Docker 容器运行验证通过（UID 10001、healthy、`/health`、seed 后
+  `/papers`）；CI run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  在 `bca7a7a` 上 3 个 job 全绿（quality py3.11/py3.12 + docker compose smoke）。
+- **F3 测试债**：provider 失败 usage 已由代码实现并手工验证，但尚缺独立回归断言；
+  不影响 P1 关闭，建议下一维护窗口补齐。
 - 真实 LLM provider、真实文献源、摘要/分类/评分算法、P2 UI 均不在 P1 范围。
 
 ### 10.7 交接给 P2
@@ -915,29 +917,33 @@ S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义�
 
 ### 10.8 P1 最终状态
 
-P1 的**实现与本地可执行验收完成**；P1 整体验收 F1–F3 已返工（见 §11），
-F4（容器运行/CI 证据）与 F5（httpx 弃用警告）未关闭。保持“P1 代码完成、阶段 tag
-待补证据”的状态；P2 可以从本 handoff 直接开始。
+P1 的**实现、本地可执行验收、Docker 运行与 CI 阶段门均已完成**；整体验收 F1–F4
+已闭环（见 §11 与 [返工验收报告](P1-rework-acceptance.md)）。F5（httpx 弃用警告）
+保留为非阻断依赖债务；F3 另有一条回归断言待补。P1 可以关闭；P2 可以从本 handoff
+直接开始。
 
 ## 11. P1 整体验收返工记录
 
-独立整体验收报告见 [P1-acceptance.md](P1-acceptance.md)。本轮修复 F1–F3；F4 的
-Docker build 部分由用户手动验证，F5 保留为依赖债务。
+独立整体验收报告见 [P1-acceptance.md](P1-acceptance.md)；返工复核见
+[P1-rework-acceptance.md](P1-rework-acceptance.md)。本轮修复 F1–F3；F4 由本地
+Docker 运行与 CI docker job 共同闭环，F5 保留为非阻断依赖债务。
 
 | ID | 状态 | 修复 |
 |----|------|------|
 | F1 | **已修复** | `save_scoring_config()` 写入前调用 `validate_scoring_config()`；非法配置不写 `Config`、不写事件 |
 | F2 | **已修复** | 新增 `special_scoring` schema（tier，无 P）；主题桶 `scoring` 仍要求 priority；freeze/契约测试同步更新 |
 | F3 | **已修复** | 最终 provider 失败时 `LLMProviderError/LLMTimeoutError` 携带 `usage`（calls/retries），可审计失败调用 |
-| F4 | **部分关闭（Docker 已关闭，CI 未闭合）** | `docker compose config`、post-fix 镜像 build/run、容器 healthy、`/health`、seed 后 `/papers` 均验证通过；CI `total_count: 0` |
-| F5 | **保留** | Starlette/httpx 弃用警告，依赖升级窗口处理 |
-| F6 | **保留** | P0 Docker/CI 证据与 F4 一并处理 |
+| F4 | **已关闭** | Docker 容器运行通过；CI run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808) 在 `bca7a7a` 上 3 个 job 全绿（quality 3.11/3.12 + docker smoke） |
+| F5 | **保留（非阻断）** | Starlette/httpx 弃用警告，依赖升级窗口处理 |
+| F6 | **随 F4 关闭** | P0 Docker/CI 证据由同一容器的运行与 CI run 补齐 |
 
 ### 11.1 验证
 
 - `save_scoring_config` 非法配置：`test_save_scoring_config_revalidates_before_writing`；
 - 特殊桶 schema：`test_special_scoring_uses_tier_without_priority` + freeze test；
-- provider 失败 usage：`test_all_provider_attempts_fail_with_usage`；
+- provider 失败 usage：代码已实现并经手工验证；现有 `test_all_provider_attempts_fail`
+  尚未断言 `usage`（handoff 曾误写为 `test_all_provider_attempts_fail_with_usage`），
+  作为非阻断测试债待补；
 - 更新后的完整阶段门见 §11.2。
 
 ### 11.2 返工后阶段门
@@ -951,8 +957,8 @@ Docker build 部分由用户手动验证，F5 保留为依赖债务。
 - `make demo`：`/health`、`/papers` 正常；
 - `make secret-scan`：OK；
 - `pytest --cov=core/documents/storage/scoring/schemas/llm`：**97%**；
-- Docker：`docker compose config`、post-fix 镜像 build/run、容器 healthy、`/health`、seed 后
-  `/papers` 均通过；CI 无运行证据。
+- Docker/CI：`docker compose config`、容器 UID 10001/healthy/`/health`/seed 后
+  `/papers` 通过；CI run 39610871808 在 `bca7a7a` 上 3 个 job 全绿。
 
 ## 12. 风险与待确认
 
@@ -969,9 +975,11 @@ Docker build 部分由用户手动验证，F5 保留为依赖债务。
   `content_md`；P2 若需要结构化边界案例，应扩展模型并走迁移/ADR。
 - **版本字符串**：不解析 semver；`1.10` 与 `1.9` 的排序由用户输入决定，P2 需要
   版本序号时再引入明确规则。
-- **F5**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
-- **F4/F6**：Docker 容器运行证据已补齐（post-fix 镜像、UID 10001、healthy、
-  `/health`、seed 后 `/papers`）；CI 运行证据仍未取得，打发布 tag 前必须补齐。
+- **F5**：Starlette/httpx 弃用警告属于非阻断依赖债务，留待依赖升级窗口处理。
+- **F4/F6**：已关闭。Docker 容器运行证据已补齐（UID 10001、healthy、`/health`、
+  seed 后 `/papers`）；CI run 39610871808 在 `bca7a7a` 上 3 个 job 全绿。
+- **F3 测试债**：provider 失败 usage 的代码与手工验证通过，但现有回归测试尚未断言
+  `exc.usage`；建议下一维护窗口补一条断言。
 - **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在后续阶段
   增加 `schema export` 与版本快照。
 - **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与

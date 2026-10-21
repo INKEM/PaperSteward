@@ -2,30 +2,84 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
+当前处于 **P2 初始化协商与确认门（S1–S6 实现与本地验收完成）**：P0 的配置、API、CLI 与演示链路
 已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
 评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
-registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 实现与本地验收
-完成，整体验收 F1–F3 已返工；Docker 容器 build/run 已验证，但 CI 运行证据与依赖
-弃用警告仍是发布债务，P2 尚未开始。
+registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 整体验收已通过：
+Docker 容器 build/run 与 CI 均闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，
+P2-S1 已提供持久化初始化状态、G1–G4 顺序确认接口与统一执行门禁。
+P2-S2 已接入档案草案/版本编辑/审阅与 G1 显式确认，确认后进入分类法阶段。
+P2-S3 已接入分类法草案、覆盖率/均衡/边界校验、影响预览和 G2 确认。
+P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 确认，进入 dry_run。
+P2-S5 已接入参数、版本化试运行日报、反馈和 G4 显式确认，确认后进入 ACTIVE。
+P2-S6 已提供最小初始化 CLI 与完整链路验收；当前没有真实发送器或调度器。
+P2 本地阶段门与 Docker 已通过；CI 仍未触发，阶段 tag 待 CI；下一阶段为 P3。
+详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
 
 ## 当前能力
 
 - `GET /health`：返回版本、运行环境与数据库连通性；
 - `GET /papers`：从正式 `paper` 表返回文献列表（只读）；
+- `GET /onboarding`、`POST /onboarding/start`：查看/开始初始化（幂等）；
+- `POST /onboarding/profile/drafts`：接收 Agent/用户 Markdown 草案；编辑时指定
+  base_version 并提升版本，返回全文、diff、内容哈希、G1 缺项与协商问题；
+- `GET /onboarding/profile/{id}/{version}`：审阅档案，可用 base_version 查询参数比较版本；
+- `POST /onboarding/profile/{id}/{version}/confirm`：携带 confirmed=true、确认者、
+  变更摘要、审阅返回的 content_hash 与 expected_revision，原子确认档案并通过 G1；
+- `POST /onboarding/taxonomy/drafts`：提交分类法与完整种子标注，保存版本化审阅证据；
+- `GET /onboarding/taxonomy/{id}/{version}`：全文/diff、覆盖率/均衡/边界报告和影响预览；
+- `POST /onboarding/taxonomy/{id}/{version}/confirm`：显式确认文档及审阅哈希，原子通过 G2；
+- `POST /onboarding/seeds/import`：导入已确认 G2 清单，只补充 discovered 元数据；
+- `POST /onboarding/calibration/rounds`：建立与种子分离的 15–20 篇校准集，最多两轮；
+- `POST /onboarding/calibration/{round}/agent-labels`、`/user-labels`：分别完整提交，
+  不可覆盖；双方完成前隐藏参考答案与另一方标注；
+- `GET /onboarding/calibration/{round}`：完整后返回 Spearman、Top-5、主标签/
+  阅读方式一致率、争议及档案/rubric 建议；合成数据标记“仅流程验证”；
+- `POST /onboarding/calibration/{round}/confirm`：confirmed=true、确认者、摘要、
+  expected_revision=3、report_hash；低指标需 accept_deviations=true 和 known_biases；
+- `POST /onboarding/dry-runs`：提交运行参数、完整 scoring 配置与预选合成条目，
+  生成只展示的版本化日报（version 从 1 依次追加）；
+- `GET /onboarding/dry-runs/{version}`：查看 Markdown、参数、报告 hash 与反馈历史；
+- `POST /onboarding/dry-runs/{version}/feedback`：以 report_hash 绑定反馈，支持
+  too_many/too_few/inaccurate/wrong_category；accepted=true 须无未解决问题；
+- `POST /onboarding/dry-runs/{version}/confirm`：显式确认最新已认可日报，携带
+  confirmed=true、确认者、摘要、expected_revision=4、report_hash 和 feedback_hash；
+  原子保存选定配置/审计并通过 G4，预览和负面反馈不会激活流程；
+- `papersteward onboarding`：start/status、Markdown/JSON 提交、全文/版本差异审阅、
+  分角色标注、日报反馈与显式确认；`--out` 保存私有审阅快照，确认不会刷新依据；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
 - 结构化日志、`X-Request-ID`、统一错误响应；
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
-- 正式领域表与仓储：14 张表、部分唯一索引/CHECK/FK、事件与评分快照追加写；
+- 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration 表（head `0004`）；
+  部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
 - LLM 网关：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
 - Makefile、Docker Compose、GitHub Actions CI。
+
+## 初始化链路演示
+
+```bash
+.venv/bin/pytest tests/e2e/test_onboarding_gates.py -m e2e -q
+```
+
+该命令在临时 SQLite 和真实 localhost Uvicorn 上跑完 G1–G4、负面反馈与参数新版，
+验证 G4 前真实仓储入队/推送/归档均拒绝，确认后允许。没有正式发送动作。
+完整 CLI 演示（真实 CLI 子进程、独立临时库）：
+
+```bash
+.venv/bin/pytest tests/e2e/test_onboarding_cli_e2e.py -m e2e -q
+.venv/bin/papersteward onboarding --help
+.venv/bin/papersteward onboarding status
+```
+
+CLI 需要先启动 API；操作步骤、确认语义和恢复方法见
+[初始化 CLI 指南](docs/onboarding-cli.md)。本轮选择 CLI，浏览器可使用 API 的 `/docs`。
 
 ## 环境要求
 
@@ -198,6 +252,8 @@ make migrate-check
 - 应用启动**不会**自动建表或迁移；
 - 迁移 `0002` 已将 P0 的 `papers` / `runs` 替换为正式 `paper` / `run` 及 12 张领域表；
   升级会迁移 P0 的最小字段，降级只恢复空的 stub 表（正式数据不保留）；
+- 迁移 `0004` 保存两轮独立校准；`alembic downgrade 0003` 删除校准表，但保留已导入
+  文献、审计事件与门禁状态。完整回滚应停应用并恢复 S4 前备份，不能据降级假定 G3 撤回；
 - 测试使用临时 SQLite，不触碰本地 `var/papersteward.db`。
 
 ## Docker
@@ -258,12 +314,20 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1-S5/S6 完成 LLM 网关、FakeLLM 与阶段验收；真实 provider、真实文献源与 P2 onboarding 未开始；
-- Docker post-fix 镜像已启动验证：容器 healthy，`/health`、seed 后 `/papers` 正常；CI 运行证据仍缺；
-- 不采集真实文献、不调用真实 LLM、不生成摘要/评分/日报；FakeLLM 仅用于契约/演示；
-- API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
+- P1 完成领域/文档/LLM 网关；P2-S1–S6 完成初始化 API/CLI 至 G4，并通过本地阶段门；
+- P1 Docker/CI 已验收；P2 Docker 已独立验证，CI 未触发，未打 p2-done tag；
+- 不采集真实文献、不调用真实 LLM、不执行真实摘要/评分或正式日报发送；试运行展示固定 fixture；
+- `/papers` 只读；导入通过 onboarding API；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
 - Docker 健康检查使用 Python `urllib`，不依赖镜像内 curl；
+- 校准使用人工输入或固定 fixture/cassette，不自动生成“用户答案”，不调用真实模型；
+  角色分开提交用于避免界面泄题，当前无身份鉴权；rubric_version 是输入版本标识；
+- 合成校准示例为 `tests/fixtures/calibration/basic.json`：包含 cohort、agent_batch、
+  user_batch，分别提交；样本元数据由策展者提供，服务校验结构，不判断论文真实相关性；
+- 试运行示例：`tests/fixtures/dry_run/basic.json`；可读日报：
+  [digest.md](tests/fixtures/dry_run/digest.md)。日报只校验输入配额/标签/相关度，不运行排序；
+- 运行参数确认时间/时区、安静时段、暂停、主标签目标占比、渠道/隐私；配额/权重复用
+  scoring 配置。渠道限本地 Markdown，备注不外发；ACTIVE 不会自动发起外部调用；
 - 生产部署、备份/恢复、成本治理在 P8。
 
 ## 文档
@@ -272,6 +336,9 @@ docs/             # 设计与阶段文档
 - [系统设计方案](docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md)
 - [P0 阶段记录与交接](docs/phases/P0-baseline.md)
 - [P1 阶段记录与交接](docs/phases/P1-domain-documents-llm.md)
+- [P2 阶段记录与 P3 交接](docs/phases/P2-onboarding.md)
+- [P2 本地验收报告](docs/phases/P2-acceptance.md)
+- [初始化 CLI 操作指南](docs/onboarding-cli.md)
 - [ADR 0001：YAML front matter 解析](docs/adr/0001-yaml-front-matter.md)
 
 ## 安全

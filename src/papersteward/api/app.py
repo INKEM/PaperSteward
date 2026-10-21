@@ -11,6 +11,7 @@ from sqlalchemy.engine import Engine
 from papersteward import __version__
 from papersteward.api.errors import install_error_handlers
 from papersteward.api.middleware import RequestIdMiddleware
+from papersteward.api.onboarding import router as onboarding_router
 from papersteward.api.routes import router
 from papersteward.config import Settings, get_settings
 from papersteward.storage import create_db_engine, create_session_factory
@@ -46,6 +47,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.add_middleware(RequestIdMiddleware)
     install_error_handlers(app)
     app.include_router(router)
+    app.include_router(onboarding_router)
     return app
 
 
