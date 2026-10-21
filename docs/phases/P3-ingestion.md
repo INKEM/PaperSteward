@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1 完成并通过本地验收；S2–S7 未开始。日期：2026-10-22。
+> 状态：P3-S1/S2 完成并通过本地验收；S3–S7 未开始。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -126,3 +126,19 @@ PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:///$task_demo_dir/demo.db" make demo 
 rm -rf "$task_demo_dir"
 make secret-scan
 ```
+
+## S2 handoff（2026-10-22）
+
+- 分支 feat/p3-s2-query-generator（stacked 在 S1），无依赖/迁移。ADR 0008 冻结
+  any/all、字面排除短语、all/author/venue/team 查询字段；子方向按优先级稳定排序，
+  methods/data/关注列表补充召回，保序去重、预算截断，空输入/草案/漂移明确拒绝。
+- selected_profile 根据 G1 event 的精确 ID/version 取档案并核对正文/解析缓存；
+  不受无关已确认档案影响。生成函数不调用网络/LLM，也不改变档案或门禁。
+- unit + integration 定向演示命令：
+  `.venv/bin/pytest tests/unit/test_source_queries.py tests/integration/test_profile_query_selection.py -q`。
+- 能做：离线生成来源无关查询；不能做：真实查询编译/检索/语义扩写/入库。
+  回滚代码即可；S3 消费 QuerySpec 并转义字面值，不能将字段当原生查询指令。
+- 验证：定向 8 项通过；make check（ruff/strict mypy，607 passed）、
+  make test-integration（210 passed）、make migrate-check（base↔0004）、secret-scan、
+  diff --check 全部通过；使用 /dev/shm 独立测试目录，未触碰 var 数据。
+  本阶段 8 个文件；S1 API e2e 未受影响，P3 收尾再统一执行 e2e/demo。

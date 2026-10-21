@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P3 采集、去重与硬过滤（S1 来源契约与离线 harness 完成本地验收；卡片见 P3-ingestion.md）**；
-- 下一小阶段：**P3-S2 查询生成器（未开始）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
+- 当前：**P3 采集、去重与硬过滤（S1/S2 来源契约、离线 harness 与查询生成器完成本地验收；卡片见 P3-ingestion.md）**；
+- 下一小阶段：**P3-S3 arXiv 适配器与 HTTP 边界（未开始）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0004`（独立 onboarding 与 calibration 表）；G4 前禁止入队/推送/归档。
 

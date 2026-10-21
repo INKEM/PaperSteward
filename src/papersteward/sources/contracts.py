@@ -31,6 +31,9 @@ class QuerySpec(SourceModel):
     """来源无关的关键词输入；日期闭区间，max_results 为整次调用的候选上限。"""
 
     keywords: tuple[Text, ...] = Field(min_length=1)
+    operator: Literal["any", "all"] = "any"
+    exclude_keywords: tuple[Text, ...] = ()
+    field: Literal["all", "author", "venue", "team"] = "all"
     date_from: date | None = None
     date_to: date | None = None
     max_results: int = Field(default=100, ge=1, le=1000, strict=True)
