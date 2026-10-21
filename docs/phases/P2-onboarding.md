@@ -1,6 +1,6 @@
 # P2 初始化协商与确认门
 
-> 状态：P2-S1 完成（2026-10-21）；S2–S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
+> 状态：P2-S1–S2 完成（2026-10-21）；S3–S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
 
 ## 小阶段卡片
 
@@ -16,6 +16,33 @@
 | S6 | S1–S5 API → 最小 CLI/HTMX 流程与阶段验收 | 薄 UI；完整 G1–G4 路径；错误可操作 | 完整阶段门（含 secret-scan） | 高级交互、多用户 |
 
 S2–S6 开工时补充实际文件与 fixture 清单；不得据本表提前实现。
+
+## S2 执行卡（2026-10-21）
+
+- 目标：Agent/用户提交可解析的 Markdown 草案，用户审阅/编辑为新版本，再显式确认
+  档案并原子通过 G1。依赖 S1（已提交为 71ae62c），复用 P1 文档服务、解析器与 diff。
+- 输入：`tests/fixtures/profiles/basic.md`、`v2.md`、`invalid.md`；不生成虚构研究方向，
+  不调用真实模型。草案来自 Agent/用户 Markdown，系统返回最多 5 个协商问题。
+- 输出：`onboarding/profile.py`、扩展 `api/onboarding.py`；单元/集成测试；本交接、
+  CHANGELOG、README、AGENTS。无依赖与 schema 变更，head 保持 0003。
+- API：POST `/onboarding/profile/drafts`（content_md/profile_id/base_version）；
+  GET `/onboarding/profile/{id}/{version}`（全文、hash、G1 缺项、问题；可选 base_version 比较）；
+  POST `/onboarding/profile/{id}/{version}/confirm`（confirmed=true、用户、变更摘要、
+  expected_revision、content_hash）。确认者由本地用户提供，不引入鉴权。
+- 草案/编辑只允许 profile 阶段；编辑追加新版本，指定已存在的 base_version，展示
+  结构化 diff 与 Markdown diff，不覆盖旧版本。版本字符串不推断大小，确认精确指定
+  的版本；旧版本仍可被明确选中，不自动确认“最新”。
+- G1：重新解析正文事实源，不信任 parsed_json 缓存；核心问题/子方向/纳入标准复用
+  P1 校验，额外要求明确排除标准、阅读目标及子方向关键词。未完整草案可保存并协商，
+  不可确认；不提前检查 G4 的推送参数。全文 UTF-8 ≤128 KiB，不接受 YAML 锚点/别名。
+- 错误：语法/缺项 400（field/line）、不存在 404、错阶段/重复版本/过期 revision/hash
+  冲突 409、请求结构 422；全部沿用统一错误信封。失败不改变档案状态/G1/事件。
+- 测试：草案正反例、最多 5 个问题、版本 diff/旧版保留；完整 API 路径；拒绝不完整/
+  陈旧/重复确认、未 start、G1 后编辑、超大文档、缓存不一致、审计失败原子回滚。
+- 验收：`make check`、`make test-integration`、`make migrate-check`，可复制 API 演示。
+  不在范围：G2、校准、试运行、初始化 CLI/页面（S6）、再初始化与真实模型。
+- 回滚：无迁移；回退 S2 代码即可恢复 S1。新建档案版本保留，已通过 G1 的状态不
+  自动撤回；需要完整回到 S2 前状态时停止应用并恢复操作前数据库备份。
 
 ## S1 冻结契约与范围
 
@@ -54,7 +81,7 @@ curl -fsS http://127.0.0.1:8000/onboarding
 curl -fsS -X POST http://127.0.0.1:8000/onboarding/start
 ```
 
-### 不能做什么与 S2 输入
+### S1 结束时的限制与 S2 输入（历史交接）
 
 - 目前无外部通用确认端点、初始化 CLI/页面、业务校验器、种子导入、校准或日报。
   测试中的 ACTIVE 是合成流程证据，不代表真实业务初始化已验收。
@@ -101,4 +128,68 @@ TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/paperstewa
   加上失败与回滚测试、P1 迁移 head 断言更新、ADR/阶段卡片/交接与状态文档。
   无新增依赖，未推进 S2–S6；P1 既有表/schema 不变，freeze 测试保留旧契约并允许
   迁移追加新表。
+- P1 F5（Starlette/httpx 弃用警告）仍为非阻断依赖债务。
+
+## S2 验收与 S3 handoff
+
+### 现在能做什么
+
+- 通过三个 profile API 提交/编辑/审阅 Markdown 草案，再显式通过 G1。结构不合法的
+  草案返回带字段/行号的错误；结构合法但排除标准、阅读目标或关键词缺失时，允许
+  保存协商并返回缺项，不能确认。协商问题最多 5 个。
+- 编辑要求指定已有 base_version 并使用新版本号；旧版不可覆盖。响应同时提供
+  结构化 diff 和 Markdown diff，正文变更可审阅；GET 加 base_version 查询参数可
+  重现版本差异。版本字符串没有“大小”推断，
+  用户明确选择哪个版本就审阅/确认哪个版本。
+- content_hash 基于审阅响应中的持久化 Markdown（复用 P1 首尾空白规范化），
+  确认时应原样回传，不要对原始文件自行计算。确认同时校验 revision，防止陈旧提交。
+- 确认前重新解析 Markdown，检查缓存与 ID/版本一致性；档案确认/旧确认版归档/
+  文档事件/G1 事件/流程推进置于 S1 原子块中，任一步失败全部回滚。
+- P1 已确认且完整的文档可复用，不重复写 profile.confirmed；已归档文档不可通过 G1。
+- 不开放文件路径读取接口，不接真实 LLM。Agent 草案通过 Markdown API 提交；
+  研究方向的语义内容由用户/Agent 提供，系统不凭空推测研究方向。
+
+### 验收证据
+
+2026-10-21 本地 Python 3.12，DB 测试延续 S1 的 `/dev/shm` 临时文件库隔离方式：
+
+- `make check`：ruff format/check、strict mypy 通过；**399 passed**，1 e2e deselected。
+- `make test-integration`：**127 passed**。
+- S2 新增 **19** 个测试实例（6 单元 + 13 集成），包含完整 API 路径、文档 ID/版本
+  边界、缺项协商、过期 hash/revision、未明确确认、重复版本、缓存不一致、旧版归档、
+  已归档拒绝、事件失败回滚与 UTF-8 输入限长。
+- `make migrate-check`：upgrade/downgrade/upgrade 成功；模型一致性集成测试通过，
+  无迁移，head 仍为 0003。
+- `make e2e`：真实 Uvicorn walking skeleton **1 passed**。
+- S2 真实 Uvicorn 演示：合成 basic.md → v2.md → 全文审阅 → G1 确认，返回
+  `stage=taxonomy/revision=2/next_gate=g2`；重复确认返回 409；临时库随演示清理。
+- `make demo DEMO_PORT=8775`：临时库 health/papers 演示通过。
+- `make secret-scan`、`git diff --check`：通过；Docker/CI 本轮未重跑。
+
+可复制的专项验收（使用合成 fixture，不触碰用户库）：
+
+```bash
+.venv/bin/pytest tests/unit/test_onboarding_profile.py \
+  tests/integration/test_api_onboarding_profile.py -q \
+  --basetemp=/dev/shm/papersteward-p2-s2-demo
+```
+
+### S3 的直接输入与边界
+
+- 已就绪：G1 确认事件绑定 artifact_id/artifact_version，Profile 为 confirmed；S3
+  应据该事件加载精确档案版本，不能随意取另一个文档 ID 的 latest_confirmed。
+- 复用 `onboarding.service.confirm_gate` 接入 G2 可信校验器；分类法草案/编辑只允许
+  taxonomy 阶段。S3 需覆盖 5–8 主标签、种子覆盖率/均衡、边界例子与影响预览。
+- S2 的 G1 确认已固定为专门端点，外部请求不能指定任意 gate 或业务校验器。
+- 当前 G2–G4 保持未实现；没有初始化 CLI/页面、种子导入、校准/试运行、真实调用。
+  G1 后仍禁止正式入队/推送/归档；不要在 S3 中提前实现 S4/S5。
+- 重大方向变更与撤销初始化仍不在 S2；P1 通用文档命令不自动推进 G1。后续更新
+  已选定档案时，必须按再协商契约处理，不能把新文档版本视为当前 G1 已确认版本。
+
+### 风险、回滚与规模
+
+- 无新增依赖、迁移、P1 schema 修改。回退 S2 代码可恢复 S1 API；新增文档和确认
+  状态仍保留，若要撤销整个演示/初始化需停止应用并恢复操作前备份。
+- 修改 8 个文件；净变更超过 400 行指引，主要为 service/API 竖切、完整失败/原子性
+  测试及执行卡/交接文档。未修改 P1 通用解析/确认命令语义，未推进 S3。
 - P1 F5（Starlette/httpx 弃用警告）仍为非阻断依赖债务。
