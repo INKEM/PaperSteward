@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# 本地配置与数据
+.env
+.env.*
+!.env.example
+var/
+out/
+
+# 操作系统 / 编辑器
+.DS_Store
+.idea/
+.vscode/
