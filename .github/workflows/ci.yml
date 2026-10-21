@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Bootstrap
+        run: make bootstrap PYTHON=python
+
+      - name: Static checks and tests
+        run: make check
+
+      - name: Migration up/down/up
+        run: make migrate-check
+
+      - name: Walking skeleton e2e
+        run: make e2e
+
+      - name: Secret scan
+        run: make secret-scan
+
+  docker:
+    name: docker compose smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: docker compose config
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Start stack
+        run: docker compose up -d
+
+      - name: Wait for healthy
+        run: |
+          for _ in $(seq 1 30); do
+            container="$(docker compose ps -q papersteward)"
+            status="$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo starting)"
+            echo "health: $status"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+
+      - name: Smoke endpoints
+        run: |
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/papers
+
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v
