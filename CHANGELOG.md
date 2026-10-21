@@ -20,6 +20,11 @@
   GitHub Actions（Python 3.11/3.12 + Docker smoke）；README、AGENTS、CHANGELOG；
   真实 Uvicorn walking-skeleton e2e。
 
+### Fixed
+
+- F1：未处理异常 500 响应缺少 `X-Request-ID` 响应头；统一错误响应现在回写
+  `X-Request-ID`，并增加合同测试与“未迁移数据库触发 500”的集成回归测试。
+
 ### Changed
 
 - `docs/phases/P0-baseline.md` 记录了 P0 各小阶段的契约、验收证据与后续交接。

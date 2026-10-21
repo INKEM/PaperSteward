@@ -64,6 +64,17 @@ def test_health_is_degraded_when_database_unavailable(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_unhandled_500_includes_request_id_header(sqlite_engine: Engine) -> None:
+    app = create_app(engine=sqlite_engine)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/papers", headers={"X-Request-ID": "req-fail-500"})
+
+    assert response.status_code == 500
+    assert response.headers["X-Request-ID"] == "req-fail-500"
+    assert response.json()["error"]["request_id"] == "req-fail-500"
+
+
 def test_request_id_is_generated_and_invalid_values_are_replaced(
     api_client: TestClient,
 ) -> None:

@@ -1,6 +1,7 @@
 # P0 工程基线与 Walking Skeleton
 
-> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：P0-S1–P0-S5 交付完成；Docker 验收待支持环境
+> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：P0-S1–P0-S5 完成；Docker 手动验收通过；F1 已修复；CI 运行证据待补
+> **独立验收**：[P0-acceptance.md](P0-acceptance.md)（2026-10-21，本地 + Docker 通过；F1 已修复）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P0
 > **最后更新**：2026-10-21
 
@@ -17,7 +18,7 @@
 | P0-S2 | DB 连接、Alembic、临时测试库 | **完成** | S1 | 迁移 up/down；仓储 CRUD |
 | P0-S3 | API 骨架、health、papers stub | **完成** | S1/S2 | `curl /health`；`GET /papers` |
 | P0-S4 | CLI 骨架、demo seed | **完成** | S1–S3 | `papersteward doctor`；`demo seed` |
-| P0-S5 | Makefile、Docker、CI、AGENTS/README | **完成（Docker 待验证）** | S1–S4 | `make check` / `make demo` |
+| P0-S5 | Makefile、Docker、CI、AGENTS/README | **完成** | S1–S4 | `make check` / `make demo` |
 
 > **顺序说明**：`make check` 属于 P0-S5，因此 S1–S4 先使用等价的分项命令验收；
 > S5 再把它们固化为 Makefile 与 CI，不改变各分项检查的语义。
@@ -522,14 +523,14 @@ Docker Compose 提供单机运行方式，CI 在干净环境复验。
 
 ```text
 make bootstrap          OK（安装、.env、alembic upgrade head）
-make check              83 passed, 1 deselected（e2e 由单独目标执行）
-make test-integration   44 passed
+make check              84 passed, 1 deselected（e2e 由单独目标执行）
+make test-integration   45 passed
 make migrate-check      upgrade/downgrade/upgrade OK
 make e2e                1 passed
 make demo               health=ok、papers 显示 p001、API 自动停止
 make secret-scan        OK
-ruff format --check     48 个 Python 文件
-mypy (strict)           30 个源文件无错误
+ruff format --check     49 个 Python 文件
+mypy (strict)           31 个源文件无错误
 ```
 
 `make demo` 输出摘要：
@@ -541,27 +542,30 @@ mypy (strict)           30 个源文件无错误
 
 Docker 验收状态：
 
-- 本机没有 Docker CLI/daemon，**未执行** `docker compose up --build`；
-- 已通过 `dockerfile-parse` 检查 Dockerfile 结构、YAML 解析 Compose/CI、
-  `sh -n` 检查 entrypoint；Compose healthcheck 与 CI Docker smoke job 已配置；
-- 因此不声称 Docker 健康检查已通过；tag 与 Docker 验收待有 Docker 的环境/CI 完成。
+- 2026-10-21 用户在有 Docker 的环境手动检查通过（Compose 构建/启动、容器迁移、
+  `/health`、`/papers`）；
+- 本机没有 Docker daemon，因此未在验收 agent 环境重复构建；CI 的 Docker smoke
+  job 保留为持续回归；
+- F1 已修复：统一错误响应自身回写 `X-Request-ID`，覆盖最外层 500；
+  合同测试与集成测试均增加回归断言。
 
 全新 clone 验收（2026-10-21）：
 
 - `git clone --no-hardlinks . <tmp>` 后按 README 执行
   `make bootstrap PYTHON=python3.12` 成功；
-- 同一 clone 中 `make check`（83 passed / 1 deselected）、`make migrate-check`、
+- 同一 clone 中 `make check`（84 passed / 1 deselected）、`make migrate-check`、
   `make e2e`、`make secret-scan`、`make demo` 全部通过；
 - 演示返回 `p001`，clone 工作区保持干净（`.env`/`var` 均被忽略）。
 
-测试数量备注：`make check` 排除 e2e，所以是 83 个；`make e2e` 单独跑 1 个；
-完整 `pytest -q` 会运行 84 个。唯一警告是上游 `starlette.testclient` 的
+测试数量备注：`make check` 排除 e2e，所以是 84 个；`make e2e` 单独跑 1 个；
+完整 `pytest -q` 会运行 85 个。唯一警告是上游 `starlette.testclient` 的
 `httpx2` 迁移提示。
 
 ### 7.5 已知限制与偏差
 
 - S5 是工程收尾，文件数超过“≤8 个文件”指引；没有新增业务语义。
-- Docker 未本机验证；这是当前唯一未关闭的 P0 验收项，不能在 tag 时声称通过。
+- Docker 已由用户手动验证；本仓库 CI 的 Docker smoke job 尚无运行证据。
+- F1 已修复；500 响应现在同时包含错误体 `request_id` 与 `X-Request-ID` 响应头。
 - `make demo` 依赖 `curl`，并向默认数据库写入演示数据；重复执行幂等。
 - `make secret-scan` 是轻量正则扫描，不等同于专业密钥扫描器。
 - `make bootstrap` 默认使用 `python3`；若系统 Python <3.11，需
@@ -581,12 +585,14 @@ Docker 验收状态：
 - [x] `make demo` 可复现；
 - [x] `make secret-scan` 通过；
 - [x] 全新 clone 按 README 完成 bootstrap/check/demo 验收；
+- [x] F1（500 响应 `X-Request-ID`）修复并有回归测试；
+- [x] Docker Compose 手动验收通过（用户 2026-10-21 确认）；
 - [x] README / AGENTS / CHANGELOG / 阶段 handoff 已更新；
-- [ ] Docker Compose 健康检查（本机无 Docker；待 CI Docker job 或支持环境）；
-- [ ] tag `p0-done`（待 Docker 验收关闭后再打）。
+- [ ] CI `quality` / `docker` job 运行证据（待推送/触发）；
+- [ ] tag `p0-done`（待 CI 运行证据补齐后）。
 
-> 结论：P0 的代码与本地可执行验收已完成；Docker 容器验收尚未取得证据，因此
-> P0 不标记为完全关闭，也不打 `p0-done`。
+> 结论：P0 的本地可执行验收、Docker 手动验收与 F1 修复均已完成；CI 运行记录
+> 尚未取得，因此暂不打 `p0-done`。代码与文档已达到交接 P1 的状态。
 
 ### 8.2 交接给 P1
 
@@ -595,7 +601,7 @@ Docker 验收状态：
 - 配置、日志、错误响应、SQLite/Alembic、API、CLI 的稳定 P0 骨架；
 - `make bootstrap/check/test-integration/migrate-check/e2e/demo`；
 - 临时数据库 fixture 与真实 Uvicorn e2e；
-- Docker/CI 工程模板（Docker 待 CI 验证）；
+- Docker/CI 工程模板（Docker 已手动验证；CI 运行证据待补）；
 - 明确的 stub 表边界：`papers` / `runs` 不在 P1 前扩展。
 
 **P1 需要完成**

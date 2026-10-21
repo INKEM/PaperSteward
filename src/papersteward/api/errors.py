@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from papersteward.api.constants import REQUEST_ID_HEADER
 from papersteward.errors import AppError, ErrorBody, ErrorCode, ErrorResponse
 from papersteward.observability.logging import (
     get_request_id,
@@ -42,18 +43,24 @@ def _response(
     headers: Mapping[str, str] | None = None,
     request_id: str | None = None,
 ) -> JSONResponse:
+    resolved_request_id = request_id or get_request_id()
+    response_headers = dict(headers) if headers else {}
+    if resolved_request_id:
+        # 500 由最外层 ServerErrorMiddleware 处理，不会经过 RequestIdMiddleware，
+        # 因此错误响应自身必须回写 X-Request-ID。
+        response_headers[REQUEST_ID_HEADER] = resolved_request_id
     body = ErrorResponse(
         error=ErrorBody(
             code=code,
             message=message,
             details=details,
-            request_id=request_id or get_request_id(),
+            request_id=resolved_request_id,
         )
     )
     return JSONResponse(
         status_code=status_code,
         content=body.model_dump(mode="json"),
-        headers=dict(headers) if headers else None,
+        headers=response_headers or None,
     )
 
 

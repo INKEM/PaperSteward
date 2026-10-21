@@ -145,6 +145,7 @@ def test_unhandled_exception_hides_details_but_logs(client: TestClient) -> None:
     assert error["message"] == "服务器内部错误，请查看日志"
     assert "secret-internal-detail" not in response.text
     assert error["request_id"] == "test-request"
+    assert response.headers["X-Request-ID"] == "test-request"
 
 
 def test_conflict_error_keeps_status_and_details(client: TestClient) -> None:
