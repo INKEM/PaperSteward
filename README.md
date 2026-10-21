@@ -14,7 +14,7 @@ P2-S3 已接入分类法草案、覆盖率/均衡/边界校验、影响预览和
 P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 确认，进入 dry_run。
 P2-S5 已接入参数、版本化试运行日报、反馈和 G4 显式确认，确认后进入 ACTIVE。
 P2-S6 已提供最小初始化 CLI 与完整链路验收；当前没有真实发送器或调度器。
-P2 本地阶段门通过，Docker/CI 本轮未验证；下一阶段为 P3。
+P2 本地阶段门与 Docker 已通过；CI 仍未触发，阶段 tag 待 CI；下一阶段为 P3。
 详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
 
 ## 当前能力
@@ -315,7 +315,7 @@ docs/             # 设计与阶段文档
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
 - P1 完成领域/文档/LLM 网关；P2-S1–S6 完成初始化 API/CLI 至 G4，并通过本地阶段门；
-- P1 Docker/CI 已验收；本轮 P2 Docker daemon 无访问权限，CI 未触发，未打 p2-done tag；
+- P1 Docker/CI 已验收；P2 Docker 已独立验证，CI 未触发，未打 p2-done tag；
 - 不采集真实文献、不调用真实 LLM、不执行真实摘要/评分或正式日报发送；试运行展示固定 fixture；
 - `/papers` 只读；导入通过 onboarding API；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；

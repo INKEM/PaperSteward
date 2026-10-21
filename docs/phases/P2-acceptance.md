@@ -2,8 +2,12 @@
 
 日期：2026-10-22；Python 3.12；head 0004；S6 基线 `72336df`。
 
-结论：**P2-S1–S6 实现与本地阶段门通过，可交接 P3**。Docker daemon 当前不可访问，
-CI 本轮未触发；未声称 Docker/CI 通过，未打 p2-done tag。
+> **独立复核（2026-10-22）**：本地阶段门与全新 clone 通过；Docker build/run
+> 已在当前 `f3b4a1b` 上独立验证；CI 尚无可归属于 P2 的运行证据。详见
+> [P2 独立验收报告](P2-independent-acceptance.md)。
+
+结论：**P2-S1–S6 实现与本地阶段门通过，Docker 已闭环，可交接 P3**。CI 本轮
+仍未触发；未声称 CI 通过，未打 p2-done tag。
 
 ## 需求与证据
 
@@ -34,9 +38,9 @@ CI 本轮未触发；未声称 Docker/CI 通过，未打 p2-done tag。
 | make demo | 临时库迁移/seed/health/papers 正常，API 自动停止 |
 | make secret-scan / git diff --check | 通过 |
 | 操作指南与 handoff | docs/onboarding-cli.md；P2-onboarding.md 的 S6/P3 handoff |
-| Docker Compose 配置 | docker compose config --quiet 通过 |
-| Docker build/run | **未验证**：socket permission denied；sudo 被 no-new-privileges 禁止 |
-| CI / tag | **本轮未触发 / 未打 tag**；P1 历史 CI 不能替代当前提交证据 |
+| Docker Compose 配置 | 通过；独立复核执行 `docker compose config --quiet` |
+| Docker build/run | **通过（独立复核）**：当前 `f3b4a1b` 镜像构建成功；UID 10001、healthy、`/health`、`/papers`、`/onboarding` start 正常 |
+| CI / tag | **P2 CI 仍未触发 / 未打 tag**；P1 历史 CI 不能替代当前提交证据 |
 
 SQLite 验证全部使用 `/dev/shm` 下 pytest tmp_path/临时库，以规避当前工作区 fsync
 阻塞；没有更改同步设置或写 var/papersteward.db。可复制命令见 P2 阶段文档 S6。
@@ -50,4 +54,4 @@ SQLite 验证全部使用 `/dev/shm` 下 pytest tmp_path/临时库，以规避�
 - 保留 P1 F5（httpx 弃用警告）、F3（失败 usage 回归断言）非阻断债务。
 - S6 无依赖/迁移；整体 P2 新增 0003/0004。不要为撤销 S6 降级迁移；完整撤销初始化
   要先停止应用、恢复操作前备份。单纯回代码/删除快照不会撤销状态，旧枚举也不认识新事件。
-- 没有本轮已知 P0/P1 阻断缺陷；环境中无法完成的 Docker/CI 证据明确留待复核。
+- 没有本轮已知 P0/P1 阻断缺陷；Docker 已独立复核，CI 证据仍留待复核。
