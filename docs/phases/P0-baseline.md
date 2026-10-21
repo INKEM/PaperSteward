@@ -58,6 +58,7 @@
 | `PAPERSTEWARD_TIMEZONE` | `Asia/Shanghai` | IANA 时区名 |
 
 - `Settings.db_url` 是 S2 使用的 SQLAlchemy 连接串；`ensure_data_dir()` 负责创建目录。
+- 时区通过 `zoneinfo` 校验；依赖 `tzdata` 作为系统时区库缺失时（如 slim 容器）的回退。
 - 配置错误由 `format_settings_error()` 转成带环境变量名的中文提示，供 S4 `doctor` 使用。
 - 非法端口、时区、日志级别、枚举值在进程启动时直接失败，不做静默降级。
 
