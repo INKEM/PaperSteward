@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1–S5 完成并通过本地验收；S6/S7 未开始。日期：2026-10-22。
+> 状态：P3-S1–S6 完成并通过本地验收；S7 未开始。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -191,4 +191,19 @@ make secret-scan
 - 演示：pytest tests/contract/test_semantic_scholar_adapter.py；新增11项契约案例。
   能做：离线召回与来源元数据解析；不能做：引文网络/摘要生成/生产入库。
 - 回滚本阶段代码即可；DB head0004。验收：make check（ruff/strict mypy，650 passed）、test-integration（210 passed）、
+  migrate-check（base↔0004）、secret-scan、diff --check 通过，沿用 /dev/shm 临时测试库。
+
+## S6 handoff（2026-10-22）
+
+- 分支 feat/p3-s6-canonical-dedupe（stacked S5），ADR 0011，无依赖/迁移。
+- DOI/arXiv/标题/作者年份venue/摘要近似五类去重，记录原因与全部provenance；
+  正式版字段优先、保留最早日期，稳定 canonical ID；字面摘要5词shingle替代embedding，
+  不声称语义模型已实现。强ID冲突阻止弱匹配，无ID桥接不得串联两个已知冲突组。
+- API：canonicalize、duplicate_reason、deduplicate → DedupeGroup（candidate/members/
+  reasons/provenances/canonical_id）。纯转换，不改状态/库/归档。S7仍须先查已有库内
+  文献与source记录，不能仅按新canonical_id创建，避免新DOI导致重复。
+- 演示：pytest tests/unit/test_dedupe.py tests/contract/test_canonical_candidates.py；10项
+  案例含跨三源/版本合并/反例/强ID桥接/顺序稳定性。未实现跨语言语义相似或大规模索引。
+- 规模：7文件，超过400行指引部分为首次5类策略/分层测试/ADR与交接；无S7代码。
+  回滚本次代码即可。make check（ruff/strict mypy，660 passed）、test-integration（210 passed）、
   migrate-check（base↔0004）、secret-scan、diff --check 通过，沿用 /dev/shm 临时测试库。
