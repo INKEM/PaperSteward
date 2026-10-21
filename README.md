@@ -191,6 +191,9 @@ docker compose down
 ```
 
 - 容器启动时先执行 `alembic upgrade head`；
+- 镜像构建时会为非 root 运行用户补齐源码/迁移的读权限，避免宿主严格 umask
+  导致 Alembic `PermissionError`；修改 Dockerfile 后请用 `docker compose up --build`
+  重建；
 - 数据保存在 `papersteward_data` 命名卷；
 - 端口只绑定 `127.0.0.1`；
 - 删除数据卷：`docker compose down -v`。

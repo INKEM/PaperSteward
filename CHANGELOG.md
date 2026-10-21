@@ -34,6 +34,9 @@
 
 ### Fixed
 
+- Docker：宿主 umask 077 时源文件/迁移可能以 `600` 进入镜像，非 root 的
+  `papersteward` 用户无法读取 `/app/src`，Alembic 启动报 `PermissionError`。
+  Dockerfile 在切换用户前统一补齐 `a+rX`，并规范化工作区文件权限。
 - P0 F1：未处理异常 500 响应缺少 `X-Request-ID` 响应头；统一错误响应现在回写
   `X-Request-ID`，并增加合同测试与“未迁移数据库触发 500”的集成回归测试。
 - P1-S1–S3 验收返工 F1：taxonomy 确认前重新校验 5–9 主标签结构，非法 draft 不能
