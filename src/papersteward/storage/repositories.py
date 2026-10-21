@@ -34,7 +34,14 @@ from papersteward.core.entities import (
     utc_now,
 )
 from papersteward.core.enums import DocumentStatus, PaperStatus, RunStatus
-from papersteward.core.invariants import ensure_score_snapshot_append_only
+from papersteward.core.errors import InvariantViolation
+from papersteward.core.invariants import (
+    ensure_event_appended,
+    ensure_score_snapshot_append_only,
+    ensure_secondary_tag_limit,
+    ensure_single_filing_bucket,
+    ensure_single_primary_tag,
+)
 from papersteward.core.state_machine import (
     PAPER_STATUS_EVENTS,
     transition_document,
@@ -129,7 +136,6 @@ class PaperRepository(_Repository):
         if row is None:
             return None
         updated = transition_paper(paper_from_row(row), target)
-        row.status = updated.status.value
         event = Event(
             id=event_id,
             event_type=PAPER_STATUS_EVENTS[target],
@@ -137,22 +143,40 @@ class PaperRepository(_Repository):
             paper_id=paper_id,
             payload_json=dict(payload or {}),
         )
-        self._session.add(event_to_row(event))
+        # 先校验/追加事件，再更新状态；回填时间不会留下半更新状态。
+        EventRepository(self._session).append(event)
+        row.status = updated.status.value
         self._flush()
         return updated
 
 
 class PaperTagRepository(_Repository):
-    """文献标签分配。"""
+    """文献标签分配。
+
+    写入后按聚合约验重新检查“恰好一个主标签 + 副标签 0–5 条”。因此首次写入
+    必须是主标签；中间态非法时调用方必须回滚。
+    """
+
+    def _validate_paper(self, paper_id: str) -> None:
+        tags = self.list_for_paper(paper_id)
+        ensure_single_primary_tag(tags, paper_id=paper_id)
+        ensure_secondary_tag_limit(tags, paper_id=paper_id)
 
     def add(self, tag: PaperTag) -> PaperTag:
         self._session.add(paper_tag_to_row(tag))
         self._flush()
+        self._validate_paper(tag.paper_id)
         return tag
 
     def add_many(self, tags: Sequence[PaperTag]) -> tuple[PaperTag, ...]:
+        if not tags:
+            return ()
+        paper_ids = {tag.paper_id for tag in tags}
+        if len(paper_ids) != 1:
+            raise InvariantViolation("paper_tag.paper_id", "批量标签必须属于同一篇文献")
         self._session.add_all(paper_tag_to_row(tag) for tag in tags)
         self._flush()
+        self._validate_paper(tags[0].paper_id)
         return tuple(tags)
 
     def list_for_paper(self, paper_id: str) -> list[PaperTag]:
@@ -165,16 +189,29 @@ class PaperTagRepository(_Repository):
 
 
 class PaperBucketRepository(_Repository):
-    """文献与主题桶/特殊桶的关系。"""
+    """文献与主题桶/特殊桶的关系。
+
+    写入后校验每篇恰好一个 filing；首次写入必须是 filing，membership 可后加。
+    """
+
+    def _validate_paper(self, paper_id: str) -> None:
+        ensure_single_filing_bucket(self.list_for_paper(paper_id), paper_id=paper_id)
 
     def add(self, bucket: PaperBucket) -> PaperBucket:
         self._session.add(paper_bucket_to_row(bucket))
         self._flush()
+        self._validate_paper(bucket.paper_id)
         return bucket
 
     def add_many(self, buckets: Sequence[PaperBucket]) -> tuple[PaperBucket, ...]:
+        if not buckets:
+            return ()
+        paper_ids = {bucket.paper_id for bucket in buckets}
+        if len(paper_ids) != 1:
+            raise InvariantViolation("paper_bucket.paper_id", "批量桶关系必须属于同一篇文献")
         self._session.add_all(paper_bucket_to_row(bucket) for bucket in buckets)
         self._flush()
+        self._validate_paper(buckets[0].paper_id)
         return tuple(buckets)
 
     def list_for_paper(self, paper_id: str) -> list[PaperBucket]:
@@ -246,6 +283,10 @@ class EventRepository(_Repository):
     """只追加的事件日志。"""
 
     def append(self, event: Event) -> Event:
+        """追加事件；拒绝早于最后一条事件的时间，保持日志单调。"""
+        last = self.recent(limit=1)
+        if last:
+            ensure_event_appended(last, event)
         self._session.add(event_to_row(event))
         self._flush()
         return event

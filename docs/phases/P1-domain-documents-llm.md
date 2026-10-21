@@ -1,6 +1,7 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S3 完成；P1-S4–S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S3 完成（验收 F1–F5 已返工）；P1-S4–S6 待执行
+> **独立验收**：[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（2026-10-21，有条件通过；F1–F5 返工见 §7）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
 > **上一阶段交接**：[P0-baseline.md](P0-baseline.md) §8.2
@@ -453,13 +454,14 @@ papersteward doc diff profile 1.0 1.1 --id demo-profile
 
 2026-10-21 在本地执行：
 
-- `make check`：**256 passed**，ruff/mypy 通过；
-- `make test-integration`：**73 passed**；
+- `make check`：**267 passed**，ruff/mypy 通过；
+- `make test-integration`：**83 passed**；
+- `pytest -q`（含 e2e）：**268 passed**；
 - `make migrate-check`：upgrade/downgrade/upgrade OK；
 - `make e2e`：1 passed；
 - `make demo DEMO_PORT=8768`：`/health` 与 `/papers` 正常；
 - `make secret-scan`：OK；
-- `pytest --cov=papersteward.documents`：**97%**；
+- `pytest --cov=papersteward.documents`：**96%**；
 - 演示命令 `profile validate` / `taxonomy validate` / `doc diff` 均通过；
 - 新增运行时依赖仅 PyYAML（已有 ADR），未访问网络或真实 LLM。
 
@@ -485,7 +487,8 @@ papersteward doc diff profile 1.0 1.1 --id demo-profile
 
 - 文档 parser 的 Pydantic 模式、字段级错误与 fixture 组织方式；
 - `Config` 表与 `ConfigRepository`（版本化追加写）；
-- `EventRepository` 可写 `config.updated`；
+- `EventRepository` 可写 `config.updated`，并强制事件时间非递减；
+- 标签/桶仓储写入已做聚合校验（恰好一个主标签/filing、副标签 ≤5）；
 - `DocumentError` 可作为后续 YAML/schema 错误的统一外壳。
 
 **P1-S4 需要完成**
@@ -511,7 +514,46 @@ papersteward doc diff profile 1.0 1.1 --id demo-profile
 - 配置版本只追加，不覆盖历史；`config.updated` 事件写入同一事务；
 - 不引入除 PyYAML 之外的 YAML/schema 运行时依赖，除非另有 ADR。
 
-## 7. 风险与待确认
+## 7. P1-S1–S3 验收返工记录
+
+独立验收报告见 [P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)。F1–F5 已在
+P1-S3 分支内返工；F6（httpx 弃用警告）与 F7（Docker/CI 运行证据）不属于本轮
+代码缺陷，继续保持为依赖/发布债务。
+
+| ID | 状态 | 修复 | 回归测试 |
+|----|------|------|----------|
+| F1 | **已修复** | `confirm_taxonomy()` 在确认前调用 `ensure_taxonomy_shape()`；4/10 主标签 draft 不能确认，且不写状态/事件 | `test_confirm_taxonomy_revalidates_primary_tag_count` |
+| F2 | **已修复** | 正文中 `## T06` 等“代码但无名称”的标题抛 `DocumentError`（field=`taxonomy.heading`，带行号）；`## 使用规则` 等非标签标题仍忽略 | `test_malformed_tag_heading_is_rejected` |
+| F3 | **已修复** | `EventRepository.append()` 比较最后事件时间并拒绝回填；`PaperRepository.transition()` 先追加事件再改状态，失败不留半更新 | `test_event_log_is_queryable_and_append_only`、`test_transition_rejects_backdated_event_without_changing_status` |
+| F4 | **已修复** | 文档 DB 子命令捕获 Pydantic `ValidationError`，复用 `format_settings_error()` 输出 `PAPERSTEWARD_*` 提示，不再打印 traceback | `test_document_db_commands_report_settings_errors`（import/confirm/archive/diff） |
+| F5 | **已修复** | `PaperTagRepository` 写入后校验恰好一个主标签 + 副标签 ≤5；`PaperBucketRepository` 校验恰好一个 filing；批量写入要求同一文献 | `test_tag_repository_requires_primary_before_secondaries_and_caps_count`、`test_tag_repository_add_many_rejects_oversized_or_mixed_batch`、`test_bucket_repository_requires_filing_before_memberships` |
+
+### 7.1 行为变化
+
+- 仓储标签/桶写入是聚合校验：首次写标签必须是 primary，首次写桶关系必须是
+  filing；非法中间态由调用方回滚。P3/P4 的 classification service 应使用
+  `add_many`/`set_classification` 风格的整批写入，而不是逐条制造非法状态。
+- 事件日志全局要求 `created_at` 非递减；回填旧时间会抛
+  `InvariantViolation("event.created_at", ...)`。
+- 分类法确认会重新校验 5–9 个主标签；不能再用仓储直接构造可确认的非法分类法。
+- 格式错误的 `## Txx` 标题不再静默丢弃，validate/import 会失败并定位行号。
+
+### 7.2 验收结果（返工后）
+
+- `make check`：**267 passed**，ruff/mypy 通过；
+- `make test-integration`：**83 passed**；
+- `pytest -q`（含 e2e）：**268 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `make e2e`：1 passed；
+- `make demo`：`/health` 与 `/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=papersteward.documents`：**96%**；
+- 未新增依赖；未访问网络或真实 LLM。
+
+验收报告中的关闭条件 1–4 已全部处理；P1-S1–S3 可交回独立验收复核。F6/F7 仍按
+原报告保留。
+
+## 8. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
@@ -526,3 +568,5 @@ papersteward doc diff profile 1.0 1.1 --id demo-profile
   `content_md`；P2 若需要结构化边界案例，应扩展模型并走迁移/ADR。
 - **版本字符串**：不解析 semver；`1.10` 与 `1.9` 的排序由用户输入决定，P2 需要
   版本序号时再引入明确规则。
+- **F6**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
+- **F7**：Docker/CI 运行证据仍未在本地关闭；打发布 tag 前必须补齐。

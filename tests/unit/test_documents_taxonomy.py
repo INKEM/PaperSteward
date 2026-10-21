@@ -164,3 +164,16 @@ def test_missing_required_section_fields(missing_line: str, message: str, field:
 
     assert exc_info.value.field == field
     assert message in str(exc_info.value)
+
+
+def test_malformed_tag_heading_is_rejected() -> None:
+    path = FIXTURES / "taxonomies" / "basic.md"
+    text = path.read_text(encoding="utf-8") + "\n## T06\n"
+
+    with pytest.raises(DocumentError) as exc_info:
+        parse_taxonomy(text, source=str(path))
+
+    error = exc_info.value
+    assert error.field == "taxonomy.heading"
+    assert error.line is not None
+    assert "缺少名称" in error.message

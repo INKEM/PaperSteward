@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from papersteward.config import format_settings_error
 from papersteward.core.entities import ResearchProfile, Taxonomy
 from papersteward.core.errors import DomainError
 from papersteward.documents import (
@@ -54,6 +56,10 @@ def _session() -> Iterator[Session]:
 
 def _print_error(exc: Exception) -> None:
     print(f"错误：{exc}", file=sys.stderr)
+
+
+def _print_settings_error(exc: ValidationError) -> None:
+    print(format_settings_error(exc), file=sys.stderr)
 
 
 def _parse_time(value: str | None, option: str) -> datetime | None:
@@ -141,6 +147,9 @@ def run_import(kind: DocumentKind, path: str, *, document_id: str | None) -> int
     except (DocumentError, OSError, DomainError) as exc:
         _print_error(exc)
         return 1
+    except ValidationError as exc:
+        _print_settings_error(exc)
+        return 1
     except SQLAlchemyError:
         _print_error(ValueError(_MIGRATION_HINT))
         return 1
@@ -174,6 +183,9 @@ def run_confirm(
                 document = confirm_profile(session, document_id, version, confirmed_at=timestamp)
             else:
                 document = confirm_taxonomy(session, document_id, version, confirmed_at=timestamp)
+    except ValidationError as exc:
+        _print_settings_error(exc)
+        return 1
     except (DocumentError, OSError, DomainError, ValueError) as exc:
         _print_error(exc)
         return 1
@@ -200,6 +212,9 @@ def run_archive(
                 document = archive_profile(session, document_id, version, archived_at=timestamp)
             else:
                 document = archive_taxonomy(session, document_id, version, archived_at=timestamp)
+    except ValidationError as exc:
+        _print_settings_error(exc)
+        return 1
     except (DocumentError, OSError, DomainError, ValueError) as exc:
         _print_error(exc)
         return 1
@@ -265,6 +280,9 @@ def run_diff(
             if kind == "profile"
             else diff_taxonomies(left_document, right_document)
         )
+    except ValidationError as exc:
+        _print_settings_error(exc)
+        return 1
     except (DocumentError, OSError, DomainError, ValueError) as exc:
         _print_error(exc)
         return 1

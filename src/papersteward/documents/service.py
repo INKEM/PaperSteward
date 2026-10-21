@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from papersteward.core.entities import Event, ResearchProfile, Taxonomy, utc_now
 from papersteward.core.enums import DocumentStatus, EventType
 from papersteward.core.errors import DomainValidationError
+from papersteward.core.invariants import ensure_taxonomy_shape
 from papersteward.documents.profile import parse_profile
 from papersteward.documents.taxonomy import parse_taxonomy
 from papersteward.storage.repositories import (
@@ -145,8 +146,11 @@ def confirm_taxonomy(
     """确认 taxonomy；若存在旧确认版本则先归档并追加事件。"""
     repository = TaxonomyRepository(session)
     events = EventRepository(session)
-    if repository.get(taxonomy_id, version) is None:
+    taxonomy = repository.get(taxonomy_id, version)
+    if taxonomy is None:
         raise DomainValidationError("taxonomy", f"分类法 {taxonomy_id} v{version} 不存在")
+    # 仓储可直接构造 draft，确认时必须重新校验 5–9 主标签等结构不变量。
+    ensure_taxonomy_shape(taxonomy)
     timestamp = confirmed_at or utc_now()
 
     previous = repository.latest_confirmed(taxonomy_id)

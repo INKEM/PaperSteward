@@ -289,10 +289,10 @@ def test_event_log_is_queryable_and_append_only(db_session: Session) -> None:
     papers = PaperRepository(db_session)
     events = EventRepository(db_session)
     papers.add(_paper())
+    events.append(Event(id="e1", event_type=EventType.PAPER_PUSHED, created_at=NOW))
     events.append(
         Event(id="e2", event_type=EventType.PAPER_DONE, created_at=NOW + timedelta(seconds=1))
     )
-    events.append(Event(id="e1", event_type=EventType.PAPER_PUSHED, created_at=NOW))
     db_session.commit()
 
     assert [event.id for event in events.recent(limit=10)] == ["e2", "e1"]
@@ -300,8 +300,24 @@ def test_event_log_is_queryable_and_append_only(db_session: Session) -> None:
     assert not hasattr(events, "update")
     assert not hasattr(events, "delete")
 
+    with pytest.raises(InvariantViolation, match="按时间追加"):
+        events.append(
+            Event(
+                id="e0",
+                event_type=EventType.PAPER_DONE,
+                created_at=NOW - timedelta(seconds=1),
+            )
+        )
+    db_session.rollback()
+
     with pytest.raises(IntegrityError):
-        events.append(Event(id="e1", event_type=EventType.PAPER_DONE))
+        events.append(
+            Event(
+                id="e1",
+                event_type=EventType.PAPER_DONE,
+                created_at=NOW + timedelta(seconds=2),
+            )
+        )
     db_session.rollback()
 
 
@@ -554,4 +570,98 @@ def test_score_snapshot_primary_key_enforces_daily_uniqueness(db_session: Sessio
     db_session.add(score_snapshot_to_row(_score()))
     with pytest.raises(IntegrityError):
         db_session.flush()
+    db_session.rollback()
+
+
+def test_transition_rejects_backdated_event_without_changing_status(db_session: Session) -> None:
+    papers = PaperRepository(db_session)
+    events = EventRepository(db_session)
+    papers.add(_paper())
+    events.append(
+        Event(
+            id="e-later", event_type=EventType.PAPER_PUSHED, created_at=NOW + timedelta(seconds=1)
+        )
+    )
+
+    with pytest.raises(InvariantViolation, match="按时间追加"):
+        papers.transition("p001", PaperStatus.DEDUPED, event_id="e-old", occurred_at=NOW)
+
+    current = papers.get("p001")
+    assert current is not None
+    assert current.status is PaperStatus.DISCOVERED
+    db_session.rollback()
+
+
+def test_tag_repository_requires_primary_before_secondaries_and_caps_count(
+    db_session: Session,
+) -> None:
+    papers = PaperRepository(db_session)
+    tags = PaperTagRepository(db_session)
+    papers.add(_paper())
+    db_session.commit()
+
+    with pytest.raises(InvariantViolation, match="恰好有一个主标签"):
+        tags.add(_tag("S01", role=TagRole.SECONDARY))
+    db_session.rollback()
+    assert tags.list_for_paper("p001") == []
+
+    tags.add(_tag("T01"))
+    for index in range(1, 6):
+        tags.add(_tag(f"S0{index}", role=TagRole.SECONDARY))
+    db_session.commit()
+
+    with pytest.raises(InvariantViolation, match="最多 5 个"):
+        tags.add(_tag("S06", role=TagRole.SECONDARY))
+    db_session.rollback()
+
+    assert len(tags.list_for_paper("p001")) == 6
+
+
+def test_tag_repository_add_many_rejects_oversized_or_mixed_batch(
+    db_session: Session,
+) -> None:
+    papers = PaperRepository(db_session)
+    tags = PaperTagRepository(db_session)
+    papers.add(_paper())
+    papers.add(_paper("p002"))
+    db_session.commit()
+
+    with pytest.raises(InvariantViolation, match="同一篇文献"):
+        tags.add_many((_tag("T01"), _tag("S01", role=TagRole.SECONDARY, paper_id="p002")))
+
+    batch = (_tag("T01"),) + tuple(
+        _tag(f"S0{index}", role=TagRole.SECONDARY) for index in range(1, 7)
+    )
+    with pytest.raises(InvariantViolation, match="最多 5 个"):
+        tags.add_many(batch)
+    db_session.rollback()
+    assert tags.list_for_paper("p001") == []
+
+
+def test_bucket_repository_requires_filing_before_memberships(db_session: Session) -> None:
+    papers = PaperRepository(db_session)
+    buckets = BucketRepository(db_session)
+    assignments = PaperBucketRepository(db_session)
+    papers.add(_paper())
+    buckets.add(_topic_bucket())
+    buckets.add(_review_bucket())
+    db_session.commit()
+
+    with pytest.raises(InvariantViolation, match="恰好有一个归属桶"):
+        assignments.add(_bucket("b-review", role=BucketRole.MEMBERSHIP))
+    db_session.rollback()
+    assert assignments.list_for_paper("p001") == []
+
+    assignments.add(_bucket("b-t01"))
+    assignments.add(_bucket("b-review", role=BucketRole.MEMBERSHIP))
+    db_session.commit()
+    assert len(assignments.list_for_paper("p001")) == 2
+
+    with pytest.raises(InvariantViolation, match="同一篇文献"):
+        assignments.add_many(
+            (
+                _bucket("b-t01", paper_id="p001"),
+                _bucket("b-review", paper_id="p002"),
+            )
+        )
     db_session.rollback()

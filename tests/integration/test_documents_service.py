@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.engine import Engine
 
-from papersteward.core.enums import DocumentStatus, EventType
-from papersteward.core.errors import DomainValidationError, InvalidTransition
+from papersteward.core.entities import Tag, Taxonomy
+from papersteward.core.enums import DocumentStatus, EventType, TagLevel
+from papersteward.core.errors import DomainValidationError, InvalidTransition, InvariantViolation
 from papersteward.documents import (
     DocumentError,
     archive_profile,
@@ -170,3 +171,30 @@ def test_document_service_missing_document_errors(migrated_engine: Engine) -> No
             archive_profile(session, "missing", "1.0", archived_at=T1)
         with pytest.raises(DomainValidationError, match="不存在"):
             archive_taxonomy(session, "missing", "1.0", archived_at=T1)
+
+
+@pytest.mark.parametrize("count", [4, 10])
+def test_confirm_taxonomy_revalidates_primary_tag_count(
+    migrated_engine: Engine, count: int
+) -> None:
+    factory = create_session_factory(migrated_engine)
+    tags = tuple(
+        Tag(code=f"T{i:02d}", name=f"主题 {i}", level=TagLevel.PRIMARY) for i in range(1, count + 1)
+    )
+    taxonomy = Taxonomy(
+        id="tax-shape",
+        version="1.0",
+        status=DocumentStatus.DRAFT,
+        content_md="# taxonomy",
+        tags=tags,
+    )
+
+    with session_scope(factory) as session:
+        TaxonomyRepository(session).add(taxonomy)
+        with pytest.raises(InvariantViolation, match="5–9"):
+            confirm_taxonomy(session, "tax-shape", "1.0", confirmed_at=T1)
+
+        stored = TaxonomyRepository(session).get("tax-shape", "1.0")
+        assert stored is not None
+        assert stored.status is DocumentStatus.DRAFT
+        assert EventRepository(session).recent(limit=10) == []

@@ -34,8 +34,17 @@
 
 ### Fixed
 
-- F1：未处理异常 500 响应缺少 `X-Request-ID` 响应头；统一错误响应现在回写
+- P0 F1：未处理异常 500 响应缺少 `X-Request-ID` 响应头；统一错误响应现在回写
   `X-Request-ID`，并增加合同测试与“未迁移数据库触发 500”的集成回归测试。
+- P1-S1–S3 验收返工 F1：taxonomy 确认前重新校验 5–9 主标签结构，非法 draft 不能
+  被确认或写入状态/事件。
+- 验收返工 F2：`## T06` 等缺少名称的主标签标题不再被静默忽略，报错并定位行号。
+- 验收返工 F3：事件追加要求时间非递减；`PaperRepository.transition()` 先校验/追加
+  事件再更新状态，回填事件不会留下半更新状态。
+- 验收返工 F4：文档 DB 子命令捕获配置校验错误，输出 `PAPERSTEWARD_*` 字段提示，
+  不再打印 traceback。
+- 验收返工 F5：标签/桶仓储写入执行聚合校验（恰好一个主标签 / filing、副标签
+  ≤5、批量必须同一文献），非法中间态需回滚。
 
 ### Changed
 
@@ -46,6 +55,7 @@
 - `demo seed` 与 API 改用正式 `paper` 表；`doctor` 迁移版本显示 `0002`。
 - 新增文档命令：`profile/taxonomy validate|import|confirm|archive`、`doc diff`；
   确认新版本会自动归档同一文档的旧 confirmed 版本。
+- 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
 
@@ -57,6 +67,8 @@
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换；升级会迁移最小字段，降级会丢弃
   正式表数据并恢复空的 stub 表；
 - P1-S3 尚无评分 YAML 校验、JSON schema、LLM 调用或真实文献源；
+- 独立验收 F6（httpx/Starlette 弃用警告）与 F7（Docker/CI 运行证据）仍保留为
+  依赖/发布债务；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
 - Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。

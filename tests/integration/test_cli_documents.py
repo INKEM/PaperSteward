@@ -161,3 +161,31 @@ def test_taxonomy_import_and_confirm_cli(
     )
     captured = capsys.readouterr()
     assert "已确认 taxonomy demo-taxonomy v1.0" in captured.out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["profile", "import", str(PROFILE_V1)],
+        ["profile", "confirm", "1.0", "--id", "demo-profile"],
+        ["profile", "archive", "1.0", "--id", "demo-profile"],
+        ["doc", "diff", "profile", "1.0", "1.1", "--id", "demo-profile"],
+    ],
+)
+def test_document_db_commands_report_settings_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_API_PORT", "70000")
+    get_settings.cache_clear()
+    try:
+        code = main(argv)
+    finally:
+        get_settings.cache_clear()
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "PAPERSTEWARD_API_PORT" in captured.err
+    assert "配置校验失败" in captured.err
+    assert "Traceback" not in captured.err

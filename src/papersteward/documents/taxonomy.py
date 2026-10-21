@@ -29,6 +29,8 @@ from papersteward.documents.frontmatter import (
 
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 _SECTION_RE = re.compile(r"^##\s+(?P<code>[A-Z][A-Z0-9_-]{1,31})\s+(?P<name>.+?)\s*$")
+_HEADING_RE = re.compile(r"^##\s+(?P<rest>.+?)\s*$")
+_CODE_PREFIX_RE = re.compile(r"^(?P<code>[A-Z][A-Z0-9_-]{1,31})(?:\s|$)")
 _FIELD_RE = re.compile(
     r"^\s*[-*]\s*(?P<field>定义|纳入|排除|正例|边界|常见误分|别名|同义词)\s*[：:]\s*(?P<value>.*?)\s*$"
 )
@@ -117,6 +119,15 @@ def _collect_sections(front: FrontMatter, *, source: str) -> list[_Section]:
             continue
         if line.startswith("## "):
             current = None
+            heading = _HEADING_RE.match(line)
+            rest = heading.group("rest") if heading is not None else ""
+            if _CODE_PREFIX_RE.match(rest):
+                raise DocumentError(
+                    "主标签标题必须为 `## Txx 名称`（缺少名称）",
+                    source=source,
+                    field="taxonomy.heading",
+                    line=line_number,
+                )
             continue
         if current is not None:
             current.lines.append((line_number, line))
