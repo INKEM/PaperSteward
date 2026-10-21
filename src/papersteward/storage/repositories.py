@@ -391,6 +391,15 @@ class RunRepository(_Repository):
         self._flush()
         return updated
 
+    def update_cost(self, run_id: str, cost_json: Mapping[str, Any]) -> Run | None:
+        """替换运行的成本 JSON；供 LLM 网关等调用方累计用量。"""
+        row = self._session.get(RunRow, run_id)
+        if row is None:
+            return None
+        row.cost_json = dict(cost_json)
+        self._flush()
+        return run_from_row(row)
+
 
 class ProfileRepository(_Repository):
     """研究方向档案版本。"""

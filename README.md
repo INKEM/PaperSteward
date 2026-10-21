@@ -5,8 +5,8 @@
 当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
 已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
-评分配置校验、JSON schema 与配置版本事件。P1-S5–S6（LLM 网关、阶段补测）与后续
-阶段尚未实现。
+评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
+registry 与修复重试。P1-S6（阶段补测）与后续阶段尚未实现。
 
 ## 当前能力
 
@@ -22,6 +22,7 @@
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
+- LLM 网关：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 环境要求
@@ -116,6 +117,9 @@ papersteward config validate tests/fixtures/configs/scoring.yaml
 papersteward config import tests/fixtures/configs/scoring.yaml --at 2026-10-21T09:00:00Z
 papersteward schema show classification
 papersteward schema validate classification /tmp/classification.json
+
+papersteward llm ping --fake
+papersteward llm ping --fake --json
 ```
 
 - `doctor` 全部通过退出 0，否则退出 1；只诊断，不自动迁移；
@@ -125,6 +129,7 @@ papersteward schema validate classification /tmp/classification.json
 - `doc diff` 支持两个文件，或 `--id` + 两个数据库版本；`--json` 输出机器可读结果；
 - `config validate` 不写库；`config import` 追加版本并写 `config.updated` 事件；
 - `schema show/validate` 输出或校验分类/摘要/评分/事件 JSON schema；
+- `llm ping --fake` 使用确定性 FakeLLM；P1 不发起真实网络/LLM 调用；
 - 安装后可直接使用 `papersteward`；在仓库内也可用 `.venv/bin/papersteward`。
 
 ## API
@@ -239,7 +244,8 @@ src/papersteward/
   documents/      # profile/taxonomy 解析、diff、确认/归档服务（P1-S3）
   scoring/        # scoring.yaml 校验、配置版本持久化（P1-S4）
   schemas/        # 分类/摘要/评分/事件 JSON schema（P1-S4）
-  llm/ sources/ pipeline/ delivery/ jobs/  # P1+ 占位
+  llm/            # provider 协议、FakeLLM、prompt、网关、成本（P1-S5）
+  sources/ pipeline/ delivery/ jobs/  # P1+ 占位
 migrations/       # Alembic 迁移
 tests/            # unit / contract / integration / e2e
 docs/             # 设计与阶段文档
@@ -248,7 +254,7 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1-S4 完成评分 YAML、JSON schema 与配置版本；LLM 网关在 P1-S5；
+- P1-S5 完成 LLM 网关/FakeLLM；真实 provider 与真实文献源仍未实现；
 - 不采集真实文献、不调用 LLM、不生成摘要/评分/日报；
 - API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；

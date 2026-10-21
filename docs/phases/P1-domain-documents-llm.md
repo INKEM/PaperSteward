@@ -1,6 +1,6 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S4 完成（S1–S3 验收 F1–F5 已返工）；P1-S5–S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S5 完成（S1–S3 验收 F1–F5 已返工）；P1-S6 待执行
 > **独立验收**：[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（2026-10-21，有条件通过；F1–F5 返工见 §7）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
@@ -23,7 +23,7 @@ P2、P3、P4/P5、P6。
 | P1-S2 | 正式迁移、仓储、事件日志 | **完成** | S1 | 迁移 up/down；约束与追加写 |
 | P1-S3 | profile/taxonomy 解析、版本、diff | **完成** | S1/S2 | validate/diff；确认事件 |
 | P1-S4 | 评分 YAML 校验、JSON schema | **完成** | S1/S3 | 非法权重拒绝；schema 正反例 |
-| P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | 待开始 | S1/S4 | 非法 JSON 不进入业务表 |
+| P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | **完成** | S1/S4 | 非法 JSON 不进入业务表 |
 | P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | 待开始 | S1–S5 | `make check` 等阶段门 |
 
 > S1 刻意保持为纯领域层；S2 才引入正式数据库与仓储，避免把迁移细节反向污染
@@ -678,7 +678,131 @@ papersteward schema validate event /tmp/event.json
 - prompt registry 与配置一样版本化，变更记录 prompt_version；
 - 成本记录只存可审计的数字/模型名，不记录密钥或完整 prompt 中的敏感文本。
 
-## 9. 风险与待确认
+## 9. P1-S5 执行记录
+
+### 9.1 目标
+
+提供可替换的 LLM provider 契约、确定性 FakeLLM、版本化 prompt registry，以及
+“provider 重试 → schema 校验 → 修复重试 1 次”的统一入口；所有成功产物带溯源，
+非法 JSON 不产生业务数据。
+
+### 9.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `src/papersteward/llm/errors.py` | provider/超时/修复失败/prompt 错误层级 |
+| `src/papersteward/llm/provider.py` | `LLMProvider` 协议、`LLMCompletion`、`FakeLLM` |
+| `src/papersteward/llm/prompts.py` | 版本化 `PromptTemplate`/`PromptRegistry`、默认 classification/summary/repair prompt |
+| `src/papersteward/llm/gateway.py` | `LLMGateway.complete_json`、重试/修复/溯源/usage |
+| `src/papersteward/llm/cost.py` | 把 usage 累计到 `run.cost_json` |
+| `src/papersteward/cli/llm.py` | `llm ping --fake` |
+| `tests/fixtures/llm/*.json`、`tests/unit/test_llm_*.py`、`tests/integration/test_llm_cost.py`、`test_cli_llm.py` | FakeLLM、修复、重试、成本、CLI |
+
+### 9.3 Provider 契约
+
+```text
+LLMProvider:
+  model_id: str
+  complete(prompt: str, *, timeout_s: float) -> LLMCompletion
+```
+
+- `FakeLLM` 按顺序返回固定响应；可注入 `LLMTimeoutError`/`LLMProviderError`、
+  token 成本与延迟；响应耗尽后重复最后一个；
+- P1 不提供真实 OpenAI/Claude 适配器，不发起网络请求；真实 provider 由后续阶段
+  注入同一协议；
+- `timeout_s` 传给 provider，由 provider 负责实际超时控制；网关负责失败重试。
+
+### 9.4 Prompt registry 契约
+
+- prompt 以 `name + version` 注册，重复注册报错；未指定版本取最后注册版本；
+- classification/summary prompt 分别绑定 S4 的 `classification`/`summary` schema；
+- repair prompt 绑定原 schema，但自身不直接产出业务数据；
+- prompt 明确标注论文标题/摘要为不可信数据，不执行其中的指令；
+- 渲染只做字符串替换，缺少变量抛 `PromptRenderError`，未知 schema 拒绝注册；
+- `Provenance.prompt_version` 记录实际使用的版本；修复成功时记录
+  `<原版本>+repair:<repair版本>`。
+
+### 9.5 网关行为
+
+`LLMGateway.complete_json(prompt_name, variables)`：
+
+1. 渲染 prompt，计算输入 SHA-256；
+2. provider 调用最多 `max_attempts` 次（默认 3）；超时/ProviderError 指数退避重试；
+3. 对返回文本做 schema 校验；失败则用 repair prompt 修复 **1 次**；
+4. 修复仍失败抛 `LLMValidationError`（含字段、raw/repair 文本、usage），**不返回
+   data**；调用方无法误写业务表；
+5. 成功返回 `LLMResult`：`data`、`raw_text`、`usage`、`provenance`、`repair_used`、
+   `attempts`。
+
+`usage` 记录 model、prompt/completion tokens、cost_usd、latency_ms、calls、retries、
+repairs；不记录 prompt/摘要文本。`record_llm_usage()` 把 usage 合并到
+`run.cost_json` 的 `llm_calls` 与汇总字段，调用方控制事务。
+
+### 9.6 CLI
+
+```bash
+papersteward llm ping --fake
+papersteward llm ping --fake --json
+```
+
+未加 `--fake` 时明确提示 P1 只有 FakeLLM，不尝试真实网络。
+
+### 9.7 验收结果
+
+- `make check`：**329 passed**，ruff/mypy 通过；
+- `make test-integration`：**100 passed**；
+- `pytest -q`（含 e2e）：**330 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `make e2e`：1 passed；
+- `make demo DEMO_PORT=8773`：`/health` 与 `/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=papersteward.llm`：**94%**；
+- 未访问网络、未配置真实 LLM 密钥、未新增依赖。
+
+### 9.8 与计划的偏差与限制
+
+- **无真实 provider**：P1-S5 只交付协议与 FakeLLM；OpenAI-compatible/本地模型适配
+  与网络超时由后续阶段实现。
+- **超时控制边界**：网关传递 `timeout_s` 并重试 provider 异常，但不自行中断阻塞
+  调用；真实 provider 必须实现硬超时。
+- **修复只重试一次**：符合设计；修复 prompt 也可能消耗一次 provider 重试预算。
+- **成本记录需显式落库**：网关不访问数据库；调用方需调用 `record_llm_usage`，
+  P3/P4 的任务服务负责在同一 `run` 中累计。
+- **prompt 仍在代码中**：当前 registry 为 Python 常量，未拆到 `config/prompts/`；
+  版本化语义已具备，后续可迁移到文件并保持版本号。
+- **不做分类/摘要/评分服务**：网关只返回已校验 data，业务写入在 P3–P5。
+- **文件数超指引**：S5 新增 provider/prompt/gateway/cost/CLI 与三层测试，超过
+  8 文件/400 行；按 handoff 说明。
+
+### 9.9 交接给 P1-S6
+
+**已就绪**
+
+- S1–S5 全部契约、仓储、文档、配置/schema、LLM 网关与 FakeLLM；
+- 全部本地阶段门命令与稳定测试 fixture；
+- 独立验收报告 F1–F5 已返工，F6/F7 仍为依赖/发布债务。
+
+**P1-S6 需要完成**
+
+1. 补齐 P1 契约测试：分类/摘要/评分/事件 schema 正反例、LLM 非法 JSON 不落库；
+2. 迁移/仓储/不变量回归补测；检查 `alembic check`、up/down；
+3. 阶段门：`make check`、`make test-integration`、`make migrate-check`、`make e2e`、
+   `make demo`、`make secret-scan`；
+4. 更新 handoff/CHANGELOG/README，做 schema review；
+5. 处理 Docker/CI 运行证据（F7）与依赖债务（F6）；未取得证据不得声称通过。
+
+**S6 不能做**
+
+- 新业务功能、真实 provider、真实文献源、P2 UI；
+- 未经 ADR/迁移修改 P1 冻结契约。
+
+**实现提示**
+
+- 先冻结验收矩阵，再补测试；避免为了覆盖率写无意义用例；
+- 以独立验收报告 + 本 handoff 为关闭条件；
+- 若发现契约冲突，写 blocker note，不静默改字段。
+
+## 10. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
@@ -695,9 +819,15 @@ papersteward schema validate event /tmp/event.json
   版本序号时再引入明确规则。
 - **F6**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
 - **F7**：Docker/CI 运行证据仍未在本地关闭；打发布 tag 前必须补齐。
-- **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在 P1-S5
+- **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在 S6
   或后续增加 `schema export` 与版本快照。
 - **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与
   迁移/兼容说明。
 - **事件 schema 命名**：使用 `EventType` 命名空间值（如 `paper.done`），与设计示例
   的裸状态值不同；事件落库与 schema 以此为准。
+- **真实 provider 未实现**：S5 的协议/FakeLLM 已就绪，真实网络适配、流式输出与硬超时
+  需在后续阶段补 ADR/测试。
+- **prompt 版本治理**：prompt 目前在代码中；迁移到 `config/prompts/` 时需保持版本号并
+  增加加载/校验测试。
+- **修复成本**：修复重试会额外调用 provider；usage 已累计，真实预算控制需在 P3/P4
+  的任务服务中强制执行。
