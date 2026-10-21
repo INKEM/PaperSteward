@@ -24,6 +24,8 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
         "HTTP_PROXY": "http://127.0.0.1:1",
         "HTTPS_PROXY": "http://127.0.0.1:1",
         "NO_PROXY": "",
+        "PAPERSTEWARD_DATABASE_URL": str(engine.url),
+        "PAPERSTEWARD_DATA_DIR": str(tmp_path),
     }
 
     def cli(*args, expected=0):
@@ -126,7 +128,11 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
     cli("label", "user", "--round", "1", "--file", fixture, "--out", calibration)
     assert confirm("g3", calibration)["stage"] == "dry_run"
     dry = tmp_path / "dry.json"
-    cli("submit", "dry-run", "--file", FIXTURES / "dry_run/basic.json", "--out", dry)
+    dry_input = tmp_path / "dry-input.json"
+    dry_data = json.loads((FIXTURES / "dry_run/basic.json").read_text())
+    dry_data["parameters"].update(quiet_start=None, quiet_end=None)
+    dry_input.write_text(json.dumps(dry_data))
+    cli("submit", "dry-run", "--file", dry_input, "--out", dry)
     assert "仅流程验证" in json.loads(dry.read_text())["data"]["report"]["markdown"]
     rejected = tmp_path / "rejected.json"
     cli(
@@ -145,6 +151,44 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
     cli("feedback", "--review", rejected, "--by", "fixture-user", "--accept", "--out", accepted)
     assert confirm("g4", accepted) == {"stage": "active", "revision": 5, "next_gate": None}
     assert cli("status")["stage"] == "active"
+    reports = []
+    for number in (1, 2):
+        result = subprocess.run(
+            [
+                str(BIN / "papersteward"),
+                "ingest",
+                "--source",
+                "arxiv",
+                "--fixture",
+                str(FIXTURES / "sources/arxiv.xml"),
+                "--query",
+                "retrieval",
+                "--run-id",
+                f"cli-ingest-{number}",
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        reports.append(json.loads(result.stdout))
+    assert [report["stats_json"]["new"] for report in reports] == [1, 0]
+    assert reports[1]["stats_json"]["source_versions_added"] == 0
+    result = subprocess.run(
+        [str(BIN / "papersteward"), "runs", "show", "--last"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0 and json.loads(result.stdout)["id"] == "cli-ingest-2"
+    assert any(
+        item["title"] == "Synthetic Retrieval Study"
+        for item in client.get("/papers?limit=200").json()["items"]
+    )
     with session_scope(create_session_factory(engine)) as session:
         assert session.scalar(select(func.count()).select_from(ConfigRow)) == 2
         for table in (RatingRow, ScoreSnapshotRow, ArchiveSnapshotRow):

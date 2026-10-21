@@ -240,6 +240,22 @@ class PaperRow(Base):
         return self.first_seen_at
 
 
+class PaperSourceRow(Base):
+    """不可变来源版本；同一来源ID的新内容追加，不覆盖历史。"""
+
+    __tablename__ = "paper_source"
+    __table_args__ = (Index("ix_paper_source_identity", "source", "source_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("paper.id"), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    candidate_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
 class PaperTagRow(Base):
     """文献标签分配；部分唯一索引保证每篇最多一条主标签。"""
 

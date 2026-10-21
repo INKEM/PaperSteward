@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1–S6 完成并通过本地验收；S7 未开始。日期：2026-10-22。
+> 状态：P3-S1–S7 实现与本地阶段门完成；stacked 分支未合并，Docker/CI待验证。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -204,6 +204,62 @@ make secret-scan
   文献与source记录，不能仅按新canonical_id创建，避免新DOI导致重复。
 - 演示：pytest tests/unit/test_dedupe.py tests/contract/test_canonical_candidates.py；10项
   案例含跨三源/版本合并/反例/强ID桥接/顺序稳定性。未实现跨语言语义相似或大规模索引。
-- 规模：7文件，超过400行指引部分为首次5类策略/分层测试/ADR与交接；无S7代码。
+- 规模：7文件、395行，符合小阶段指引；无S7代码。
   回滚本次代码即可。make check（ruff/strict mypy，660 passed）、test-integration（210 passed）、
   migrate-check（base↔0004）、secret-scan、diff --check 通过，沿用 /dev/shm 临时测试库。
+
+## S7 handoff 与 P3 收尾（2026-10-22）
+
+- 分支 feat/p3-s7-ingest-reports（stacked S6），ADR 0012；任务A（过滤/来源表）与B
+  （编排/CLI/阶段门）均已实现。无新依赖，head0005新增paper_source；EventType追加
+  paper.metadata_updated，既有值不改名。迁移up/down保持paper/run/event数据。
+- 生产与dry-run均绑定精确G1/G2/G4及G3校准/报告/反馈，读取选定scoring/runtime而非latest；
+  preflight及落库前复核。暂停/安静时段拒绝，未读取/外发备注，模型/推送配额保持原契约。
+- 候选经去重、硬过滤后按discovered→deduped→screened/rejected写入，逐步追加事件；
+  原始来源及版本以source/id/raw内容哈希追加。重跑不增相同Paper/来源版本，来源更新
+  保留库内ID；只有ingest创建且仍处前期状态的元数据可补充，已评分/归档/拒绝和
+  种子/校准记录不改写。无评分/分类/入队/发送/归档。
+- 独立来源错误、请求/缓存数、重复、过滤原因、耗时及版本绑定进入Run；部分成功
+  stats.partial，全部失败为failed。savepoint撤销半批状态/来源/事件但保留失败报告，
+  外层session_scope仍能全部回滚；仓储不自行commit。dry-run所有表只读。
+- CLI ingest支持单/多来源fixture与明确--live、字面query、结果上限、dry-run；
+  runs show按ID或--last查看JSON报告。完整指南见 [ingestion-cli.md](../ingestion-cli.md)。
+- 定向案例覆盖真实G4、重复运行、preflight门禁、暂停/安静时段、所选配置与漂移、
+  来源超时隔离、全失败、审计/外层回滚、硬过滤原因落库、版本更新与归档/评分保护。
+  真实CLI+Uvicorn测试在完整G1–G4后连续采集两次，新增数1→0、来源记录不重复。
+- 规模超出8文件/400行：过滤、来源迁移/仓储、精确配置消费、跨源事务编排、CLI及完整
+  回归/迁移/e2e证据共同实现S7竖切；小任务A/B均保留在同一S7分支，没有提前实现P4。
+  S7整合时修正短标题无作者无ID的fallback ID碰撞，新增回归；不属于去重策略扩张。
+- 回滚：停采集并备份；0005→0004仅删除来源表。完整撤销新增文献/报告/审计或退回
+  不认识新事件枚举的代码须恢复S7前备份；不能仅降迁移冒充数据撤销。
+- 最终验证：新增24项测试；make check（ruff format/check、strict mypy 80源文件，
+  **684 passed**）；make test-integration（**224 passed**）；make e2e（**4 passed**）。
+  make migrate-check（base→0005→base→0005及模型一致性）、独立临时库make demo
+  DEMO_PORT=8780（health/papers）、secret-scan、diff --check均通过。未触碰var数据库，
+  未使用真实网络/LLM/用户密钥进行测试；保留上游Starlette/httpx弃用警告。
+
+```bash
+make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-s7-final-check'
+make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-s7-final-integration'
+make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-s7-final-e2e'
+TMPDIR=/dev/shm make migrate-check
+make secret-scan
+```
+
+本地分支/提交链：S2 `92c00d0` → S3 `3336393` → S4 `08c5169` → S5 `0e3271a`
+→ S6 `eb23cd8` → 当前S7分支。每项均独立分支与Conventional Commit；只在本地
+前序提交上stacked，没有自动合并/推送/发布/tag。P3工程实现与本地门完成，正式
+合并及Docker/CI证据、阶段tag仍是后续发布工作，不能据此声称已发布Alpha。
+
+## P4 handoff：尚未开始
+
+- 输入：SourceAdapter/QuerySpec/PaperCandidate、三个来源cassette、canonicalization/
+  DedupeGroup、screened候选池、paper_source原始记录/候选JSON、run报告与选定文档/配置绑定。
+- P4开工前先拆5–8张卡；继续使用FakeLLM/cassette，不因ACTIVE擅自调用真实模型。
+  精确读取G1/G2/G4选定版本；新字段/表走新增迁移（当前0005），不能重写旧迁移。
+- 能做：手动离线/明确live采集、去重/硬过滤、可审计运行报告和CLI；不能做：自动调度、
+  embedding语义去重、摘要/分类/评分、生产队列/推送/归档、再协商/reset。
+- 已知边界：词法摘要去重可能漏掉翻译/重写；过滤清单由已确认档案显式提供，未知语言/
+  日期不伪造。持久化失败只保存脱敏pipeline_failed报告；来源API变更需重放cassette定位。
+- P1 F5弃用警告/F3非阻断测试债、P2 CI/tag待补保留。本轮无真实API/LLM/用户密钥调用。
+  所有小阶段为本地stacked分支，按用户要求未自动合并/推送/发布/打tag；Docker/CI未运行。

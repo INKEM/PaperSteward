@@ -133,6 +133,13 @@ class DedupeGroup:
                 )
             )
         )
+        if (
+            not item.doi
+            and not item.arxiv_id
+            and not item.authors
+            and len(normalized_text(item.title)) < 20
+        ):
+            key += "|" + item.provenance.source + "|" + item.provenance.source_id
         return "p_" + hashlib.sha256(key.encode()).hexdigest()[:32]
 
 

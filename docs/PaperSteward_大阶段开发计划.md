@@ -528,8 +528,8 @@ papersteward onboarding confirm --gate g4
 **演示**：
 
 ```bash
-papersteward ingest --source arxiv --fixture tests/fixtures/sources/arxiv.json
-papersteward ingest --source openalex --query "retrieval augmented generation" --dry-run
+papersteward ingest --source arxiv --fixture tests/fixtures/sources/arxiv.xml
+papersteward ingest --source openalex --live --query "retrieval augmented generation" --dry-run
 papersteward runs show --last
 ```
 
@@ -572,16 +572,20 @@ papersteward runs show --last
 
 **验收标准**：
 
-- [ ] 同一 fixture 重跑结果稳定；
-- [ ] 5 类重复案例全部去重；
-- [ ] 硬过滤命中原因可追溯；
-- [ ] CI 不访问真实 API；
-- [ ] 失败来源不阻断其他来源，运行报告标记 `partial`；
-- [ ] 新文献的 provenance（来源、URL、抓取时间）完整。
+- [x] 同一 fixture 重跑结果稳定；
+- [x] 5 类重复案例全部去重；
+- [x] 硬过滤命中原因可追溯；
+- [x] CI 不访问真实 API；
+- [x] 失败来源不阻断其他来源，运行报告标记 `partial`；
+- [x] 新文献的 provenance（来源、URL、抓取时间）完整。
 
 **测试要求**：适配器 contract tests（cassette）、去重单元测试、过滤规则表驱动测试、ingest 集成测试。
 
 **风险/回滚**：来源 API 字段/限流变化。每个适配器隔离在 `sources/`，失败只影响该来源；保留 raw metadata 以便重放。
+
+本地验收：2026-10-22，P3-S1–S7 已完成；684 项非 e2e、224 项集成、4 项 e2e、
+迁移/演示/密钥扫描通过。详见 [P3 阶段与 handoff](phases/P3-ingestion.md) 和
+[采集 CLI](ingestion-cli.md)。分支仍为本地 stacked，未合并/推送/tag；Docker/CI 未运行。
 
 **交接给 P4**：canonical `Paper`、来源/provenance、去重后的候选池、运行报告。
 

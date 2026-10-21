@@ -121,3 +121,13 @@ def test_missing_id_does_not_bridge_conflicting_known_papers():
         )
         == 3
     )
+
+
+def test_ambiguous_short_titles_have_distinct_fallback_ids():
+    groups = deduplicate(
+        [
+            candidate(source_id="one", title="Short", authors=[]),
+            candidate(source_id="two", title="Short", authors=[]),
+        ]
+    )
+    assert len({group.canonical_id for group in groups}) == 2

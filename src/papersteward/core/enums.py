@@ -166,6 +166,7 @@ class EventType(StrEnum):
     PAPER_TAG_EDITED = "paper.tag_edited"
     PAPER_RESTORED = "paper.restored"
     PAPER_REVERTED = "paper.reverted"
+    PAPER_METADATA_UPDATED = "paper.metadata_updated"
     PROFILE_CONFIRMED = "profile.confirmed"
     PROFILE_ARCHIVED = "profile.archived"
     TAXONOMY_CONFIRMED = "taxonomy.confirmed"
