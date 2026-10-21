@@ -29,6 +29,8 @@ from papersteward.cli.documents import (
     run_validate,
 )
 from papersteward.cli.llm import run_llm_ping
+from papersteward.cli.onboarding import add_commands as add_onboarding_commands
+from papersteward.cli.onboarding import run as run_onboarding
 from papersteward.config import format_settings_error
 
 
@@ -56,6 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="插入 p001 演示文献（幂等）",
     )
 
+    add_onboarding_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -160,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "onboarding":
+            return run_onboarding(args)
         if args.command == "doctor":
             return _run_doctor()
         if args.command == "demo" and getattr(args, "demo_command", None) == "seed":

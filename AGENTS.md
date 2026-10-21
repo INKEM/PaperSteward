@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P2 初始化协商与确认门（P2-S1–S5 完成；S6 未开始；P1 F5 依赖债务保留）**；
-- 下一小阶段：**P2-S6 最小 UI/CLI 体验与阶段验收**；
+- 当前：**P2 初始化协商与确认门（P2-S1–S6 实现与本地阶段门完成；Docker/CI 本轮未验证；P1 F5 保留）**；
+- 下一阶段：**P3 采集、去重与硬过滤（未开始；开工前先拆小阶段卡片）**；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0004`（独立 onboarding 与 calibration 表）；G4 前禁止入队/推送/归档。
 
@@ -18,7 +18,7 @@
 2. `docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md`（产品语义）；
 3. `docs/phases/P0-baseline.md`（已完成契约与交接）；
 4. `docs/phases/P1-domain-documents-llm.md`（P1 契约与 P2 交接）；
-5. `docs/phases/P2-onboarding.md`（当前卡片、门禁契约与 S5 交接）；
+5. `docs/phases/P2-onboarding.md`（完整契约、阶段验收与 P3 handoff）；
 6. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。

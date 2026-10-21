@@ -1,6 +1,6 @@
 # P2 初始化协商与确认门
 
-> 状态：P2-S1–S5 完成（2026-10-21）；S6 未开始。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
+> 状态：P2-S1–S6 实现与本地阶段验收完成（2026-10-22）；Docker/CI 本轮未验证。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
 
 ## 小阶段卡片
 
@@ -16,6 +16,25 @@
 | S6 | S1–S5 API → 最小 CLI/HTMX 流程与阶段验收 | 薄 UI；完整 G1–G4 路径；错误可操作 | 完整阶段门（含 secret-scan） | 高级交互、多用户 |
 
 S2–S6 开工时补充实际文件与 fixture 清单；不得据本表提前实现。
+
+## S6 执行卡（2026-10-22）
+
+- 基线 S5 `72336df`；交付最小 onboarding CLI 与 P2 阶段验收。选择 CLI 优先的
+  本地 HTTP 薄客户端，复用 S1–S5 API；无新增依赖/迁移，不实现 P3 算法或网页。
+- 文件：cli/onboarding.py（参数/展示/审阅快照/确认）、cli/onboarding_client.py
+  （标准库 HTTP 与本地快照）、cli/main.py 注册；unit/integration/e2e CLI 测试；
+  ADR、操作指南、阶段验收/handoff、README/CHANGELOG/AGENTS。
+- 命令覆盖 start/status、profile/taxonomy Markdown 提交、版本审阅/差异、种子导入、
+  校准建轮和两方分别标注、参数/日报、四类反馈、G1–G4 显式确认。
+- 审阅保存含服务器/阶段/revision/完整响应和校验和的本地 JSON（不覆盖已有文件）；
+  confirm 仅用已审快照，要求 --gate/--by/--summary/--yes，不刷新依据或自动认可；
+  G3 接受偏差必须显式选择并说明。API 继续负责所有可信门槛与事务校验。
+- 连接只允许 loopback，禁用代理/重定向，设置超时；文件/连接/HTTP 失败有可操作
+  提示及非零退出；不自动迁移、重试变更或输出配置/密钥。
+- 验收：完整 make check/test-integration/migrate-check/e2e/demo/secret-scan；真实
+  Uvicorn 的 CLI G1–G4 演示；恢复/过期快照/未确认/连接失败/无写入等回归测试。
+- P2 结束写验收矩阵、能力/限制/回滚与可直接开始的 P3 handoff。Docker/CI 有证据
+  才标记通过；本卡不提前开始 P3，不自动把测试认可用于用户数据。
 
 ## S5 执行卡（2026-10-21）
 
@@ -518,3 +537,82 @@ TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/paperstewa
   仅回代码不会撤销 Config/ACTIVE，不可降级 0004 或手改状态充当 S5 回滚。
 - 规模超过 ≤8 文件/≤400 行指引：参数/渲染、事件版服务、API、合成输入与 golden、
   54 项测试及必要状态/ADR/交接文档共同构成 G4 竖切，未推进 S6 或生产算法。
+
+
+## S6 验收与 P2 收尾（2026-10-22）
+
+- 基线 S5 `72336df`；分支 `feat/p2-s6-onboarding-cli`。最小体验采用本地 HTTP CLI，
+  注册到现有 papersteward 入口；无新增依赖/迁移，head 0004，未实现网页或 P3 算法。
+- 命令：onboarding start/status/import-seeds、submit/review（profile/taxonomy/
+  calibration/dry-run）、label agent/user、feedback、confirm。仅调用 S1–S5 API，
+  不连接数据库，不读服务器 .env，不复制可信业务校验器；P1 通用文档 CLI 保持不变。
+- 可读输出展示全文、差异、缺项/协商问题、指标及日报；--json 提供结构化输出。
+  不可信文档中的终端控制字符按文字转义，不执行论文内容。
+- --out 保存 0600、不覆盖已有文件的完整已审快照，包含服务器地址、阶段/revision、
+  产物与 SHA256 校验和。确认要求 --gate/--review/--by/--summary/--yes；只回传旧快照
+  的 hash/revision，不 GET 刷新或重试 POST。G3 可显式接受书面偏差；G4 需先明确认可。
+  校验和仅检测意外改动，不替代鉴权；仍为本地单用户。
+- 地址限 loopback，禁用代理/重定向，10 秒超时。错误非零退出并提示修复/重新审阅；
+  本地保存失败明确服务端可能已成功，使用 review 恢复，禁止自动重复 POST。
+- 完整操作指南见 [onboarding-cli.md](../onboarding-cli.md)，决策见
+  [ADR 0006](../adr/0006-onboarding-cli.md)。合成 fixture 只用于演示，不自动用于真实标注。
+
+### 最终验证
+
+- `make check`：ruff format/check、strict mypy（67 源文件），**567 passed**（3 e2e 排除）。
+- `make test-integration`：**209 passed**；`make e2e`：**3 passed**。
+- S6 新增 **29** 项（17 unit、11 integration、1 e2e）：本地 URL/错误信封、快照校验/
+  0600/跨服务器拒绝、未明确确认、只用旧依据/拒绝重复确认、全文/diff/终端转义、
+  保存失败恢复、参数错误/输出冲突时不发送变更，以及真实 CLI 的完整 G1–G4。
+- 真实 CLI e2e 在独立临时库启动 Uvicorn，用实际 papersteward 子进程跑通所有门，
+  环境代理故意指向不可用端口仍能成功；确认负面反馈拒绝后再明确认可，最终
+  active/revision=5，仅保存两份配置，未写 Rating/ScoreSnapshot/ArchiveSnapshot。
+- `make migrate-check`：base→0004→base→0004 通过；`make demo DEMO_PORT=8778`：
+  临时库迁移/seed/health/papers 通过；`make secret-scan`、`git diff --check` 通过。
+- `docker compose config --quiet` 通过；Docker daemon socket 权限拒绝，sudo 被
+  no-new-privileges 禁止，未运行 build/up。CI 本轮未触发；不能据 P1 证据声称本轮
+  Docker/CI 通过，暂不打 p2-done tag。保留 P1 F5 httpx 弃用警告及 F3 非阻断测试债。
+- 本轮沿用 /dev/shm 临时测试库避免工作区 SQLite fsync 阻塞，未降低同步级别，未触碰
+  var/papersteward.db。完整验收矩阵见 [P2-acceptance.md](P2-acceptance.md)。
+
+```bash
+make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s6-check'
+make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s6-integration'
+TMPDIR=/dev/shm make migrate-check
+TMPDIR=/dev/shm make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/papersteward-p2-s6-e2e'
+make secret-scan
+```
+
+### 能力、边界与回滚
+
+- P2 的档案/分类法/校准/参数/试运行/反馈/确认已形成 API 与 CLI 完整链路；G4 前
+  所有仓储入队/推送/归档路径仍拒绝。ACTIVE 仅表示门禁已确认，不启动外部调用。
+- 当前没有真实文献源/真实模型、生产排序评分/摘要、日报发送/调度、网页、鉴权、
+  方向变更后的再协商/reset。合成指标仅流程验证。后续消费参数必须处理暂停/安静时段。
+- 无 S6 schema 回滚；回退 CLI 不撤销已完成的文档/配置/状态。撤销初始化须停应用并
+  恢复操作前备份；不能删除快照/降级迁移/手改门禁冒充安全恢复。
+- 文件/行数超过 ≤8/≤400 指引：CLI/传输/审阅快照、29 项测试、完整操作指南与
+  P2 验收/状态/交接共同构成本阶段交付；无无关重构，未提前实现 P3。
+
+## P3 handoff：可直接开始
+
+1. **先拆 P3 卡片**：阅读计划 P3 与设计采集章节，建立 docs/phases/P3-ingestion.md
+   的 5–8 个小阶段（adapter 契约、去重/硬过滤、来源适配器等）；本轮没有开始 P3。
+2. **精确文档与配置引用**：从 onboarding.g1/g2.confirmed 的 artifact_id/version
+   读取已选 confirmed Profile/Taxonomy；从 G3 evidence 获取独立校准报告/hash；
+   从 G4 evidence 获取完整报告/feedback、scoring_version、runtime_version。
+   scoring 用 Config(key=scoring, version=evidence.scoring_version)，运行参数用
+   Config(key=onboarding_runtime, version=evidence.runtime_version)。不要用无关 ID
+   的 latest_confirmed 或 ConfigRepository.latest 代替明确选定版本。
+3. **门禁与流水线**：复用 get_onboarding/ensure_active；真实发送器和入队/归档都必须
+   经统一门禁。采集只从 discovered 开始，依正式状态机进入 deduped/screened，不能
+   从采集跳到队列。现有 G4 放行不代表配额/暂停/隐私等生产规则已实现。
+4. **数据库**：head 0004。P1 14 张领域表加 onboarding/onboarding_calibration；
+   后续字段/表变更必须新增可逆迁移，保留事件/文档版本契约与外部事务边界。
+5. **离线输入与测试**：calibration/basic.json、dry_run/basic.json 与 digest.md，
+   加 taxonomy/onboarding.md 可重放全部确认链路。所有真实来源适配器测试用
+   cassette/fake，数据库 tmp_path；live 测试显式手动，不加入 CI。
+6. **已有限制**：P1 PaperTag 无 taxonomy_id，队列影响仅候选预览；无方向变更/reset
+   契约，不能静默替换已选版本。真实模型/摘要/评分属于 P4/P5，不在 P3 顺手引入。
+7. **验收遗留**：Docker/CI 待有权限环境复核后再考虑阶段 tag；P1 F5/F3 债务仍记录，
+   不阻塞当前本地代码交接。未发现本轮引入的 P0/P1 阻断缺陷。
