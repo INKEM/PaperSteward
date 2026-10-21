@@ -1,7 +1,7 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1/S2 完成并通过本地验收；S3–S7 未开始。日期：2026-10-22。
+> 状态：P3-S1–S3 完成并通过本地验收；S4–S7 未开始。日期：2026-10-22。
 > 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
 
 ## 小阶段卡片
@@ -38,7 +38,7 @@
 
 - 目标/依赖：S1/S2 查询经 arXiv 搜索/解析/分页转换为候选并保留来源。
 - 输入：QuerySpec、合成 Atom/HTTP cassette；可选手动 live，不加入 CI。
-- 输出：sources/arxiv.py、sources/http.py、contract/test_arxiv_adapter.py、sources/arxiv.json。
+- 输出：sources/arxiv.py、sources/http.py、contract/test_arxiv_adapter.py、sources/arxiv.xml。
 - 契约：超时/退避/限流/请求预算/User-Agent/缓存；遵守总结果上限，失败 SourceError；
   httpx 从 dev 提升为 runtime 前记录 ADR；API 规则以当时官方文档为准。
 - 验收：分页、空/损坏响应、缺字段、429/超时；pytest tests/contract/test_arxiv_adapter.py。
@@ -142,3 +142,21 @@ make secret-scan
   make test-integration（210 passed）、make migrate-check（base↔0004）、secret-scan、
   diff --check 全部通过；使用 /dev/shm 独立测试目录，未触碰 var 数据。
   本阶段 8 个文件；S1 API e2e 未受影响，P3 收尾再统一执行 e2e/demo。
+
+## S3 handoff（2026-10-22）
+
+- 分支 feat/p3-s3-arxiv-adapter（stacked S2）。已先写 ADR 0009 并将已有 httpx 从 dev
+  提升 runtime，无新第三方库、无迁移。官方 API 手册已查阅，未进行真实来源调用。
+- SourceHTTP 提供超时、串行限流、有限退避、Retry-After、请求预算、禁代理/重定向、
+  HTTPS host 白名单、8MiB 响应上限和有界24小时内存缓存；统计请求/缓存命中。
+- arXiv 查询编译支持字段/布尔/字面排除/UTC日期闭区间，Atom 解析和分页遵守总结果
+  上限；首次公开日与更新日不混淆，保留版本 ID/entry XML/作者/DOI/链接。team 或
+  含无法安全引用字符的查询为 unsupported_query；预算耗尽为 budget_exceeded。
+- 能做：离线 MockTransport 重放真实结构 Atom 与公共 HTTP 失败策略；不能做：
+  生产调度/入库/去重/持久缓存/跨进程限流。调用方须 close HTTP client。
+- 演示：`.venv/bin/pytest tests/contract/test_arxiv_adapter.py tests/unit/test_source_http.py -q`。
+- 超过8文件/400行指引：公共 HTTP 与 arXiv 协议、依赖ADR、离线正反例及必要交接
+  共同构成本阶段；没有实现 S4。回滚代码/runtime依赖声明即可，DB head仍0004。
+- 验收：新增19项离线测试；make check（ruff/strict mypy，626 passed）、
+  make test-integration（210 passed）、migrate-check（base↔0004）、secret-scan 与
+  diff --check 通过。临时库沿用 /dev/shm；未运行 live、Docker/CI。

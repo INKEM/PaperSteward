@@ -19,7 +19,14 @@ from papersteward.core.enums import OaStatus
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 SourceName = Annotated[Text, StringConstraints(pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
 SourceErrorCode = Literal[
-    "timeout", "rate_limited", "unavailable", "invalid_response", "fixture_invalid", "fixture_io"
+    "timeout",
+    "rate_limited",
+    "unavailable",
+    "invalid_response",
+    "fixture_invalid",
+    "fixture_io",
+    "unsupported_query",
+    "budget_exceeded",
 ]
 
 
