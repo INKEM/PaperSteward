@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P2 初始化协商与确认门（P2-S1–S6 实现与本地阶段门完成；Docker 已独立验证；CI 待触发；P1 F5 保留）**；
-- 下一阶段：**P3 采集、去重与硬过滤（未开始；开工前先拆小阶段卡片）**；
+- 当前：**P3 采集、去重与硬过滤（S1 来源契约与离线 harness 完成本地验收；卡片见 P3-ingestion.md）**；
+- 下一小阶段：**P3-S2 查询生成器（未开始）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0004`（独立 onboarding 与 calibration 表）；G4 前禁止入队/推送/归档。
 
@@ -19,7 +19,8 @@
 3. `docs/phases/P0-baseline.md`（已完成契约与交接）；
 4. `docs/phases/P1-domain-documents-llm.md`（P1 契约与 P2 交接）；
 5. `docs/phases/P2-onboarding.md`（完整契约、阶段验收与 P3 handoff）；
-6. 本文件。
+6. `docs/phases/P3-ingestion.md`（当前卡片、来源契约与 handoff）；
+7. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
 
