@@ -2,9 +2,9 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P0 工程基线（Walking Skeleton）**：已跑通配置、数据库迁移、API、
-CLI 与演示数据链路。真实文献源、LLM 摘要/分类、评分、日报与 Web UI 属于
-P1–P6，尚未实现。
+当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、数据库迁移、API、
+CLI 与演示链路已跑通；P1-S1 已提供不可变领域实体、状态机与不变量。P1-S2–S6
+（正式迁移/仓储、文档解析、配置校验、LLM 网关）与后续阶段尚未实现。
 
 ## 当前能力
 
@@ -14,6 +14,8 @@ P1–P6，尚未实现。
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
 - 结构化日志、`X-Request-ID`、统一错误响应；
+- 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
+  追加写等不变量；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 环境要求
@@ -159,7 +161,7 @@ make migrate-check
 
 - 迁移文件位于 `migrations/versions/`；
 - 应用启动**不会**自动建表或迁移；
-- P0 的 `papers` / `runs` 是 stub 表，P1 会用正式领域模型替换；
+- P0 的 `papers` / `runs` 是 stub 表，P1-S2 会用正式领域模型替换；
 - 测试使用临时 SQLite，不触碰本地 `var/papersteward.db`。
 
 ## Docker
@@ -203,7 +205,8 @@ src/papersteward/
   errors.py       # 统一错误模型
   observability/  # 结构化日志
   storage/        # Engine/Session、模型、仓储、迁移状态
-  core/ documents/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/  # P1+ 占位
+  core/           # 领域实体/枚举/状态机/不变量（P1-S1）
+  documents/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/  # P1+ 占位
 migrations/       # Alembic 迁移
 tests/            # unit / contract / integration / e2e
 docs/             # 设计与阶段文档
@@ -212,6 +215,7 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
+- P1-S1 的领域契约尚未接入数据库/仓储/CLI；
 - 不采集真实文献、不调用 LLM、不生成摘要/评分/日报；
 - API 只有只读 `/papers`，无详情/创建接口；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
@@ -223,6 +227,7 @@ docs/             # 设计与阶段文档
 - [大阶段开发计划](docs/PaperSteward_大阶段开发计划.md)
 - [系统设计方案](docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md)
 - [P0 阶段记录与交接](docs/phases/P0-baseline.md)
+- [P1 阶段记录与交接](docs/phases/P1-domain-documents-llm.md)
 
 ## 安全
 
