@@ -1,0 +1,18 @@
+# Alembic migrations
+
+数据库 URL 由 `migrations/env.py` 从 PaperSteward 配置读取：
+
+- `PAPERSTEWARD_DATABASE_URL` 优先；
+- 留空时使用 `PAPERSTEWARD_DATA_DIR/papersteward.db`。
+
+常用命令（在仓库根目录执行）：
+
+```bash
+alembic upgrade head
+alembic downgrade base
+alembic current
+alembic history
+```
+
+迁移测试会把临时 SQLite 连接注入 `config.attributes["connection"]`，不会触碰
+本地 `var/papersteward.db`。P0 的 `papers` / `runs` 是 stub 表，P1 会用正式迁移替换。

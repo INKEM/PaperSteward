@@ -1,6 +1,6 @@
 # P0 工程基线与 Walking Skeleton
 
-> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1 完成）
+> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1、P0-S2 完成）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P0
 > **最后更新**：2026-10-21
 
@@ -14,7 +14,7 @@
 | 小阶段 | 目标 | 状态 | 依赖 | 主要验收 |
 |--------|------|------|------|----------|
 | P0-S1 | 包结构、配置、日志、错误响应 | **完成** | — | ruff/mypy/pytest；配置错误可定位 |
-| P0-S2 | DB 连接、Alembic、临时测试库 | 待开始 | S1 | 迁移 up/down；仓储 CRUD |
+| P0-S2 | DB 连接、Alembic、临时测试库 | **完成** | S1 | 迁移 up/down；仓储 CRUD |
 | P0-S3 | API 骨架、health、papers stub | 待开始 | S1/S2 | `curl /health`；`GET /papers` |
 | P0-S4 | CLI 骨架、demo seed | 待开始 | S1–S3 | `papersteward doctor`；`demo seed` |
 | P0-S5 | Makefile、Docker、CI、AGENTS/README | 待开始 | S1–S4 | `make check` / `make demo` |
@@ -134,27 +134,136 @@
   分项命令验收，避免提前扩大范围。
 - 依赖选择遵循计划 §2.2 的技术基线，未引入计划外框架；`uvicorn` 为 S3 启动 API 预留。
 
-## 4. 交接给 P0-S2
+## 4. P0-S2 执行记录
+
+### 4.1 目标
+
+建立 SQLAlchemy 2.x 引擎/会话生命周期、Alembic 迁移基线与完全隔离的临时测试库，
+并创建 P0 所需的最小 `papers` / `runs` 表，为 S3 的 API 与 S4 的 demo seed 提供
+可查询的数据层。本阶段不引入 P1 的领域模型和业务约束。
+
+### 4.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `src/papersteward/storage/db.py` | Engine/会话工厂、`session_scope`、SQLite 外键、健康检查 |
+| `src/papersteward/storage/models.py` | 最小 `Paper` / `Run` ORM 模型 |
+| `src/papersteward/storage/repositories.py` | `PaperRepository` 最小 CRUD |
+| `src/papersteward/storage/__init__.py` | 稳定导出面，供 API/CLI/任务复用 |
+| `alembic.ini` | Alembic 配置；URL 由 `migrations/env.py` 从 Settings 读取 |
+| `migrations/env.py` | 在线/离线迁移、连接注入、`render_as_batch` |
+| `migrations/versions/0001_initial_schema.py` | 初始 `papers` / `runs` 迁移 |
+| `migrations/script.py.mako`、`migrations/README` | 迁移模板与操作说明 |
+| `tests/integration/conftest.py` | 临时 SQLite 引擎、建表、会话工厂、db_session fixture |
+| `tests/integration/test_database.py` | 引擎/会话/事务/健康检查测试 |
+| `tests/integration/test_repositories.py` | 仓储 CRUD、排序分页、重复 ID、运行表测试 |
+| `tests/integration/test_migrations.py` | upgrade/downgrade、幂等、模型一致性、迁移后仓储测试 |
+
+依赖新增：`sqlalchemy>=2.0,<3.0`、`alembic>=1.13,<2.0`
+（本地验证版本：SQLAlchemy 2.1.5、Alembic 1.20.0）。
+
+### 4.3 数据模型
+
+| 表 | 字段 | 说明 |
+|----|------|------|
+| `papers` | `id TEXT(64) PK`、`title TEXT NOT NULL`、`status TEXT(32) NOT NULL DEFAULT 'new'`、`created_at DATETIME NOT NULL` | 最小文献记录 |
+| `runs` | `id TEXT(64) PK`、`kind TEXT(32) NOT NULL`、`status TEXT(32) NOT NULL DEFAULT 'running'`、`started_at DATETIME NOT NULL`、`finished_at DATETIME NULL`、`error TEXT NULL` | 最小运行记录 |
+
+- 两表都是 **P0 stub**；P1 用正式领域迁移替换，不在此基础上扩展业务字段。
+- 应用写入时间统一使用 `utc_now()`（带 UTC 时区）；SQLite 读取回来会是 naive
+  datetime，这是 SQLite 的限制，P1 决定是否引入 `UTCDateTime` 类型装饰器。
+- 目前只提供 `PaperRepository`；`runs` 的仓储与报告字段在 P3 引入。
+
+### 4.4 连接与事务契约
+
+- `create_db_engine(database_url=None)`：为空时读 `Settings.db_url`；默认 SQLite
+  路径会自动创建 `data_dir`，显式 URL 只创建数据库文件父目录。
+- SQLite：`check_same_thread=False`；内存库使用 `StaticPool` 共享连接；每个连接
+  执行 `PRAGMA foreign_keys=ON`。
+- `create_session_factory(engine)`：`autoflush=False`、`expire_on_commit=False`。
+- `session_scope(factory)`：正常退出提交，异常回滚，最后关闭；CLI/任务优先使用它。
+- `check_database(engine)`：执行 `SELECT 1`，异常时返回 `False`，供 S3 `/health` 使用。
+- `PaperRepository`：只 `add`/`flush`，**不自行 commit**；事务边界由调用方控制。
+  提供 `create`、`get`、`list`、`count`、`update_status`、`delete`。
+- 排序契约：`list()` 按 `created_at ASC, id ASC`，支持 `limit`/`offset`。
+
+### 4.5 迁移契约
+
+- 迁移版本：`0001`（`initial papers and runs`），无前置 revision。
+- `alembic.ini` 不含实际 URL；`env.py` 从 Settings 读取，支持
+  `PAPERSTEWARD_DATABASE_URL` 或默认 `data_dir/papersteward.db`。
+- 测试/脚本可通过 `config.attributes["connection"]` 注入现成连接，避免触碰本地库；
+  此时不重新配置全局日志。
+- SQLite 开启 `render_as_batch=True`，为后续 ALTER TABLE 迁移做准备。
+- `downgrade base` 删除 `papers` / `runs`，按 Alembic 规范保留 `alembic_version`。
+- `alembic check` 已确认迁移与 ORM metadata 无差异。
+
+### 4.6 验收命令与结果
+
+```bash
+.venv/bin/ruff format --check src tests migrations
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/pytest -q
+```
+
+2026-10-21 本地执行结果：
+
+- `ruff format --check`：31 个文件已格式化；
+- `ruff check`：通过；
+- `mypy`（strict）：20 个源文件无错误；
+- `pytest`：**58 passed**，0 failed；
+- 覆盖率：`storage/db.py` 97%，S1+S2 模块整体 95%；
+- 唯一警告仍是上游 `starlette.testclient` 的 `httpx2` 迁移提示。
+
+临时数据库 CLI 演练（不触碰 `var/papersteward.db`）：
+
+```bash
+export PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:////tmp/papersteward-s2.db"
+.venv/bin/alembic upgrade head
+.venv/bin/alembic current
+.venv/bin/alembic downgrade base
+rm -f /tmp/papersteward-s2.db
+```
+
+观察结果：
+
+- `upgrade head` 后表为 `alembic_version`、`papers`、`runs`，`current` 为 `0001 (head)`；
+- `papers` 列为 `id/title/status/created_at`，`runs` 列为
+  `id/kind/status/started_at/finished_at/error`；
+- `downgrade base` 后仅保留 `alembic_version`；
+- 再次 upgrade 可重复执行，迁移幂等。
+
+### 4.7 已知限制与偏差
+
+- 迁移基础设施首次接入需要固定模板文件，本小阶段文件数超过计划的“≤8 个文件”指引；
+  没有引入额外业务模块，后续小阶段恢复小步提交。
+- `papers` / `runs` 是 stub，不含主标签、桶、评分等不变量；P1 会替换。
+- SQLite 读取的 datetime 为 naive；写入约定为 UTC，P1 再决定是否做类型级规范化。
+- 非 SQLite 的 Engine 分支已保留但未测试（P1 若启用 Postgres 再补契约测试）。
+- `make check` / `migrate-check` 属于 S5；本阶段用等价分项命令验收。
+
+## 5. 交接给 P0-S3
 
 **已就绪**
 
-- `Settings`、`get_settings()`、`Settings.db_url`、`Settings.ensure_data_dir()`；
-- `PAPERSTEWARD_DATABASE_URL` 覆盖与 SQLite 默认路径；
-- 统一错误模型与 FastAPI 处理器安装函数 `install_error_handlers(app)`；
-- 结构化日志配置入口 `configure_logging()`；
-- 测试分层目录与 `clean_papersteward_env` fixture。
+- `create_db_engine()`、`create_session_factory()`、`session_scope()`；
+- `Base`、`Paper`、`Run`、`PaperRepository`、`check_database()`；
+- 迁移 `0001` 与 `alembic upgrade/downgrade` 命令；
+- 临时 SQLite 测试 fixture（`sqlite_engine`、`schema_engine`、`db_session`）；
+- S1 的 `install_error_handlers()` 与 `configure_logging()`。
 
-**P0-S2 需要完成**
+**P0-S3 需要完成**
 
-- SQLAlchemy 2.x engine/session、连接生命周期；
-- Alembic 初始化与空库 `upgrade head` / `downgrade base`；
-- 临时 SQLite 测试库 fixture（不复用 `var/papersteward.db`）；
-- 最小 `papers` / `runs` 迁移，为 S3/S4 提供可查询数据；
-- 迁移/仓储测试；不引入 P1 领域模型。
+- FastAPI app factory 与 lifespan：启动创建 Engine/会话工厂，关闭时 `dispose()`；
+- `/health`：返回版本、环境、数据库可用性（调用 `check_database`）；
+- `GET /papers`：通过 `PaperRepository` 返回列表，空库返回空数组；
+- 挂载 `install_error_handlers()`；
+- TestClient 使用临时数据库 fixture，禁止访问 `var/papersteward.db`；
+- API 层不直接持有长生命周期 Session，按请求创建/关闭。
 
 **不能做什么**
 
-- 还没有 HTTP 应用和 `/health`（S3）；
-- 还没有 CLI 入口（S4）；
-- 还没有 Docker/CI/Makefile（S5）；
-- 配置中尚无 LLM/来源/评分参数（P1 起按需增加）。
+- 还没有 CLI 与 `demo seed`（S4）；
+- 还没有 Makefile/Docker/CI（S5）；
+- 不引入 P1 领域模型、真实来源、LLM 或评分逻辑。
