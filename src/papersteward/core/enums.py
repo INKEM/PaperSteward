@@ -176,6 +176,7 @@ class EventType(StrEnum):
     ONBOARDING_G2_CONFIRMED = "onboarding.g2.confirmed"
     ONBOARDING_G3_CONFIRMED = "onboarding.g3.confirmed"
     ONBOARDING_G4_CONFIRMED = "onboarding.g4.confirmed"
+    ONBOARDING_TAXONOMY_DRAFTED = "onboarding.taxonomy.drafted"
 
 
 class RecalculationTrigger(StrEnum):

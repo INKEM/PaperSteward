@@ -2,7 +2,7 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P2 初始化协商与确认门（S1–S2 完成）**：P0 的配置、API、CLI 与演示链路
+当前处于 **P2 初始化协商与确认门（S1–S3 完成）**：P0 的配置、API、CLI 与演示链路
 已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
 评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
@@ -10,7 +10,8 @@ registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段�
 Docker 容器 build/run 与 CI 均闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，
 P2-S1 已提供持久化初始化状态、G1–G4 顺序确认接口与统一执行门禁。
 P2-S2 已接入档案草案/版本编辑/审阅与 G1 显式确认，确认后进入分类法阶段。
-分类法/校准/试运行的业务校验与确认入口在 S3–S5 接入，当前尚不能激活自动推送。
+P2-S3 已接入分类法草案、覆盖率/均衡/边界校验、影响预览和 G2 确认。
+校准/试运行的业务校验与确认入口在 S4–S5 接入，当前尚不能激活自动推送。
 详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
 
 ## 当前能力
@@ -23,6 +24,9 @@ P2-S2 已接入档案草案/版本编辑/审阅与 G1 显式确认，确认后�
 - `GET /onboarding/profile/{id}/{version}`：审阅档案，可用 base_version 查询参数比较版本；
 - `POST /onboarding/profile/{id}/{version}/confirm`：携带 confirmed=true、确认者、
   变更摘要、审阅返回的 content_hash 与 expected_revision，原子确认档案并通过 G1；
+- `POST /onboarding/taxonomy/drafts`：提交分类法与完整种子标注，保存版本化审阅证据；
+- `GET /onboarding/taxonomy/{id}/{version}`：全文/diff、覆盖率/均衡/边界报告和影响预览；
+- `POST /onboarding/taxonomy/{id}/{version}/confirm`：显式确认文档及审阅哈希，原子通过 G2；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；

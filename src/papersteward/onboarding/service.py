@@ -1,10 +1,11 @@
 """初始化命令；仅 flush，外部事务决定提交，失败操作自身原子回滚。"""
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -65,6 +66,7 @@ def confirm_gate(
     validate_evidence: GateValidator,
     event_id: str,
     occurred_at: datetime,
+    evidence_json: Mapping[str, Any] | None = None,
 ) -> Onboarding:
     """顺序检查 → 可信业务证据检查 → revision 条件写入 → 追加用户确认事件。
 
@@ -99,6 +101,7 @@ def confirm_gate(
                     "from": state.stage.value,
                     "to": updated.stage.value,
                     "revision": updated.revision,
+                    **({"evidence": dict(evidence_json)} if evidence_json is not None else {}),
                 },
             )
         )
