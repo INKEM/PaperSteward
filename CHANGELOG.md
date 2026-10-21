@@ -6,6 +6,10 @@
 
 ### Added
 
+- **P2-S1**：独立 onboarding 状态与可逆迁移 `0003`；G1–G4 顺序确认、产物版本/
+  用户/变更摘要审计、revision 条件更新；`GET /onboarding` 与幂等
+  `POST /onboarding/start`；统一门禁阻止 G4 前入队/推送/归档。内部确认接口必须
+  注入可信业务证据校验器，具体校验与外部确认入口留给 S2–S5；无真实调用。
 - **P0-S1**：`src` 包结构；`Settings` 环境变量/`.env` 配置；JSON/console 结构化日志、
   request_id 上下文与敏感字段脱敏；统一 `AppError` / `ErrorResponse` 与 FastAPI
   错误处理器。
@@ -77,8 +81,9 @@
 - 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
   只追加，schema 使用 `extra="forbid"`。
 - 新增 `llm ping --fake`；P1 不提供真实 provider，超时由 provider 实现。
-- P1 实现与本地验收完成（返工后 `340 passed`）；Docker 容器 build/run 已闭环，
-  F4 仅剩 CI 运行证据，F5（httpx 弃用警告）未关闭，因此暂不打 P1 阶段 tag。
+- P1 实现与本地验收完成（返工后 `340 passed`）；Docker 容器 build/run 与 CI
+  run [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  均通过，F4/F6 已闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，P1 整体验收通过。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -92,9 +97,10 @@
   正式表数据并恢复空的 stub 表；
 - P1-S5/S6 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法、真实文献源与
   P2 onboarding 在后续阶段；
-- Docker post-fix 镜像 build/run 已验证；CI 运行证据未取得；
-- 独立验收 F4 的 Docker build/run 已闭环（healthy、`/health`、seed 后 `/papers`）；
-  CI 运行证据与 F5（httpx/Starlette 弃用警告）仍未关闭；
+- Docker post-fix 镜像 build/run 与 CI run
+  [39610871808](https://github.com/INKEM/PaperSteward/actions/runs/39610871808)
+  均已验证；F4/F6 闭环；
+- F5（httpx/Starlette 弃用警告）保留为非阻断依赖债务；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
-- Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。
+- Docker 配置已加入并纳入 CI smoke。

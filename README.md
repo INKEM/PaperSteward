@@ -2,25 +2,29 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
+当前处于 **P2 初始化协商与确认门（S1 完成）**：P0 的配置、API、CLI 与演示链路
 已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
 事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
 评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
-registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 实现与本地验收
-完成，整体验收 F1–F3 已返工；Docker 容器 build/run 已验证，但 CI 运行证据与依赖
-弃用警告仍是发布债务，P2 尚未开始。
+registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 整体验收已通过：
+Docker 容器 build/run 与 CI 均闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，
+P2-S1 已提供持久化初始化状态、G1–G4 顺序确认接口与统一执行门禁。
+档案/分类法/校准/试运行的业务证据校验和用户确认入口在 S2–S5 接入，当前尚不能
+通过外部接口激活自动推送。详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
 
 ## 当前能力
 
 - `GET /health`：返回版本、运行环境与数据库连通性；
 - `GET /papers`：从正式 `paper` 表返回文献列表（只读）；
+- `GET /onboarding`、`POST /onboarding/start`：查看/开始初始化（幂等）；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
 - 结构化日志、`X-Request-ID`、统一错误响应；
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
-- 正式领域表与仓储：14 张表、部分唯一索引/CHECK/FK、事件与评分快照追加写；
+- 正式领域表与仓储：P1 的 14 张表 + onboarding 表（head `0003`）；
+  部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；

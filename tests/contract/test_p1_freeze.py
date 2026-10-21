@@ -50,7 +50,8 @@ def test_paper_and_document_status_freeze() -> None:
 
 def test_database_table_and_constraint_freeze() -> None:
     tables = set(Base.metadata.tables)
-    assert tables == {
+    # P1 表契约保留；P2 起只允许通过新迁移追加表。
+    assert tables >= {
         "archive_snapshot",
         "bucket",
         "config",
@@ -81,11 +82,11 @@ def test_database_table_and_constraint_freeze() -> None:
 def test_migration_revision_freeze() -> None:
     versions = ROOT / "migrations" / "versions"
     revision_files = sorted(versions.glob("*.py"))
-    assert [path.name for path in revision_files] == [
+    assert [path.name for path in revision_files[:2]] == [
         "0001_initial_schema.py",
         "0002_domain_schema.py",
     ]
-    latest = revision_files[-1].read_text(encoding="utf-8")
+    latest = revision_files[1].read_text(encoding="utf-8")
     assert re.search(r'revision: str = "0002"', latest)
     assert re.search(r'down_revision: str \| Sequence\[str\] \| None = "0001"', latest)
 

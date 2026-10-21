@@ -57,6 +57,7 @@ from papersteward.storage import (
     TaxonomyRepository,
 )
 from papersteward.storage.mappers import score_snapshot_to_row
+from papersteward.storage.models import OnboardingRow
 
 NOW = datetime(2026, 10, 21, 8, 0, tzinfo=UTC)
 SCORE_DATE = date(2026, 10, 21)
@@ -495,6 +496,9 @@ def test_profile_and_taxonomy_version_round_trip(db_session: Session) -> None:
 
 
 def test_archive_snapshot_is_insert_only(db_session: Session) -> None:
+    # 此测试只验证归档仓储；完整 G1–G4 流程由 test_onboarding.py 覆盖。
+    db_session.add(OnboardingRow(id=1, stage="active", revision=5, updated_at=NOW))
+    db_session.flush()
     papers = PaperRepository(db_session)
     archives = ArchiveSnapshotRepository(db_session)
     papers.add(_paper())

@@ -34,6 +34,28 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from papersteward.storage.db import Base, utc_now
 
 
+class OnboardingRow(Base):
+    """单用户初始化流程；门槛证据与确认者保存在追加写事件中。"""
+
+    __tablename__ = "onboarding"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint(
+            "(stage = 'profile' AND revision = 1) OR "
+            "(stage = 'taxonomy' AND revision = 2) OR "
+            "(stage = 'calibration' AND revision = 3) OR "
+            "(stage = 'dry_run' AND revision = 4) OR "
+            "(stage = 'active' AND revision = 5)",
+            name="stage_matches_revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ResearchProfileRow(Base):
     """研究方向档案版本；``status='confirmed'`` 每个 id 只能有一条。"""
 
