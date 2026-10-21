@@ -26,19 +26,28 @@ from papersteward.observability.logging import (
 logger = logging.getLogger(__name__)
 
 
+def _request_id(request: Request) -> str | None:
+    """优先读取中间件写入的 request.state，回退到 contextvar。"""
+    value = getattr(request.state, "request_id", None)
+    if isinstance(value, str) and value:
+        return value
+    return get_request_id()
+
+
 def _response(
     status_code: int,
     code: ErrorCode,
     message: str,
     details: Any = None,
     headers: Mapping[str, str] | None = None,
+    request_id: str | None = None,
 ) -> JSONResponse:
     body = ErrorResponse(
         error=ErrorBody(
             code=code,
             message=message,
             details=details,
-            request_id=get_request_id(),
+            request_id=request_id or get_request_id(),
         )
     )
     return JSONResponse(
@@ -93,6 +102,7 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
         code=exc.code,
         message=exc.message,
         details=exc.details,
+        request_id=_request_id(request),
     )
 
 
@@ -120,6 +130,7 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
         message=message,
         details=details,
         headers=exc.headers,
+        request_id=_request_id(request),
     )
 
 
@@ -140,6 +151,7 @@ async def validation_exception_handler(request: Request, exc: Exception) -> JSON
         code=ErrorCode.VALIDATION_ERROR,
         message="请求参数校验失败",
         details=details,
+        request_id=_request_id(request),
     )
 
 
@@ -150,7 +162,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     contextvar 中的 request_id 会被清空，因此优先从 ``request.state`` 读取，
     并在记录日志期间重新绑定。
     """
-    request_id = getattr(request.state, "request_id", None) or get_request_id()
+    request_id = _request_id(request)
     token = set_request_id(request_id)
     try:
         logger.error(
@@ -162,6 +174,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             code=ErrorCode.INTERNAL_ERROR,
             message="服务器内部错误，请查看日志",
+            request_id=request_id,
         )
     finally:
         reset_request_id(token)

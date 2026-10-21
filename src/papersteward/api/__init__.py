@@ -1,1 +1,5 @@
-"""HTTP 路由、依赖与错误响应（P0-S3 起填充）。"""
+"""HTTP 接口层。"""
+
+from papersteward.api.app import create_app
+
+__all__ = ["create_app"]

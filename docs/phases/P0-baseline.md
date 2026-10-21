@@ -1,6 +1,6 @@
 # P0 工程基线与 Walking Skeleton
 
-> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1、P0-S2 完成）
+> **阶段**：P0｜**里程碑**：Alpha 基础｜**状态**：进行中（P0-S1、P0-S2、P0-S3 完成）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P0
 > **最后更新**：2026-10-21
 
@@ -15,7 +15,7 @@
 |--------|------|------|------|----------|
 | P0-S1 | 包结构、配置、日志、错误响应 | **完成** | — | ruff/mypy/pytest；配置错误可定位 |
 | P0-S2 | DB 连接、Alembic、临时测试库 | **完成** | S1 | 迁移 up/down；仓储 CRUD |
-| P0-S3 | API 骨架、health、papers stub | 待开始 | S1/S2 | `curl /health`；`GET /papers` |
+| P0-S3 | API 骨架、health、papers stub | **完成** | S1/S2 | `curl /health`；`GET /papers` |
 | P0-S4 | CLI 骨架、demo seed | 待开始 | S1–S3 | `papersteward doctor`；`demo seed` |
 | P0-S5 | Makefile、Docker、CI、AGENTS/README | 待开始 | S1–S4 | `make check` / `make demo` |
 
@@ -243,27 +243,150 @@ rm -f /tmp/papersteward-s2.db
 - 非 SQLite 的 Engine 分支已保留但未测试（P1 若启用 Postgres 再补契约测试）。
 - `make check` / `migrate-check` 属于 S5；本阶段用等价分项命令验收。
 
-## 5. 交接给 P0-S3
+## 5. P0-S3 执行记录
+
+### 5.1 目标
+
+建立可启动的 FastAPI 应用、健康检查与只读 papers stub 接口，并把 S1/S2 的
+错误响应、请求上下文、数据库会话真正接入 API 层。
+
+### 5.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `src/papersteward/api/app.py` | `create_app()`、lifespan、注入/释放 Engine、挂载中间件与路由 |
+| `src/papersteward/api/routes.py` | `GET /health`、`GET /papers` |
+| `src/papersteward/api/deps.py` | 每请求一个 Session，关闭交给依赖清理 |
+| `src/papersteward/api/schemas.py` | `HealthResponse`、`PaperRead`、`PaperListResponse` |
+| `src/papersteward/api/middleware.py` | `X-Request-ID` 生成/透传与日志上下文 |
+| `src/papersteward/api/errors.py` | 错误处理器优先读取 `request.state.request_id` |
+| `src/papersteward/main.py` | ASGI 入口与进程日志配置 |
+| `src/papersteward/api/__init__.py` | 导出 `create_app` |
+| `tests/integration/test_api.py` | 健康检查、papers、请求 ID、错误信封、OpenAPI、main 测试 |
+| `tests/unit/test_schemas.py` | 时间字段 UTC 规范化正反例 |
+
+### 5.3 API 契约
+
+**`GET /health`**
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0.dev0",
+  "environment": "dev",
+  "database": "ok"
+}
+```
+
+- 200：应用可用且 `SELECT 1` 成功；
+- 503：数据库不可用，`status="degraded"`、`database="unavailable"`；
+- 只检查连接，不检查迁移版本或表是否存在；schema 由 Alembic 负责；
+- 目前只注册 GET（HEAD 返回 405）。
+
+**`GET /papers`**
+
+```json
+{
+  "items": [
+    {
+      "id": "p001",
+      "title": "Retrieval-Augmented Generation",
+      "status": "new",
+      "created_at": "2026-10-21T08:23:54.959778Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+- Query：`limit` 默认 50，范围 1–200；`offset` 默认 0，最小 0；
+- 排序：`created_at ASC, id ASC`；
+- 空库返回 `items: []`、`total: 0`，不返回 404；
+- `created_at` 在 API 边界统一为 UTC；非法参数返回 S1 的 422 错误信封；
+- 只读接口，不提交事务；详情/创建接口留到后续阶段。
+
+**请求 ID**
+
+- 合法 `X-Request-ID`（`[A-Za-z0-9._:-]{1,128}`）透传；否则生成 UUID4 hex；
+- 同时写入 `request.state`、日志 contextvar、响应头与错误响应体；
+- 未处理异常由最外层 ServerErrorMiddleware 处理时，仍从 `request.state` 关联 ID。
+
+**生命周期**
+
+- `create_app(engine=...)` 注入临时 Engine 时由调用方 dispose，测试不复用生产库；
+- 不注入时在 lifespan 中按 `Settings.db_url` 创建，并在关闭时 dispose；
+- 启动不自动建表/迁移；需先执行 `alembic upgrade head`，否则 `/papers` 会因缺表返回 500。
+
+### 5.4 验收命令与结果
+
+```bash
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/pytest -q
+.venv/bin/pytest tests/integration/test_api.py -q
+```
+
+2026-10-21 本地结果：
+
+- `ruff format --check`：39 个文件已格式化；
+- `ruff check`：通过；
+- `mypy`（strict）：26 个源文件无错误；
+- `pytest`：**69 passed**，0 failed；S3 新增 9 个 API 测试 + 2 个 schema 单元测试；
+- 覆盖率：整体 95%；`api/app.py` 94%、`api/errors.py` 83%、`main.py` / `api/schemas.py` 100%；
+- 唯一警告仍是上游 `starlette.testclient` 的 `httpx2` 迁移提示。
+
+实际 Uvicorn 演练（临时库 + 迁移 + 种子数据）：
+
+```bash
+export PAPERSTEWARD_DATABASE_URL="sqlite+pysqlite:////tmp/papersteward-s3.db"
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn papersteward.main:app --host 127.0.0.1 --port 8000
+curl -s http://127.0.0.1:8000/health
+curl -s "http://127.0.0.1:8000/papers?limit=10"
+```
+
+观察结果：
+
+- `/health` 返回 200、版本 `0.1.0.dev0`、`environment=dev`、`database=ok`；
+- 种子 `p001` 出现在 `/papers` 中，`total=1`，`created_at` 带 UTC `Z`；
+- 合法 `X-Request-ID` 原样回写响应头；
+- 空库 `/papers` 返回 `{"items":[],"total":0,"limit":50,"offset":0}`；
+- 数据库不可用时 `/health` 的 503 路径由 TestClient 集成测试覆盖。
+
+### 5.5 已知限制与偏差
+
+- 只实现只读列表；没有 `GET /papers/{id}`、创建、更新接口。
+- 应用不自动迁移；S5 的 bootstrap/Makefile 必须显式串联 `alembic upgrade head`。
+- `/health` 是连接级检查，不校验 schema 版本；迁移状态由 S4 `doctor` 补充。
+- 只支持 GET；若后续 Docker healthcheck 需要 HEAD，可再加路由。
+- 本地单用户、无鉴权、无 CORS 配置，符合 P0 范围。
+- 仍未引入 CLI/Makefile/Docker/CI，这些属于 S4/S5。
+
+## 6. 交接给 P0-S4
 
 **已就绪**
 
-- `create_db_engine()`、`create_session_factory()`、`session_scope()`；
-- `Base`、`Paper`、`Run`、`PaperRepository`、`check_database()`；
-- 迁移 `0001` 与 `alembic upgrade/downgrade` 命令；
-- 临时 SQLite 测试 fixture（`sqlite_engine`、`schema_engine`、`db_session`）；
-- S1 的 `install_error_handlers()` 与 `configure_logging()`。
+- `create_app()` 与 `papersteward.main:app`；uvicorn 可直接启动；
+- `/health`、`GET /papers`、请求 ID 中间件、统一错误信封；
+- 每请求 Session 依赖与 lifespan Engine 管理；
+- 临时 SQLite 测试 fixture 与 API 集成测试模式；
+- `Settings`、`PaperRepository`、Alembic `0001`。
 
-**P0-S3 需要完成**
+**P0-S4 需要完成**
 
-- FastAPI app factory 与 lifespan：启动创建 Engine/会话工厂，关闭时 `dispose()`；
-- `/health`：返回版本、环境、数据库可用性（调用 `check_database`）；
-- `GET /papers`：通过 `PaperRepository` 返回列表，空库返回空数组；
-- 挂载 `install_error_handlers()`；
-- TestClient 使用临时数据库 fixture，禁止访问 `var/papersteward.db`；
-- API 层不直接持有长生命周期 Session，按请求创建/关闭。
+- CLI 骨架与 `pyproject.toml` 的 `papersteward` 入口点；
+- `papersteward doctor`：校验配置、数据库连接、迁移 current/head；
+- `papersteward demo seed`：在已迁移数据库上幂等写入 `p001` fixture，
+  通过 `session_scope`/`PaperRepository`，不重复插入；
+- 未迁移或数据库不可用时给出可操作错误，不静默建表；
+- CLI 测试使用临时数据库；不访问真实网络/LLM；
+- 可选的 `serve` 子命令：复用 `main.app` 与 `Settings.api_host/api_port`。
 
 **不能做什么**
 
-- 还没有 CLI 与 `demo seed`（S4）；
-- 还没有 Makefile/Docker/CI（S5）；
-- 不引入 P1 领域模型、真实来源、LLM 或评分逻辑。
+- 还没有 Makefile/Docker/CI/README（S5）；
+- 不引入 P1 领域模型、真实来源、LLM、评分或 UI；
+- 不实现多用户/鉴权/Postgres。
