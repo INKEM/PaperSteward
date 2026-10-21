@@ -22,6 +22,10 @@
 - **P1-S1**：纯领域层 `core/`：稳定枚举、15 个不可变实体/值对象、领域错误字段定位、
   文献/文档/运行状态机，以及主标签、归属桶、评分冻结、追加写、归档不可变、
   低置信度与推送门槛等不变量。新增 60+ 单元测试，`core/` 覆盖率 99%。
+- **P1-S2**：正式领域表与迁移 `0002`（14 张表、部分唯一索引、CHECK、外键）；
+  ORM `*Row` 与领域实体映射；13 个仓储；状态迁移同事务追加事件；事件/评分快照/
+  归档快照只追加；P0 `papers`/`runs` 数据迁移；集成测试覆盖 up/down、约束、
+  JSON/UTC 往返。`storage/` 覆盖率 96%。
 
 ### Fixed
 
@@ -32,7 +36,9 @@
 
 - `docs/phases/P0-baseline.md` 记录了 P0 各小阶段的契约、验收证据与后续交接。
 - 当前阶段切换到 P1；`docs/phases/P1-domain-documents-llm.md` 冻结 S1 契约并
-  给出 P1-S2 迁移/仓储交接。
+  给出 P1-S3 文档解析交接。
+- `GET /papers` 的 `status` 从 stub 值 `new` 变为正式枚举 `discovered`；响应信封不变。
+- `demo seed` 与 API 改用正式 `paper` 表；`doctor` 迁移版本显示 `0002`。
 
 ### Security
 
@@ -41,7 +47,9 @@
 
 ### Notes
 
-- P0 的 `papers` / `runs` 是 stub 表，P1-S2 将用正式迁移替换；
-- P1-S1 只有纯领域契约，尚无新的数据库表、仓储、文档解析、LLM 或 CLI 命令；
+- P0 的 `papers` / `runs` 已由迁移 `0002` 替换；升级会迁移最小字段，降级会丢弃
+  正式表数据并恢复空的 stub 表；
+- P1-S1/S2 尚无 profile/taxonomy Markdown 解析、diff、评分 YAML 校验、LLM 调用或
+  真实文献源；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
 - Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。

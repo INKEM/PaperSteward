@@ -8,14 +8,15 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from papersteward.config import get_settings
+from papersteward.core.entities import Paper
+from papersteward.core.enums import PaperStatus
 from papersteward.storage import (
     Base,
-    Paper,
+    PaperRepository,
     check_database,
     create_db_engine,
     create_session_factory,
     session_scope,
-    utc_now,
 )
 
 
@@ -69,9 +70,11 @@ def test_in_memory_engine_shares_connection() -> None:
         Base.metadata.create_all(engine)
         factory = create_session_factory(engine)
         with session_scope(factory) as session:
-            session.add(Paper(id="p001", title="RAG", created_at=utc_now()))
+            PaperRepository(session).add(Paper(id="p001", title="RAG"))
         with session_scope(factory) as session:
-            assert session.get(Paper, "p001") is not None
+            paper = PaperRepository(session).get("p001")
+            assert paper is not None
+            assert paper.status is PaperStatus.DISCOVERED
     finally:
         engine.dispose()
 
@@ -92,16 +95,16 @@ def test_check_database_returns_false_for_invalid_file(tmp_path: Path) -> None:
 
 def test_session_scope_commits(session_factory: sessionmaker[Session]) -> None:
     with session_scope(session_factory) as session:
-        session.add(Paper(id="p001", title="RAG", created_at=utc_now()))
+        PaperRepository(session).add(Paper(id="p001", title="RAG"))
 
     with session_scope(session_factory) as session:
-        assert session.get(Paper, "p001") is not None
+        assert PaperRepository(session).get("p001") is not None
 
 
 def test_session_scope_rolls_back_on_error(session_factory: sessionmaker[Session]) -> None:
     with pytest.raises(RuntimeError, match="stop"), session_scope(session_factory) as session:
-        session.add(Paper(id="p001", title="RAG", created_at=utc_now()))
+        PaperRepository(session).add(Paper(id="p001", title="RAG"))
         raise RuntimeError("stop")
 
     with session_scope(session_factory) as session:
-        assert session.get(Paper, "p001") is None
+        assert PaperRepository(session).get("p001") is None

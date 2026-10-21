@@ -11,6 +11,8 @@ from sqlalchemy.engine import Engine
 
 from papersteward import __version__
 from papersteward.api import create_app
+from papersteward.core.entities import Paper
+from papersteward.core.enums import PaperStatus
 from papersteward.storage import (
     PaperRepository,
     create_db_engine,
@@ -31,7 +33,14 @@ def _seed(engine: Engine, rows: list[tuple[str, str, datetime]]) -> None:
     with session_scope(factory) as session:
         repository = PaperRepository(session)
         for paper_id, title, created_at in rows:
-            repository.create(paper_id, title, created_at=created_at)
+            repository.add(
+                Paper(
+                    id=paper_id,
+                    title=title,
+                    status=PaperStatus.DISCOVERED,
+                    first_seen_at=created_at,
+                )
+            )
 
 
 def test_health_reports_version_and_database(api_client: TestClient) -> None:
@@ -124,7 +133,7 @@ def test_papers_returns_rows_in_created_order(
 
     first = body["items"][0]
     assert first["title"] == "Third"
-    assert first["status"] == "new"
+    assert first["status"] == "discovered"
     created_at = datetime.fromisoformat(first["created_at"].replace("Z", "+00:00"))
     assert created_at.utcoffset() == timedelta(0)
 

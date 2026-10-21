@@ -353,6 +353,11 @@ class Paper:
         if not isinstance(self.oa_status, OaStatus):
             raise DomainValidationError("paper.oa_status", "必须是 OaStatus")
 
+    @property
+    def created_at(self) -> datetime:
+        """P0 ``/papers`` 响应的兼容别名；新代码使用 ``first_seen_at``。"""
+        return self.first_seen_at
+
 
 @dataclass(frozen=True, slots=True)
 class PaperTag:

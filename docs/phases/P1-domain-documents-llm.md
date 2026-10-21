@@ -1,6 +1,6 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1 完成；P1-S2–S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1/S2 完成；P1-S3–S6 待执行
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
 > **上一阶段交接**：[P0-baseline.md](P0-baseline.md) §8.2
@@ -19,14 +19,14 @@ P2、P3、P4/P5、P6。
 | 小阶段 | 目标 | 状态 | 依赖 | 主要验收 |
 |--------|------|------|------|----------|
 | P1-S1 | 实体、枚举、状态机、不变量 | **完成** | P0 | 单元测试；无 DB 依赖 |
-| P1-S2 | 正式迁移、仓储、事件日志 | 待开始 | S1 | 迁移 up/down；约束与追加写 |
+| P1-S2 | 正式迁移、仓储、事件日志 | **完成** | S1 | 迁移 up/down；约束与追加写 |
 | P1-S3 | profile/taxonomy 解析、版本、diff | 待开始 | S1/S2 | validate/diff；确认事件 |
 | P1-S4 | 评分 YAML 校验、JSON schema | 待开始 | S1/S3 | 非法权重拒绝；schema 正反例 |
 | P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | 待开始 | S1/S4 | 非法 JSON 不进入业务表 |
 | P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | 待开始 | S1–S5 | `make check` 等阶段门 |
 
-> S2 起才引入数据库与 CLI 演示；S1 刻意保持为纯领域层，避免把迁移细节
-> 反向污染业务契约。
+> S1 刻意保持为纯领域层；S2 才引入正式数据库与仓储，避免把迁移细节反向污染
+> 业务契约。
 
 ## 3. 冻结契约（P1-S1）
 
@@ -189,7 +189,7 @@ make check
 ### 4.3 与计划的偏差
 
 - **文件数与行数超过指引**：S1 是领域契约的基础设施，实体、校验与测试需同交；
-  文件数超过“≤8 个文件”、行数超过 400 行。S2 起按常规小阶段控制。
+  文件数超过“≤8 个文件”、行数超过 400 行。S2 因 schema/仓储面较大同样超出，见 §5.6。
 - **额外加入 `Provenance` 与 `ArchiveSnapshot`**：分别落实“所有 Agent 产物带
   溯源”和“归档快照不可变”，否则不变量无法被测试。
 - **未实现迁移/仓储/CLI**：属于 P1-S2/S3；S1 只冻结纯领域契约。
@@ -233,10 +233,133 @@ make check
 - 时间字段统一 UTC aware；SQLite 读取时由仓储恢复为 aware UTC；
 - `archive_snapshot` 只允许 INSERT，不提供 UPDATE 仓储方法。
 
-## 5. 风险与待确认
+## 5. P1-S2 执行记录
 
-- **S2 的 DB 约束能力**：SQLite 对“每篇恰好一个主标签/一个 filing”的部分唯一索引
-  支持有限，需在仓储事务与服务层双重校验；迁移测试必须覆盖。
+### 5.1 目标
+
+用正式领域表替换 P0 的 `papers` / `runs` stub，建立 ORM 行与领域实体之间的映射、
+仓储接口和只追加的事件日志；DB 约束与 S1 不变量形成双重校验。
+
+### 5.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `migrations/versions/0002_domain_schema.py` | 建立 14 张正式表；迁移 P0 最小字段；可降级回 stub |
+| `src/papersteward/storage/models.py` | `*Row` ORM 模型、FK/CHECK/部分唯一索引 |
+| `src/papersteward/storage/mappers.py` | 行 ↔ 不可变实体；枚举、JSON、UTC 转换 |
+| `src/papersteward/storage/repositories.py` | 13 个仓储：论文、标签、桶、摘要、评分、事件、评分/阅读、配置、运行、档案、分类法、归档 |
+| `src/papersteward/storage/__init__.py` | 仓储与行模型导出 |
+| `src/papersteward/cli/demo.py` | demo seed 改用正式 `Paper` 与仓储 |
+| `tests/integration/test_migrations.py` | 0002 up/down、P0 数据迁移、`alembic check` |
+| `tests/integration/test_repositories.py` | 往返、事务边界、约束、追加写、JSON/UTC |
+| `tests/integration/test_api.py`、`test_cli.py`、`test_database.py` | 适配正式模型与 0002 版本 |
+
+### 5.3 数据库契约
+
+14 张表：`research_profile`、`taxonomy`、`tag`、`bucket`、`paper`、`paper_tag`、
+`paper_bucket`、`summary`、`score_snapshot`、`event`、`rating`、`config`、`run`、
+`archive_snapshot`。
+
+关键约束：
+
+- `research_profile` / `taxonomy`：`(id, version)` 复合主键；每个 id 最多一个
+  `confirmed` 版本（SQLite 部分唯一索引）；`draft` 不得有 `confirmed_at`；
+- `tag`：`(taxonomy_id, taxonomy_version, code)` 复合主键，FK 级联到分类法版本；
+- `paper_tag`：`(paper_id, tag_code, role)` 主键；`role='primary'` 时 `paper_id`
+  部分唯一；置信度 0–1；溯源列全空或全非空；
+- `paper_bucket`：`role='filing'` 时 `paper_id` 部分唯一；FK 指向 `paper`/`bucket`；
+- `score_snapshot`：`(paper_id, score_date)` 主键；各分项 0–100；`priority` 与
+  `tier` 恰好一个非空；
+- `summary`：每篇一条；`event`：主键 ID，外键 `paper_id` 可为空；
+- `run`：`running` 无结束时间，终态必须有且不早于开始时间；
+- `rating`：分数为空或 1–5；`archive_snapshot`：每篇一条，仓储不提供更新/删除。
+
+数据与兼容：
+
+- 升级时把 `papers` 的 `id/title/created_at` 迁入 `paper`，`status='new'` →
+  `discovered`、`'ready'` → `screened`；把 `runs.kind` → `run_type`、旧状态映射到
+  `RunStatus`，`error` 写入 `errors_json`；
+- 降级只恢复空的 P0 stub 表，正式表数据不保留；
+- 所有 JSON 字段保留 `*_json` 命名；SQLite naive datetime 在 mapper 中补 UTC；
+- `GET /papers` 的字段信封不变，但 `status` 现在返回正式枚举值（如 `discovered`）。
+
+### 5.4 仓储契约
+
+- 构造函数接收 `Session`；只 `flush`，不 `commit`；
+- `PaperRepository.transition()` 先经 S1 状态机校验，再更新状态并同事务追加
+  `PAPER_STATUS_EVENTS` 事件；
+- `EventRepository`、`ScoreSnapshotRepository`、`ArchiveSnapshotRepository` 只提供
+  追加/读取，不提供 update/delete；
+- `SummaryRepository.save()` 对同一 paper 覆盖摘要；
+- `ProfileRepository` / `TaxonomyRepository` 按版本读写；`Taxonomy` 的标签从 `tag`
+  表加载并按“主标签优先、代码排序”恢复；
+- `ScoreSnapshotRepository.append()` 复用 `ensure_score_snapshot_append_only`；
+- 行映射统一处理枚举、JSON 列表/dict 与 UTC aware datetime。
+
+### 5.5 验收结果
+
+2026-10-21 在本地执行：
+
+- `make check`：**195 passed**，ruff/mypy 通过；
+- `make test-integration`：**57 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `make e2e`：1 passed；
+- `make demo DEMO_PORT=8766`：现有 0001 库升级到 0002，`/health` 与 `/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=papersteward.storage`：**96%**；
+- `alembic check`（测试内）：无待生成迁移；
+- 未新增依赖、未访问网络、未使用真实 LLM。
+
+### 5.6 与计划的偏差与限制
+
+- **数据迁移范围有限**：P0 stub 只有 `id/title/status/created_at` 与运行最小字段，
+  因此只能迁移这些；P0 的 `error` 文本保留在 `errors_json.error`；
+- **降级有损**：`0002 → 0001` 重建空的 `papers`/`runs`，正式表数据丢弃；这是开发期
+  stub 替换的显式取舍，已在迁移 docstring 记录；
+- **API 状态值变化**：`/papers` 从 stub 的 `new` 变为正式 `discovered`；信封不变；
+- **服务编排仍缺失**：仓储只提供状态机原子迁移；“特殊桶提升需先重算静态分”仍是
+  P5/P6 服务层职责，不能直接调用裸仓储入队；
+- **SQLite 约束**：部分唯一索引依赖 SQLite 语法；目标仍是 SQLite 本地优先，不承诺
+  Postgres；
+- **文件/行数超指引**：S2 涉及 schema、映射、13 个仓储和约束测试，超过 8 文件/
+  400 行；已在本节记录。
+
+### 5.7 交接给 P1-S3
+
+**已就绪**
+
+- `ProfileRepository` / `TaxonomyRepository`：按 `(id, version)` add/get/list，支持
+  `latest_confirmed()`；确认/编辑写入由 S3 在此之上补充；
+- 分类法标签版本化存储，`taxonomy.tags_json` 保留可读快照；
+- `EventRepository` 可写入 `profile.confirmed` / `taxonomy.confirmed`；
+- 精确字段错误、UTC/JSON 映射和约束违反测试。
+
+**P1-S3 需要完成**
+
+1. Markdown + YAML front matter 解析器，输出 `ResearchProfile` / `Taxonomy`；
+2. `profile validate` / `taxonomy validate` / `doc diff` CLI；
+3. 版本创建、确认、归档流程；确认时通过 `EventRepository` 写入事件；
+4. 字段级错误信息（复用 `DomainValidationError.field`）；
+5. 正反例与 golden diff 测试。
+
+**S3 不能做**
+
+- 评分 YAML 校验与 JSON schema（S4）；
+- LLM 网关（S5）；
+- 真实文献源、摘要/分类/评分实现（P3 起）；
+- 初始化门槛/UI（P2）。
+
+**S3 实现提示**
+
+- 确认后的版本不可原地修改；新版本用新行，旧版本置为 `archived`；
+- `Taxonomy.tags` 的代码稳定，名称/别名变更不改 code；
+- 解析失败不要写入仓储，错误需包含文件、字段与行列（如可用）；
+- diff 基于实体而非 Markdown 文本，保证确认前后一致。
+
+## 6. 风险与待确认
+
+- **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
+  仍必须由服务层不变量兜底。
 - **特殊桶提升**：`shelved → scored` 是状态机允许边，但服务层必须强制重算静态分并
   生成新快照后再入队；S2 的仓储接口应只暴露“重新评分后入队”的用例，而不是裸迁移。
 - **归档快照字段**：P6 可能要求更多阅读元数据；届时新增列/表迁移，不改既有字段。

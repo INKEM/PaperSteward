@@ -2,20 +2,21 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、数据库迁移、API、
-CLI 与演示链路已跑通；P1-S1 已提供不可变领域实体、状态机与不变量。P1-S2–S6
-（正式迁移/仓储、文档解析、配置校验、LLM 网关）与后续阶段尚未实现。
+当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
+已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 已把正式领域表、仓储与
+事件日志接入 SQLite。P1-S3–S6（文档解析、配置校验、LLM 网关）与后续阶段尚未实现。
 
 ## 当前能力
 
 - `GET /health`：返回版本、运行环境与数据库连通性；
-- `GET /papers`：返回最小 papers stub 列表；
+- `GET /papers`：从正式 `paper` 表返回文献列表（只读）；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
 - 结构化日志、`X-Request-ID`、统一错误响应；
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
+- 正式领域表与仓储：14 张表、部分唯一索引/CHECK/FK、事件与评分快照追加写；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 环境要求
@@ -120,6 +121,7 @@ papersteward demo seed
 ### `GET /papers`
 
 Query：`limit`（默认 50，范围 1–200）、`offset`（默认 0）。
+`created_at` 是 P0 兼容别名，映射正式模型中的 `first_seen_at`。
 
 ```json
 {
@@ -127,7 +129,7 @@ Query：`limit`（默认 50，范围 1–200）、`offset`（默认 0）。
     {
       "id": "p001",
       "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
-      "status": "new",
+      "status": "discovered",
       "created_at": "2026-10-21T08:00:00Z"
     }
   ],
@@ -161,7 +163,8 @@ make migrate-check
 
 - 迁移文件位于 `migrations/versions/`；
 - 应用启动**不会**自动建表或迁移；
-- P0 的 `papers` / `runs` 是 stub 表，P1-S2 会用正式领域模型替换；
+- 迁移 `0002` 已将 P0 的 `papers` / `runs` 替换为正式 `paper` / `run` 及 12 张领域表；
+  升级会迁移 P0 的最小字段，降级只恢复空的 stub 表（正式数据不保留）；
 - 测试使用临时 SQLite，不触碰本地 `var/papersteward.db`。
 
 ## Docker
@@ -204,7 +207,7 @@ src/papersteward/
   config.py       # Settings（PAPERSTEWARD_*）
   errors.py       # 统一错误模型
   observability/  # 结构化日志
-  storage/        # Engine/Session、模型、仓储、迁移状态
+  storage/        # Engine/Session、*Row ORM、mappers、仓储、迁移状态
   core/           # 领域实体/枚举/状态机/不变量（P1-S1）
   documents/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/  # P1+ 占位
 migrations/       # Alembic 迁移
@@ -215,9 +218,9 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1-S1 的领域契约尚未接入数据库/仓储/CLI；
+- P1-S2 只完成持久化与仓储；文档解析/版本 diff/确认命令在 P1-S3；
 - 不采集真实文献、不调用 LLM、不生成摘要/评分/日报；
-- API 只有只读 `/papers`，无详情/创建接口；
+- API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
 - Docker 健康检查使用 Python `urllib`，不依赖镜像内 curl；
 - 生产部署、备份/恢复、成本治理在 P8。
