@@ -546,6 +546,14 @@ Docker 验收状态：
   `sh -n` 检查 entrypoint；Compose healthcheck 与 CI Docker smoke job 已配置；
 - 因此不声称 Docker 健康检查已通过；tag 与 Docker 验收待有 Docker 的环境/CI 完成。
 
+全新 clone 验收（2026-10-21）：
+
+- `git clone --no-hardlinks . <tmp>` 后按 README 执行
+  `make bootstrap PYTHON=python3.12` 成功；
+- 同一 clone 中 `make check`（83 passed / 1 deselected）、`make migrate-check`、
+  `make e2e`、`make secret-scan`、`make demo` 全部通过；
+- 演示返回 `p001`，clone 工作区保持干净（`.env`/`var` 均被忽略）。
+
 测试数量备注：`make check` 排除 e2e，所以是 83 个；`make e2e` 单独跑 1 个；
 完整 `pytest -q` 会运行 84 个。唯一警告是上游 `starlette.testclient` 的
 `httpx2` 迁移提示。
@@ -572,6 +580,7 @@ Docker 验收状态：
 - [x] `make e2e` 通过；
 - [x] `make demo` 可复现；
 - [x] `make secret-scan` 通过；
+- [x] 全新 clone 按 README 完成 bootstrap/check/demo 验收；
 - [x] README / AGENTS / CHANGELOG / 阶段 handoff 已更新；
 - [ ] Docker Compose 健康检查（本机无 Docker；待 CI Docker job 或支持环境）；
 - [ ] tag `p0-done`（待 Docker 验收关闭后再打）。
