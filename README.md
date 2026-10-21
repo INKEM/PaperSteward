@@ -3,8 +3,9 @@
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
 当前处于 **P1 领域模型、版本化文档与 LLM 网关**：P0 的配置、API、CLI 与演示链路
-已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 已把正式领域表、仓储与
-事件日志接入 SQLite。P1-S3–S6（文档解析、配置校验、LLM 网关）与后续阶段尚未实现。
+已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
+事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档、diff 与 CLI。
+P1-S4–S6（配置校验、JSON schema、LLM 网关）与后续阶段尚未实现。
 
 ## 当前能力
 
@@ -17,6 +18,7 @@
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：14 张表、部分唯一索引/CHECK/FK、事件与评分快照追加写；
+- profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 环境要求
@@ -97,10 +99,22 @@ curl "http://127.0.0.1:8000/papers?limit=10"
 papersteward --version
 papersteward doctor
 papersteward demo seed
+
+papersteward profile validate tests/fixtures/profiles/basic.md
+papersteward taxonomy validate tests/fixtures/taxonomies/basic.md
+papersteward doc diff profile tests/fixtures/profiles/basic.md tests/fixtures/profiles/v2.md
+
+papersteward profile import tests/fixtures/profiles/basic.md
+papersteward profile confirm 1.0 --id demo-profile --at 2026-10-21T09:00:00Z
+papersteward profile archive 1.0 --id demo-profile
+papersteward doc diff profile 1.0 1.1 --id demo-profile
 ```
 
 - `doctor` 全部通过退出 0，否则退出 1；只诊断，不自动迁移；
 - `demo seed` 幂等；数据库未迁移时提示先执行 `alembic upgrade head`；
+- `profile/taxonomy validate` 只解析校验，不写库；`import` 写入 draft；
+  `confirm/archive` 经状态机并写事件；
+- `doc diff` 支持两个文件，或 `--id` + 两个数据库版本；`--json` 输出机器可读结果；
 - 安装后可直接使用 `papersteward`；在仓库内也可用 `.venv/bin/papersteward`。
 
 ## API
@@ -209,6 +223,7 @@ src/papersteward/
   observability/  # 结构化日志
   storage/        # Engine/Session、*Row ORM、mappers、仓储、迁移状态
   core/           # 领域实体/枚举/状态机/不变量（P1-S1）
+  documents/      # profile/taxonomy 解析、diff、确认/归档服务（P1-S3）
   documents/ llm/ sources/ pipeline/ scoring/ delivery/ jobs/  # P1+ 占位
 migrations/       # Alembic 迁移
 tests/            # unit / contract / integration / e2e
@@ -218,7 +233,7 @@ docs/             # 设计与阶段文档
 ## 当前范围与限制
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
-- P1-S2 只完成持久化与仓储；文档解析/版本 diff/确认命令在 P1-S3；
+- P1-S3 完成文档解析/版本 diff/确认命令；评分 YAML、JSON schema 与 LLM 网关在 P1-S4–S5；
 - 不采集真实文献、不调用 LLM、不生成摘要/评分/日报；
 - API 只有只读 `/papers`，无详情/创建接口；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
@@ -231,6 +246,7 @@ docs/             # 设计与阶段文档
 - [系统设计方案](docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md)
 - [P0 阶段记录与交接](docs/phases/P0-baseline.md)
 - [P1 阶段记录与交接](docs/phases/P1-domain-documents-llm.md)
+- [ADR 0001：YAML front matter 解析](docs/adr/0001-yaml-front-matter.md)
 
 ## 安全
 

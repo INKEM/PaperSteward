@@ -33,10 +33,11 @@ from papersteward.core.entities import (
     Taxonomy,
     utc_now,
 )
-from papersteward.core.enums import PaperStatus, RunStatus
+from papersteward.core.enums import DocumentStatus, PaperStatus, RunStatus
 from papersteward.core.invariants import ensure_score_snapshot_append_only
 from papersteward.core.state_machine import (
     PAPER_STATUS_EVENTS,
+    transition_document,
     transition_paper,
     transition_run,
 )
@@ -254,8 +255,12 @@ class EventRepository(_Repository):
         return None if row is None else event_from_row(row)
 
     def recent(self, *, limit: int = 100, offset: int = 0) -> list[Event]:
+        """按时间倒序返回最近事件。"""
         statement = (
-            select(EventRow).order_by(EventRow.created_at, EventRow.id).limit(limit).offset(offset)
+            select(EventRow)
+            .order_by(EventRow.created_at.desc(), EventRow.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return [event_from_row(row) for row in self._session.scalars(statement).all()]
 
@@ -374,6 +379,23 @@ class ProfileRepository(_Repository):
             statement = statement.where(ResearchProfileRow.id == profile_id)
         return [profile_from_row(row) for row in self._session.scalars(statement).all()]
 
+    def update_status(
+        self,
+        profile_id: str,
+        version: str,
+        target: DocumentStatus,
+        *,
+        confirmed_at: datetime | None = None,
+    ) -> ResearchProfile | None:
+        row = self._session.get(ResearchProfileRow, (profile_id, version))
+        if row is None:
+            return None
+        updated = transition_document(profile_from_row(row), target, confirmed_at=confirmed_at)
+        row.status = updated.status.value
+        row.confirmed_at = updated.confirmed_at
+        self._flush()
+        return updated
+
 
 class TaxonomyRepository(_Repository):
     """分类法版本与标签定义。"""
@@ -400,6 +422,23 @@ class TaxonomyRepository(_Repository):
         if taxonomy_id is not None:
             statement = statement.where(TaxonomyRow.id == taxonomy_id)
         return [taxonomy_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def update_status(
+        self,
+        taxonomy_id: str,
+        version: str,
+        target: DocumentStatus,
+        *,
+        confirmed_at: datetime | None = None,
+    ) -> Taxonomy | None:
+        row = self._session.get(TaxonomyRow, (taxonomy_id, version))
+        if row is None:
+            return None
+        updated = transition_document(taxonomy_from_row(row), target, confirmed_at=confirmed_at)
+        row.status = updated.status.value
+        row.confirmed_at = updated.confirmed_at
+        self._flush()
+        return updated
 
 
 class BucketRepository(_Repository):

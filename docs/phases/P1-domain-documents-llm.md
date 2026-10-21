@@ -1,6 +1,6 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1/S2 完成；P1-S3–S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S3 完成；P1-S4–S6 待执行
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
 > **上一阶段交接**：[P0-baseline.md](P0-baseline.md) §8.2
@@ -20,7 +20,7 @@ P2、P3、P4/P5、P6。
 |--------|------|------|------|----------|
 | P1-S1 | 实体、枚举、状态机、不变量 | **完成** | P0 | 单元测试；无 DB 依赖 |
 | P1-S2 | 正式迁移、仓储、事件日志 | **完成** | S1 | 迁移 up/down；约束与追加写 |
-| P1-S3 | profile/taxonomy 解析、版本、diff | 待开始 | S1/S2 | validate/diff；确认事件 |
+| P1-S3 | profile/taxonomy 解析、版本、diff | **完成** | S1/S2 | validate/diff；确认事件 |
 | P1-S4 | 评分 YAML 校验、JSON schema | 待开始 | S1/S3 | 非法权重拒绝；schema 正反例 |
 | P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | 待开始 | S1/S4 | 非法 JSON 不进入业务表 |
 | P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | 待开始 | S1–S5 | `make check` 等阶段门 |
@@ -356,11 +356,173 @@ make check
 - 解析失败不要写入仓储，错误需包含文件、字段与行列（如可用）；
 - diff 基于实体而非 Markdown 文本，保证确认前后一致。
 
-## 6. 风险与待确认
+## 6. P1-S3 执行记录
+
+### 6.1 目标
+
+建立 profile/taxonomy 的 Markdown + YAML front matter 解析、字段级校验、版本
+确认/归档、可读 diff 与 CLI，让 P2 能直接复用文档契约。
+
+### 6.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `docs/adr/0001-yaml-front-matter.md` | PyYAML 依赖决策、替代方案与安全约束 |
+| `pyproject.toml` | 运行时依赖 `PyYAML`；dev 依赖 `types-PyYAML` |
+| `src/papersteward/documents/frontmatter.py` | front matter 切分、`safe_load`、`DocumentError`（source/line/field） |
+| `src/papersteward/documents/profile.py` | profile Pydantic 契约与语义校验 |
+| `src/papersteward/documents/taxonomy.py` | `## Txx` 主标签解析、副标签 front matter、结构校验 |
+| `src/papersteward/documents/diff.py` | 实体 diff（dict/对象列表/标量列表）与稳定渲染 |
+| `src/papersteward/documents/service.py` | import / confirm / archive，同事务追加事件 |
+| `src/papersteward/cli/documents.py` | validate/import/confirm/archive/diff 命令实现 |
+| `src/papersteward/cli/main.py` | `profile`、`taxonomy`、`doc diff` 子命令 |
+| `tests/fixtures/profiles/`、`tests/fixtures/taxonomies/` | 合法/非法/版本 diff fixtures |
+| `tests/unit/test_documents_*.py`、`tests/integration/test_documents_service.py`、`test_cli_documents.py` | 解析、错误定位、diff、事件、CLI 测试 |
+
+### 6.3 文档格式契约
+
+**Profile**
+
+- 必须以 `---` 开头的 YAML front matter 开始，并有 Markdown 正文；
+- 必填：`version`、3–5 个 `core_questions`、至少 1 个 `subdirections`、
+  `include`、`reading.weekly_capacity`、`reading.deep_skim_ratio`；
+- `subdirections[].target_share` 之和必须为 1.0；`deep_skim_ratio` 两项之和必须
+  为 1.0；
+- `core_questions[].id`、`subdirections[].id` 在各自列表内唯一；
+- 未知 front matter 字段保留在 `parsed_json`，不静默丢弃；
+- `profile_id` 可省略，回退到文件名 stem；CLI 可用 `--id` 覆盖；
+- front matter 与正文不一致时以 Markdown 源为准（`content_md` 保存全文）。
+
+**Taxonomy**
+
+- front matter 必填 `version`，可选 `taxonomy_id`、`secondary_tags`；
+- 正文每个主标签用 `## T01 名称` 分节，必填“定义/纳入/排除/正例”；
+- 主标签 5–9 个，禁止“其他/Other”等兜底标签；
+- 副标签放在 front matter 的 `secondary_tags` 列表，可带 `parent_code`；
+- `边界`/`常见误分` 保留在 `content_md` 供人阅读，不进入 `Tag` 机器字段；
+- 主标签代码稳定；名称/别名变更不改 code。
+
+**错误**
+
+所有解析错误为 `DocumentError`（继承 `DomainValidationError`），带
+`source`、`line`、`field` 与中文 message，例如：
+
+```text
+tests/fixtures/profiles/invalid.md:5: front_matter.core_questions:
+List should have at least 3 items after validation, not 1
+```
+
+### 6.4 版本、确认与归档
+
+- `profile import` / `taxonomy import`：解析通过后写入 draft；解析失败不写库；
+- `profile confirm` / `taxonomy confirm`：只允许 draft → confirmed；若已存在旧
+  `confirmed` 版本，先将其转为 `archived`，再确认新版本；
+- 确认/归档事件写入 `event` 表：`profile.confirmed`、`profile.archived`、
+  `taxonomy.confirmed`、`taxonomy.archived`，payload 含 `document_id/version/status`；
+- `archive` 只允许 confirmed → archived；draft 归档被状态机拒绝；
+- 事件 ID 由 `kind/action/document_id/version` 的 SHA-256 前 16 位生成，稳定且
+  重复确认不会产生第二条同 ID 事件（状态机也会拒绝重复确认）；
+- 服务不 commit；CLI 通过 `session_scope` 控制事务。
+
+### 6.5 Diff
+
+- diff 基于实体/解析后的结构，不比较 Markdown 原始文本；
+- dict 逐键比较；带唯一 `id`/`code` 的对象列表按标识比较；标量列表按多重集合
+  比较，忽略顺序；
+- 输出固定 `+ path: value`、`- path: value`、`~ path: old -> new`；无差异输出
+  “无差异”；
+- CLI 支持两个文件，或 `--id` + 两个数据库版本。
+
+### 6.6 CLI
+
+```bash
+papersteward profile validate tests/fixtures/profiles/basic.md
+papersteward taxonomy validate tests/fixtures/taxonomies/basic.md
+papersteward doc diff profile tests/fixtures/profiles/basic.md tests/fixtures/profiles/v2.md
+papersteward profile import tests/fixtures/profiles/basic.md
+papersteward profile confirm 1.0 --id demo-profile --at 2026-10-21T09:00:00Z
+papersteward profile archive 1.0 --id demo-profile
+papersteward doc diff profile 1.0 1.1 --id demo-profile
+```
+
+- validate 成功输出 `OK profile/taxonomy ...`，失败退出 1 并打印字段/行；
+- import/confirm/archive 失败退出 1，并给出可操作提示；
+- `--json` 可用于 validate/diff 的机器读取。
+
+### 6.7 验收结果
+
+2026-10-21 在本地执行：
+
+- `make check`：**256 passed**，ruff/mypy 通过；
+- `make test-integration`：**73 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `make e2e`：1 passed；
+- `make demo DEMO_PORT=8768`：`/health` 与 `/papers` 正常；
+- `make secret-scan`：OK；
+- `pytest --cov=papersteward.documents`：**97%**；
+- 演示命令 `profile validate` / `taxonomy validate` / `doc diff` 均通过；
+- 新增运行时依赖仅 PyYAML（已有 ADR），未访问网络或真实 LLM。
+
+### 6.8 与计划的偏差与限制
+
+- **新增 PyYAML**：按规则先写 ADR，使用 `safe_load`；替代方案见
+  [ADR 0001](../adr/0001-yaml-front-matter.md)；
+- **taxonomy 副标签格式**：设计文档正文模板只展示主标签，S3 将副标签放在
+  front matter 的 `secondary_tags`，避免解析 `###` 段落带来的歧义；
+- **taxonomy 边界/误分说明**：保留在 `content_md`，不进入 `Tag` 字段；若 P2 需要
+  边界案例库，需新增字段/迁移；
+- **`updated`**：profile 写入 `parsed_json`；taxonomy 实体暂无 `updated` 字段，
+  仅保留在 Markdown 源，diff 不比较该字段；
+- **版本号是字符串**：diff 不按 semver 排序，确认也不自动递增；由用户/Agent 写入
+  新 version；
+- **确认需要显式 `--id`**：当前没有“默认 profile/taxonomy”概念，避免误确认；
+- **文件/行数超指引**：S3 涉及解析器、diff、服务、CLI、fixtures 与测试，超过
+  8 文件/400 行；按阶段 handoff 说明。
+
+### 6.9 交接给 P1-S4
+
+**已就绪**
+
+- 文档 parser 的 Pydantic 模式、字段级错误与 fixture 组织方式；
+- `Config` 表与 `ConfigRepository`（版本化追加写）；
+- `EventRepository` 可写 `config.updated`；
+- `DocumentError` 可作为后续 YAML/schema 错误的统一外壳。
+
+**P1-S4 需要完成**
+
+1. 评分 YAML 加载与校验：权重和、全局/分项权重、`wR`/`wS` 下限、`wA` 上限、
+   gates 与 stability 范围；
+2. JSON schema：分类、摘要、评分、事件（正反例）；
+3. 配置版本创建（`Config`）与非法配置拒绝；
+4. `config validate` 与必要的 CLI/测试；
+5. 所有失败信息可定位到字段。
+
+**S4 不能做**
+
+- LLM 网关与 FakeLLM（S5）；
+- 真实评分算法/队列（P5）；
+- 真实文献源、摘要/分类实现（P3/P4）；
+- 初始化 UI/门槛（P2）。
+
+**实现提示**
+
+- 权重校验先做结构校验，再做跨字段和；错误信息带配置路径；
+- JSON schema 与 Pydantic 文档模型保持字段一致；
+- 配置版本只追加，不覆盖历史；`config.updated` 事件写入同一事务；
+- 不引入除 PyYAML 之外的 YAML/schema 运行时依赖，除非另有 ADR。
+
+## 7. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
 - **特殊桶提升**：`shelved → scored` 是状态机允许边，但服务层必须强制重算静态分并
   生成新快照后再入队；S2 的仓储接口应只暴露“重新评分后入队”的用例，而不是裸迁移。
 - **归档快照字段**：P6 可能要求更多阅读元数据；届时新增列/表迁移，不改既有字段。
-- **EventType 扩展**：P2 的 G1–G4 门槛事件将追加值，不改已有值。
+- **EventType 扩展**：P2 的 G1–G4 门槛事件将追加值，不改已有值；P1-S3 已追加
+  `profile.archived` / `taxonomy.archived`。
+- **front matter 安全**：只使用 `safe_load`，不构造自定义对象；锚点/别名可被
+  YAML 展开，超大文档需在 P2 导入层限制大小。
+- **taxonomy 正文解析**：当前只识别单行 `- 字段：值`，多行/嵌套说明保留在
+  `content_md`；P2 若需要结构化边界案例，应扩展模型并走迁移/ADR。
+- **版本字符串**：不解析 semver；`1.10` 与 `1.9` 的排序由用户输入决定，P2 需要
+  版本序号时再引入明确规则。

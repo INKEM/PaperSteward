@@ -26,6 +26,11 @@
   ORM `*Row` 与领域实体映射；13 个仓储；状态迁移同事务追加事件；事件/评分快照/
   归档快照只追加；P0 `papers`/`runs` 数据迁移；集成测试覆盖 up/down、约束、
   JSON/UTC 往返。`storage/` 覆盖率 96%。
+- **P1-S3**：Markdown + YAML front matter 解析与字段级错误；profile/taxonomy
+  Pydantic 契约与语义校验；基于实体的可读 diff；draft/confirm/archive 服务与
+  `profile.*`/`taxonomy.*` 事件；`profile`/`taxonomy`/`doc diff` CLI；
+  `tests/fixtures/profiles`/`taxonomies` 与测试。文档模块覆盖率 97%。
+- **依赖**：新增运行时 `PyYAML` 与开发依赖 `types-PyYAML`，见 ADR 0001。
 
 ### Fixed
 
@@ -35,10 +40,12 @@
 ### Changed
 
 - `docs/phases/P0-baseline.md` 记录了 P0 各小阶段的契约、验收证据与后续交接。
-- 当前阶段切换到 P1；`docs/phases/P1-domain-documents-llm.md` 冻结 S1 契约并
-  给出 P1-S3 文档解析交接。
+- 当前阶段为 P1；`docs/phases/P1-domain-documents-llm.md` 记录 S1–S3 契约、
+  验收证据与 S4（配置/JSON schema）交接。
 - `GET /papers` 的 `status` 从 stub 值 `new` 变为正式枚举 `discovered`；响应信封不变。
 - `demo seed` 与 API 改用正式 `paper` 表；`doctor` 迁移版本显示 `0002`。
+- 新增文档命令：`profile/taxonomy validate|import|confirm|archive`、`doc diff`；
+  确认新版本会自动归档同一文档的旧 confirmed 版本。
 
 ### Security
 
@@ -49,7 +56,7 @@
 
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换；升级会迁移最小字段，降级会丢弃
   正式表数据并恢复空的 stub 表；
-- P1-S1/S2 尚无 profile/taxonomy Markdown 解析、diff、评分 YAML 校验、LLM 调用或
-  真实文献源；
+- P1-S3 尚无评分 YAML 校验、JSON schema、LLM 调用或真实文献源；
+- taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；
 - 当前没有真实文献源、LLM 摘要/分类、评分、日报或 Web UI；
 - Docker 配置已加入并纳入 CI smoke；本地无 daemon 时以 CI 结果为准。

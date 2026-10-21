@@ -167,7 +167,9 @@ class EventType(StrEnum):
     PAPER_RESTORED = "paper.restored"
     PAPER_REVERTED = "paper.reverted"
     PROFILE_CONFIRMED = "profile.confirmed"
+    PROFILE_ARCHIVED = "profile.archived"
     TAXONOMY_CONFIRMED = "taxonomy.confirmed"
+    TAXONOMY_ARCHIVED = "taxonomy.archived"
     CONFIG_UPDATED = "config.updated"
 
 

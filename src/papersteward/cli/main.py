@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from typing import cast
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,6 +13,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward import __version__
 from papersteward.cli.demo import seed_demo_data
 from papersteward.cli.doctor import DoctorReport, run_doctor
+from papersteward.cli.documents import (
+    DocumentKind,
+    run_archive,
+    run_confirm,
+    run_diff,
+    run_import,
+    run_validate,
+)
 from papersteward.config import format_settings_error
 
 
@@ -38,7 +47,45 @@ def _build_parser() -> argparse.ArgumentParser:
         "seed",
         help="插入 p001 演示文献（幂等）",
     )
+
+    _add_document_commands(subparsers, "profile")
+    _add_document_commands(subparsers, "taxonomy")
+
+    doc = subparsers.add_parser("doc", help="文档版本比较")
+    doc_subparsers = doc.add_subparsers(dest="doc_command", required=True)
+    diff = doc_subparsers.add_parser("diff", help="比较两个文件或两个数据库版本")
+    diff.add_argument("kind", choices=("profile", "taxonomy"))
+    diff.add_argument("left", help="左文件路径，或数据库版本号")
+    diff.add_argument("right", help="右文件路径，或数据库版本号")
+    diff.add_argument("--id", dest="document_id", help="按数据库版本比较时的文档 ID")
+    diff.add_argument("--json", action="store_true", help="输出 JSON")
     return parser
+
+
+def _add_document_commands(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+) -> None:
+    parser = subparsers.add_parser(name, help=f"{name} 文档操作")
+    commands = parser.add_subparsers(dest=f"{name}_command", required=True)
+
+    validate = commands.add_parser("validate", help="解析并校验 Markdown 文档")
+    validate.add_argument("path", help="Markdown 文件路径")
+    validate.add_argument("--json", action="store_true", help="输出 JSON")
+
+    import_parser = commands.add_parser("import", help="解析并写入 draft 版本")
+    import_parser.add_argument("path", help="Markdown 文件路径")
+    import_parser.add_argument("--id", dest="document_id", help="覆盖文档 ID")
+
+    confirm = commands.add_parser("confirm", help="确认 draft 版本")
+    confirm.add_argument("version", help="版本号，例如 1.0")
+    confirm.add_argument("--id", dest="document_id", required=True, help="文档 ID")
+    confirm.add_argument("--at", help="确认时间（ISO 8601，带时区）")
+
+    archive = commands.add_parser("archive", help="归档已确认版本")
+    archive.add_argument("version", help="版本号，例如 1.0")
+    archive.add_argument("--id", dest="document_id", required=True, help="文档 ID")
+    archive.add_argument("--at", help="归档时间（ISO 8601，带时区）")
 
 
 def _print_doctor_report(report: DoctorReport) -> None:
@@ -86,6 +133,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_doctor()
         if args.command == "demo" and getattr(args, "demo_command", None) == "seed":
             return _run_demo_seed()
+        if args.command in {"profile", "taxonomy"}:
+            kind = cast(DocumentKind, args.command)
+            subcommand = getattr(args, f"{args.command}_command")
+            if subcommand == "validate":
+                return run_validate(kind, args.path, json_output=args.json)
+            if subcommand == "import":
+                return run_import(kind, args.path, document_id=args.document_id)
+            if subcommand == "confirm":
+                return run_confirm(kind, args.version, document_id=args.document_id, at=args.at)
+            if subcommand == "archive":
+                return run_archive(kind, args.version, document_id=args.document_id, at=args.at)
+        if args.command == "doc" and getattr(args, "doc_command", None) == "diff":
+            return run_diff(
+                cast(DocumentKind, args.kind),
+                args.left,
+                args.right,
+                document_id=args.document_id,
+                json_output=args.json,
+            )
     except KeyboardInterrupt:
         print("已取消", file=sys.stderr)
         return 130

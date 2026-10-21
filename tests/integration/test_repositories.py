@@ -295,7 +295,7 @@ def test_event_log_is_queryable_and_append_only(db_session: Session) -> None:
     events.append(Event(id="e1", event_type=EventType.PAPER_PUSHED, created_at=NOW))
     db_session.commit()
 
-    assert [event.id for event in events.recent(limit=10)] == ["e1", "e2"]
+    assert [event.id for event in events.recent(limit=10)] == ["e2", "e1"]
     assert events.get("missing") is None
     assert not hasattr(events, "update")
     assert not hasattr(events, "delete")
