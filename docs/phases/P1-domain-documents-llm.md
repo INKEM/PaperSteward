@@ -1,6 +1,6 @@
 # P1 领域模型、版本化文档与 LLM 网关
 
-> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S5 完成（S1–S3 验收 F1–F5 已返工）；P1-S6 待执行
+> **阶段**：P1｜**里程碑**：Alpha｜**状态**：P1-S1–S6 完成（本地阶段门通过；F6/F7 未关闭，暂不打 P1 tag）
 > **独立验收**：[P1-S1-S3-acceptance.md](P1-S1-S3-acceptance.md)（2026-10-21，有条件通过；F1–F5 返工见 §7）
 > **依据**：[大阶段开发计划](../PaperSteward_大阶段开发计划.md) §3 P1、
 > [设计方案](../PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md) §2.5、§3、§4.3–4.4、§5、§7、§10
@@ -24,7 +24,7 @@ P2、P3、P4/P5、P6。
 | P1-S3 | profile/taxonomy 解析、版本、diff | **完成** | S1/S2 | validate/diff；确认事件 |
 | P1-S4 | 评分 YAML 校验、JSON schema | **完成** | S1/S3 | 非法权重拒绝；schema 正反例 |
 | P1-S5 | LLM 网关、FakeLLM、prompt registry、修复重试 | **完成** | S1/S4 | 非法 JSON 不进入业务表 |
-| P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | 待开始 | S1–S5 | `make check` 等阶段门 |
+| P1-S6 | 契约/迁移/不变量补测、阶段门与 handoff | **完成** | S1–S5 | `make check` 等阶段门 |
 
 > S1 刻意保持为纯领域层；S2 才引入正式数据库与仓储，避免把迁移细节反向污染
 > 业务契约。
@@ -802,7 +802,112 @@ papersteward llm ping --fake --json
 - 以独立验收报告 + 本 handoff 为关闭条件；
 - 若发现契约冲突，写 blocker note，不静默改字段。
 
-## 10. 风险与待确认
+## 10. P1-S6 执行记录
+
+### 10.1 目标
+
+关闭 P1：冻结跨阶段契约、补端到端验收、跑完整阶段门，并把可直接开始的 P2
+交接写清楚。S6 不新增业务功能，不修改 P1 冻结 schema。
+
+### 10.2 交付物
+
+| 文件 | 作用 |
+|------|------|
+| `tests/contract/test_p1_freeze.py` | 枚举、14 张表/约束、迁移版本、schema、prompt、CLI 命令面冻结 |
+| `tests/integration/test_p1_acceptance.py` | profile/taxonomy/config + FakeLLM 分类/摘要 + 标签/桶/摘要落库的端到端验收 |
+| `docs/phases/P1-domain-documents-llm.md` | 本记录与 P2 handoff |
+| `README.md`、`AGENTS.md`、`CHANGELOG.md` | 当前状态、能力边界与变更记录 |
+
+S6 未新增运行时依赖，未新增迁移，未修改 API/CLI 既有语义。
+
+### 10.3 P1 验收矩阵
+
+| 计划验收项 | 证据 |
+|------------|------|
+| 每篇恰好一个主标签/一个归属桶，DB + 服务双重校验 | `test_paper_tag_primary_is_unique_in_database`、`test_paper_bucket_filing_is_unique_and_memberships_allowed`、`test_tag_repository_requires_primary_before_secondaries_and_caps_count`、`test_bucket_repository_requires_filing_before_memberships`、`test_p1_end_to_end_contract_on_migrated_schema` |
+| 非法 profile/taxonomy 被拒绝且字段可定位 | `test_documents_profile.py`、`test_documents_taxonomy.py`、`test_profile_validate_cli_reports_field_and_line`、`test_malformed_tag_heading_is_rejected` |
+| 版本 diff 可读、确认事件写入 event log | `test_documents_diff.py`、`test_confirm_profile_archives_previous_and_writes_events`、`test_taxonomy_confirm_and_archive_flow` |
+| 非法 LLM JSON 不进入业务表 | `test_repair_failure_raises_without_data`、`test_invalid_llm_output_does_not_write_business_tables` |
+| 迁移可上可下、测试库隔离 | `test_upgrade_creates_formal_domain_tables`、`test_downgrade_restores_p0_stub_tables`、`test_p0_rows_are_migrated_to_formal_schema`、`test_migration_matches_models`、`make migrate-check` |
+| 核心 schema 有正反例 | `tests/contract/test_json_schemas.py`、`tests/unit/test_scoring_config.py`、`tests/contract/test_p1_freeze.py` |
+| 契约冻结、无顺手改字段 | S6 freeze tests：`test_paper_and_document_status_freeze`、`test_database_table_and_constraint_freeze`、`test_migration_revision_freeze`、`test_schema_registry_freeze`、`test_prompt_registry_and_fake_provider_freeze`、`test_cli_command_surface_freeze` |
+
+### 10.4 阶段门证据
+
+2026-10-21 在本地执行：
+
+- `make check`：**336 passed**，ruff/mypy 通过；
+- `make test-integration`：**101 passed**；
+- `pytest -q`（含 e2e）：**337 passed**；
+- `make migrate-check`：upgrade/downgrade/upgrade OK；
+- `alembic check`：No new upgrade operations detected；
+- `alembic heads`：`0002 (head)`；
+- `make e2e`：1 passed（真实 Uvicorn）；
+- `make demo DEMO_PORT=8774`：`/health`、`/papers` 正常；
+- `make secret-scan`：OK；
+- P1 代码合并覆盖率（`core/documents/storage/scoring/schemas/llm`）：**97%**；
+- `docker compose config`：通过；`docker compose build` 因当前环境无法连接
+  `/var/run/docker.sock`（permission denied）未执行成功；
+- CI：无可用 `gh`/远端运行证据，未声称通过。
+
+### 10.5 Schema review 结论
+
+- 14 张表、0002 迁移、枚举值、PaperTag/PaperBucket 部分唯一索引、score_snapshot
+  复合主键与 S1 实体一致；
+- `test_migration_matches_models` 与 `alembic check` 均无差异；
+- classification/summary/scoring/event 四类 schema 与 S4 契约一致；
+- prompt registry 的 classification/summary/repair 版本与绑定 schema 冻结；
+- P1 结束不修改 2.5 节契约；后续字段变更必须走迁移 + ADR。
+
+### 10.6 未关闭事项
+
+- **F6**：`StarletteDeprecationWarning`（httpx → httpx2）仍存在，属依赖债务；
+- **F7**：Docker/CI 运行证据未取得。本轮已修复 Dockerfile 的非 root 读权限问题，
+  但当前环境的 Docker daemon 不可访问，无法补 build/run 证据；CI 也没有可用运行记录。
+  **不得声称 Docker/CI 验收通过，也不打 P1 阶段 tag。**
+- 真实 LLM provider、真实文献源、摘要/分类/评分算法、P2 UI 均不在 P1 范围。
+
+### 10.7 交接给 P2
+
+**已就绪**
+
+- 领域实体/枚举/状态机/不变量（S1）；
+- 0002 schema、13 个仓储、事件日志、事务边界（S2）；
+- profile/taxonomy 解析、版本确认/归档、diff、CLI（S3）；
+- scoring.yaml 校验、配置版本/事件、四类 JSON schema（S4）；
+- LLM provider 协议、FakeLLM、prompt registry、修复重试、usage（S5）；
+- P1 freeze/acceptance 测试与本地阶段门证据（S6）。
+
+**P2 需要完成**
+
+1. onboarding 状态机与 G1–G4 门槛；
+2. profile/taxonomy 草案、编辑、确认、影响预览；
+3. 种子导入、分类法覆盖率/均衡性校验；
+4. 校准集 harness 与试运行日报；
+5. 门槛 e2e：G4 前 enqueue/push 必须被拒绝；
+6. 最小 CLI/页面。
+
+**P2 不能做**
+
+- 真实文献源、摘要/分类/评分实现（P3–P5）；
+- 真实 LLM 调用（仅 FakeLLM；真实 provider 后续阶段按 ADR 引入）；
+- 修改 P1 冻结契约而不走迁移/ADR；
+- 多用户/鉴权/团队共享。
+
+**P2 实现提示**
+
+- 复用 `documents.service` 的 import/confirm/archive 与 `EventRepository`；
+- 门槛状态应新建 P2 实体/迁移，不要塞进 P1 的 Profile/Taxonomy 字段；
+- 分类法校验复用 `ensure_taxonomy_shape` 与 parser 的字段错误；
+- 试运行日报只展示，不调用真实推送；
+- G4 前所有 enqueue/push 路径都要统一经过 gate check。
+
+### 10.8 P1 最终状态
+
+P1 的**实现与本地可执行验收完成**；F6/F7 是依赖/发布证据债务，未关闭前保持
+“P1 代码完成、阶段 tag 待补证据”的状态。P2 可以从本 handoff 直接开始。
+
+## 11. 风险与待确认
 
 - **DB 约束能力**：SQLite 部分唯一索引已在 0002 落地并有集成测试；跨列/跨行规则
   仍必须由服务层不变量兜底。
@@ -819,8 +924,8 @@ papersteward llm ping --fake --json
   版本序号时再引入明确规则。
 - **F6**：Starlette/httpx 弃用警告属于依赖债务，留待依赖升级窗口处理。
 - **F7**：Docker/CI 运行证据仍未在本地关闭；打发布 tag 前必须补齐。
-- **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在 S6
-  或后续增加 `schema export` 与版本快照。
+- **schema 导出**：当前 schema 运行时生成；外部消费者若需要稳定文件，需在后续阶段
+  增加 `schema export` 与版本快照。
 - **配置策略**：`wR/wS/wA` 与 gates 的硬约束来自设计方案 §10.5，修改需 ADR 与
   迁移/兼容说明。
 - **事件 schema 命名**：使用 `EventType` 命名空间值（如 `paper.done`），与设计示例

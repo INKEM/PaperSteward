@@ -37,6 +37,9 @@
 - **P1-S5**：可替换 `LLMProvider` 协议、确定性 `FakeLLM`、版本化 prompt registry、
   provider 重试 + schema 修复重试 1 次、`Provenance` 溯源、usage/成本累计；
   `llm ping --fake` CLI；合法/非法 JSON、重试、修复与不落库的测试。
+- **P1-S6**：P1 contract freeze（枚举/14 张表/迁移/schema/prompt/CLI）、端到端
+  P1 验收测试（profile/taxonomy/config + FakeLLM 分类/摘要）、完整阶段门证据与
+  P2 handoff；未新增业务功能或迁移。
 - **依赖**：新增运行时 `PyYAML` 与开发依赖 `types-PyYAML`，见 ADR 0001。
 
 ### Fixed
@@ -68,6 +71,8 @@
 - 新增配置/schema 命令：`config validate|import`、`schema show|validate`；配置版本
   只追加，schema 使用 `extra="forbid"`。
 - 新增 `llm ping --fake`；P1 不提供真实 provider，超时由 provider 实现。
+- P1 实现与本地验收完成（`337 passed`）；F6（httpx 弃用警告）与 F7（Docker/CI
+  运行证据）未关闭，因此暂不打 P1 阶段 tag。
 - 仓储标签/桶写入改为聚合校验：首次写入必须是主标签 / filing；事件时间必须非递减。
 
 ### Security
@@ -79,7 +84,9 @@
 
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换；升级会迁移最小字段，降级会丢弃
   正式表数据并恢复空的 stub 表；
-- P1-S5 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法与真实文献源在后续阶段；
+- P1-S5/S6 只提供协议与 FakeLLM；真实 provider、分类/摘要/评分算法、真实文献源与
+  P2 onboarding 在后续阶段；
+- Docker/CI 运行证据未取得；本地 `docker compose build` 因 daemon 不可访问未执行；
 - 独立验收 F6（httpx/Starlette 弃用警告）与 F7（Docker/CI 运行证据）仍保留为
   依赖/发布债务；
 - taxonomy 的“边界/常见误分”说明仅保留在 Markdown 正文，不进入机器字段；

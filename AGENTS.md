@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P1 领域模型、版本化文档与 LLM 网关（P1-S1–S5 完成，P1-S6 待执行）**；
-- 下一阶段：P2 初始化协商与确认门；
+- 当前：**P1 领域模型、版本化文档与 LLM 网关（P1-S1–S6 完成；本地门通过，F6/F7 为发布债务）**；
+- 下一阶段：**P2 初始化协商与确认门**（尚未开始）；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 
 ## 2. 开工前必读
@@ -16,7 +16,7 @@
 1. `docs/PaperSteward_大阶段开发计划.md`（阶段边界与验收）；
 2. `docs/PaperSteward_文献自动挖掘推送与优先级排序系统设计方案.md`（产品语义）；
 3. `docs/phases/P0-baseline.md`（已完成契约与交接）；
-4. `docs/phases/P1-domain-documents-llm.md`（当前阶段契约与 S6 交接）；
+4. `docs/phases/P1-domain-documents-llm.md`（P1 契约与 P2 交接）；
 5. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
