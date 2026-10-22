@@ -75,3 +75,24 @@ CSV文本防公式执行；BibTeX与Markdown对不可信字段转义。导出060
 备注；`/ui/queue`看队列，`/ui/papers/{id}`看完整解释或冻结归档并修订反馈，`/ui/archive`
 搜索和导出。阅读方式覆盖建议会追加独立审计事件。发送仍通过显式CLI，不会因开页面发邮件。
 HTMX 2.0.11及样式在包内本地分发，运行无需外网；界面不支持删除归档或P7权重治理。
+
+## 周度U任务与评分数据检查（S7）
+
+```bash
+papersteward jobs preference-weekly --json
+# 数据问题核对修复后，可用明确的新ID记录一次重试；原报告不覆盖
+papersteward jobs preference-weekly --run-id weekly-recheck-20261025 --json
+```
+
+POST /jobs/preference/weekly body `{}` 或 `{"run_id":"weekly-recheck-20261025"}`；调用P5的
+create_snapshots/周偏好算法，按已确认时区和update_weekday的00:00排他截止；同周后续评分
+下周生效。默认ID由周截止+G4绑定组成，重复任务返回原Run，不重复更新候选或归档P。
+只处理未读合格主题候选；已归档/特殊桶不产生P。Run报告含完成/评分数、覆盖率/弱信号、
+修订数、非法评分/标签、孤立评分、快照数量和U/置信度；null不作负分，覆盖率<30%弱化。
+非法评分数据返回failed报告且不写候选快照，CLI非0；历史缺阅读方式/空标签仅警告，
+保留P1可选字段兼容。原始Rating和报告不被自动修复、删除或覆盖。
+
+反馈优先使用归档时作者/venue/标签，旧归档缺完整内容才用既有P5元数据回退；只SQL投影
+这些字段，不读取Rating.note、ArchiveSnapshot.note或完整归档正文。备注从不传入模型。
+任务尊重G4与暂停/安静时段；应用启动不自动调度。可由外部调度器在已确认时段调用CLI，
+本阶段不启动常驻进程/采集/真实LLM。任务报告可用 `papersteward runs show --last` 查看。

@@ -273,10 +273,9 @@ def archive(
         body += '<a href="/archive/export?format=markdown">Markdown</a></p>'
         for record in page["items"]:
             title = record.content.get("metadata", {}).get("title", record.paper_id)
+            rating = record.score if record.score is not None else "未评分"
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
-            body += (
-                f"{escape(title)}</a></h2><p>{escape(record.primary_tag)} · 评分 {record.score}</p>"
-            )
+            body += f"{escape(title)}</a></h2><p>{escape(record.primary_tag)} · 评分 {rating}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
         if offset + 50 < page["total"]:
             from urllib.parse import urlencode

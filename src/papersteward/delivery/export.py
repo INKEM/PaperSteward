@@ -91,6 +91,8 @@ def export_archives(records: Sequence[ArchiveRecord], format: ExportFormat) -> s
     for r in records:
         m = r.content.get("metadata", {})
         tags = [r.primary_tag, *r.secondary_tags]
+        initial_score = r.initial_score if r.initial_score is not None else "未评分"
+        score = r.score if r.score is not None else "未评分"
         if format == "bibtex":
             fields = {
                 "title": m.get("title", "历史元数据不可用"),
@@ -103,7 +105,7 @@ def export_archives(records: Sequence[ArchiveRecord], format: ExportFormat) -> s
                 "code": m.get("code_url"),
                 "keywords": ", ".join(tags),
                 "rating": r.score,
-                "note": f"当前备注: {r.note or ''}; 初始评分: {r.initial_score}; "
+                "note": f"当前备注: {r.note or ''}; 初始评分: {initial_score}; "
                 f"初始备注: {r.initial_note or ''}",
                 "annote": json.dumps(r.revision_history, ensure_ascii=False),
             }
@@ -122,7 +124,7 @@ def export_archives(records: Sequence[ArchiveRecord], format: ExportFormat) -> s
                 f"## {markdown(m.get('title', '历史元数据不可用'))}",
                 "",
                 f"标签：{markdown(' / '.join(tags))}",
-                f"评分：{r.score}；初始评分：{r.initial_score}",
+                f"评分：{score}；初始评分：{initial_score}",
                 f"备注：{markdown(r.note or '')}",
                 f"初始备注：{markdown(r.initial_note or '')}",
                 f"作者：{markdown(', '.join(m.get('authors', [])))} · "

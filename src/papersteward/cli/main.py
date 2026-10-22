@@ -34,6 +34,8 @@ from papersteward.cli.documents import (
 )
 from papersteward.cli.ingestion import add_commands as add_ingestion_commands
 from papersteward.cli.ingestion import run as run_ingestion
+from papersteward.cli.jobs import add_commands as add_jobs_commands
+from papersteward.cli.jobs import run as run_jobs
 from papersteward.cli.llm import run_llm_ping
 from papersteward.cli.onboarding import add_commands as add_onboarding_commands
 from papersteward.cli.onboarding import run as run_onboarding
@@ -77,6 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_delivery_commands(subparsers)
     add_reading_commands(subparsers)
     add_archive_commands(subparsers)
+    add_jobs_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -188,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_delivery(args)
         if args.command == "archive":
             return run_archive_command(args)
+        if args.command == "jobs":
+            return run_jobs(args)
         if args.command in {"done", "reading"}:
             return run_reading(args)
         if args.command in {"ingest", "runs"}:

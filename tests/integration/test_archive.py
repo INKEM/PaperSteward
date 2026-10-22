@@ -2,6 +2,8 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from test_api_dry_run import client as client
 from test_digest_delivery import prepared
 from test_priority_queue import NOW
@@ -119,3 +121,24 @@ def test_archive_cli_list_export_and_protect_existing_output(
         assert path.read_text() == "keep"
     finally:
         get_settings.cache_clear()
+
+
+def test_archive_content_migration_roundtrip_preserves_initial_feedback(client, migrated_engine):
+    factory = prepared(client, migrated_engine)
+    with session_scope(factory) as session:
+        finish(session)
+    config = Config("alembic.ini")
+    with migrated_engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "0009")
+        assert tuple(
+            connection.exec_driver_sql(
+                "SELECT rating, note FROM archive_snapshot WHERE paper_id='p'"
+            ).one()
+        ) == (4, "初始备注")
+        command.upgrade(config, "head")
+    with session_scope(factory) as session:
+        record = read_archive(session, "p")
+        assert record.initial_score == 4 and record.initial_note == "初始备注"
+        assert record.content_available is False  # 回滚删除完整内容，不用当前元数据伪造。
+        assert PaperRepository(session).get("p").status is PaperStatus.ARCHIVED

@@ -166,6 +166,25 @@ def test_digest_audit_failure_rolls_back_when_caller_catches(client, migrated_en
         assert PaperRepository(session).get("p").status is PaperStatus.CLASSIFIED
 
 
+def test_uncertain_smtp_does_not_reappear_in_next_daily_digest(
+    client, migrated_engine, monkeypatch
+):
+    factory = prepared(client, migrated_engine, channel="smtp")
+
+    def broken(*args):
+        raise OSError("unknown receipt")
+
+    monkeypatch.setattr("papersteward.delivery.service.send_smtp", broken)
+    settings = Settings(
+        _env_file=None, smtp_host="example.org", smtp_from="a@example.org", smtp_to="b@example.org"
+    )
+    with pytest.raises(InvariantViolation, match="送达结果未知"):
+        deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")
+    with session_scope(factory) as session:
+        digest = create_digest(session, DAY + timedelta(days=1), now=NOW + timedelta(days=1))
+        assert digest.items == [] and digest.deferred["p"] == "already_pushed"
+
+
 @pytest.mark.parametrize(
     "parameters",
     [{"paused": True}, {"quiet_start": "15:00", "quiet_end": "17:00", "push_time": "08:00"}],

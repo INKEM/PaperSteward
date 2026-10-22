@@ -43,7 +43,9 @@ def delivery_history(session: Session) -> dict[str, DeliveryHistory]:
     result: dict[str, DeliveryHistory] = {}
     sent_at: dict[str, datetime] = {}
     for row in session.scalars(
-        select(DeliveryRow).where(DeliveryRow.status == "sent").order_by(DeliveryRow.digest_date)
+        select(DeliveryRow)
+        .where(DeliveryRow.status.in_(["sent", "reserved", "uncertain"]))
+        .order_by(DeliveryRow.digest_date)
     ):
         for card in read_digest(session, row.digest_date).items:
             result[card.paper_id] = DeliveryHistory(
@@ -115,6 +117,19 @@ def create_digest(
             if offset >= page.total:
                 break
         metadata = {}
+        arrivals: dict[str, date] = {}
+        for event in session.execute(
+            select(EventRow.paper_id, EventRow.created_at)
+            .where(EventRow.event_type == EventType.PAPER_QUEUED.value)
+            .order_by(EventRow.created_at)
+        ):
+            if event.paper_id:
+                arrivals.setdefault(
+                    event.paper_id,
+                    as_utc(event.created_at)
+                    .astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"]))
+                    .date(),
+                )
         for item in candidates:
             candidate = PaperRepository(session).get(item.paper_id)
             assert candidate is not None
@@ -149,6 +164,7 @@ def create_digest(
             history=history,
             metadata=metadata,
             allow_downgrade=allow_downgrade,
+            queued_on=arrivals,
         )
         append_digest(session, digest, now)
         audit(

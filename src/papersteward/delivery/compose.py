@@ -63,6 +63,7 @@ def compose_digest(
     history: Mapping[str, DeliveryHistory] | None = None,
     metadata: Mapping[str, dict[str, Any]] | None = None,
     allow_downgrade: bool = False,
+    queued_on: Mapping[str, date] | None = None,
 ) -> Digest:
     validate_scoring_config(config)
     if len({i.paper_id for i in candidates}) != len(candidates):
@@ -101,7 +102,10 @@ def compose_digest(
     )
     inventory = len(candidates) > 2 * weekly_capacity
     order = (
-        sorted(eligible, key=lambda i: (i.published_on == day, item_key(i)))
+        sorted(
+            eligible,
+            key=lambda i: ((queued_on or {}).get(i.paper_id, i.published_on) == day, item_key(i)),
+        )
         if inventory
         else list(eligible)
     )

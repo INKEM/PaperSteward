@@ -200,6 +200,7 @@ class EventType(StrEnum):
     DELIVERY_FAILED = "delivery.failed"
     ACTION_RECORDED = "reading.action"
     PAPER_READ_MODE_OVERRIDDEN = "paper.read_mode_overridden"
+    PREFERENCE_UPDATED = "preference.updated"
     ONBOARDING_STARTED = "onboarding.started"
     ONBOARDING_G1_CONFIRMED = "onboarding.g1.confirmed"
     ONBOARDING_G2_CONFIRMED = "onboarding.g2.confirmed"

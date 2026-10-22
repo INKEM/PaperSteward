@@ -116,3 +116,11 @@ def test_invalid_queue_and_config_rejected():
         compose([item(), item()])
     with pytest.raises(InvariantViolation):
         compose([item().model_copy(update={"score_date": DAY - timedelta(days=1)})])
+
+
+def test_inventory_prefers_first_queued_day_over_publication_day():
+    rows = [item(str(n), rank=90 - n) for n in range(7)]
+    result = compose(
+        rows, queued_on={str(n): DAY - timedelta(days=2) if n >= 5 else DAY for n in range(7)}
+    )
+    assert {i.paper_id for i in result.items} == {"5", "6"}
