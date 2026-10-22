@@ -148,6 +148,7 @@ class ShelfItem:
             "assessed_by": self.tier.assigned_by.value if self.tier is not None else None,
             "assessed_at": (self.tier.created_at.isoformat() if self.tier is not None else None),
             "tier_note": self.tier.note if self.tier is not None else None,
+            "tier_reviewed_by": (self.tier.reviewed_by if self.tier is not None else None),
             "nomination_id": (
                 self.tier.nomination_id
                 if self.tier is not None and self.tier.nomination_id is not None

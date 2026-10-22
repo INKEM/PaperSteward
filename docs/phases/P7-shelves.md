@@ -1,7 +1,7 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S1–S6 本地实现与阶段门完成；2026-10-22 独立验收 Not Accepted，需返工复验；
-> P7 tag/Beta 未发布。**
+> 状态：**P7-S1–S6 + F1–F3/N1–N4 返工完成；2026-10-22 独立验收 Not Accepted，
+> 待独立复验；P7 tag/Beta 未发布。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -23,7 +23,7 @@
 
 - 迁移 `0011` 新增 `special_nomination`：每篇文献每个特殊类型一行，保存档位前置证据
   （逐字证据、review layers、classic basis、bridge memo）、置信度、门禁原因与 LLM 溯源。
-- 状态只有 `pending / accepted / rejected`；决策记录 `decided_at/decided_by/note`。
+- 状态只有 `pending / accepted / rejected`；决策记录 `decided_at/decided_by/note`；`reopen` 仅允许 rejected 且文献仍 classified，清空本次决策字段并写事件。
   已决策提名重跑 process 不会被静默覆盖；待审提名重跑只刷新证据与时间，不重复建行。
 - 三个特殊桶由固定 ID 幂等补齐：`b-special-review`（跨层综述）、`b-special-distant`
   （远邻领域）、`b-special-classic`（经典/奠基）。只补目录，不设置配额/档位。
@@ -33,7 +33,7 @@
 - accept 只允许 `classified`、已有唯一主标签与主题归属且无待决 review 的文献：
   替换 Filing 为主题桶→特殊桶，状态转 `shelved`，追加 `paper.bucket_moved` 与
   `paper.shelved`；同一文献其他待审提名自动 rejected（`superseded`）。
-- reject 不改变文献状态、主标签或主题归属；被拒绝后可重新 process 产生新提名。
+- reject 不改变文献状态、主标签或主题归属；被拒绝后可 `shelf reopen` 受控回到 pending（追加审计事件），不重跑 LLM 或重置 Filing。
 - 待审提名在每日快照/队列中以 `pending_special_nomination` 排除，避免决定前进入 P。
   已归入特殊桶后沿用既有 `special_bucket` 排除；历史 P 快照保留但不参与排序。
 - 本卡不实现档位 V、配额、轮换、特殊桶只读视图/API、日报实际特殊槽位、特殊↔主题
@@ -194,7 +194,10 @@
   预览只追加 previewed 行；确认在原行记录 confirmed 字段，历史不删除。
 - 预览：`config preview --set/--file` 或 `POST /config/scoring/preview`。先验证 G4 与
   当前激活配置，再按 R/A/E/F/H/U 六组件重排当前合格队列；保存旧/新组件权重、逐篇
-  旧/新名次与优先级、Top-N 明细和 hash。预览不写配置版本、不写静态快照、不激活。
+  旧/新名次与 rank_score、Top-N 明细和 hash。预览不写配置版本、不写静态快照、不激活。
+- 治理 allowlist：只允许 `static.weight/relevance/authority/extra_value`、
+  `dynamic.weight/freshness/hunger`、`quasi_dynamic.weight`；`gates`、`stability`、
+  half-life、U 子权重等非权重字段 400 拒绝，完整 config 也做非权重 diff。
 - 确认：`config confirm <id>` 或 `POST /config/scoring/changes/{id}/confirm`。重算影响并
   核对 hash（队列/基线变化则 409 重新预览）；校验版本不存在、生效日晚于所有已有静态
   快照；确认人在新配置版本、`config.activated` 事件和生效日静态快照写入后记录。
@@ -202,6 +205,9 @@
   原始评分版本。G4 原始配置仍复核，防止初始化证据漂移。生效日前队列继续用旧配置；
   生效日及以后使用新配置。确认时为生效日重算已有静态快照：
   `S_new = R·wR' + A·wA' + E·wE'`，不重新调用 LLM，不改写历史快照。
+- 确认后、生效日前新 process/promote 的文献会为每个 pending activation 追加生效日
+  新版本静态快照（R/A/E 线性重算），避免生效日 `static_version_mismatch` 丢失；
+  确认时只覆盖当时已存在的快照。
 - 版本：`config import` 仍只保存版本不激活；自定义视图 `view_config` 与全局配置隔离，
   不能作为激活版本。预览/确认不修改归档、阅读历史或特殊桶 Filing。
 - 生效日/预览日缺省今天/+1 天；必须晚于所有已有静态快照。同一变更不能重复确认；
@@ -259,6 +265,18 @@
   `make migrate-check` 0013↔0014 通过；`make demo`、`make secret-scan` 通过。无新依赖。
 - 范围说明：S6 超过 8 文件/400 行指引，原因是最终 e2e、合成 fixture、提升补口与阶段
   验收文档同交；未开始 P8，不声明 Beta 发布。
+
+## P7 返工记录（2026-10-22）
+
+独立验收 F1–F3/N1–N4 已返工，详见 [P7 返工验证记录](P7-acceptance-rework.md)：
+
+- F1 非权重字段 allowlist；F2 确认−处理/提升−生效窗口补快照；F3 `shelf reopen`；
+  N1 changes total；N2 迁移 `0015` 档位 `reviewed_by`；N3 runtime 本地日且不污染
+  binding hash；N4 预览改按 rank_score。
+- 返工后本地门：`make check` **1015 passed / 4 deselected**，ruff **270** 文件、
+  strict mypy **132** 源文件；integration **336 passed**；e2e **4 passed**；
+  migrate-check 0014↔0015、demo、secret 通过。
+- 仍未做：独立复验、fresh clone/Docker/CI（复验阶段补）、P7 tag/Beta。P8 继续阻塞。
 
 ## P7 Handoff（P8）
 

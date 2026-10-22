@@ -37,9 +37,11 @@ from papersteward.pipeline.shelf import (
     list_pending_nominations,
     promote_to_topic,
     reject_nomination,
+    reopen_nomination,
 )
 from papersteward.scoring.special import assess_special, override_special_tier
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
+from papersteward.storage.repositories import PaperRepository
 
 KINDS = tuple(kind.value for kind in SpecialBucketKind)
 
@@ -62,6 +64,13 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
         "--force", action="store_true", help="覆盖未通过校验的提名（必须同时提供 --note）"
     )
     accept.add_argument("--json", action="store_true")
+
+    reopen = commands.add_parser("reopen", help="把已拒绝的特殊桶提名重新打开为待审")
+    reopen.add_argument("paper_id")
+    reopen.add_argument("--kind", choices=KINDS, help="特殊桶类型；缺省按 review>classic>distant")
+    reopen.add_argument("--by", required=True, help="审核人")
+    reopen.add_argument("--note")
+    reopen.add_argument("--json", action="store_true")
 
     promote = commands.add_parser("promote", help="把特殊桶文献提升回主标签主题桶")
     promote.add_argument("paper_id")
@@ -177,6 +186,7 @@ def _tier_json(snapshot: SpecialTierSnapshot) -> dict[str, Any]:
         "breakdown": dict(snapshot.breakdown_json),
         "rubric_version": snapshot.rubric_version,
         "assigned_by": snapshot.assigned_by.value,
+        "reviewed_by": snapshot.reviewed_by,
         "note": snapshot.note,
         "created_at": snapshot.created_at.isoformat(),
     }
@@ -351,6 +361,30 @@ def _run(args: argparse.Namespace) -> int:
                     print(json.dumps(_decision_json(decision), ensure_ascii=False, indent=2))
                 else:
                     _print_decision(decision)
+                return 0
+            if args.shelf_command == "reopen":
+                reopened = reopen_nomination(
+                    session,
+                    args.paper_id,
+                    kind=_kind(args.kind),
+                    reviewed_by=args.by,
+                    note=args.note,
+                )
+                paper = PaperRepository(session).get(args.paper_id)
+                assert paper is not None
+                if args.json:
+                    print(
+                        json.dumps(
+                            _record_json(reopened, paper),
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                else:
+                    print(
+                        f"{reopened.paper_id}: {reopened.kind.value} 已重新打开为"
+                        f" {reopened.status.value}"
+                    )
                 return 0
             if args.shelf_command == "promote":
                 promotion = promote_to_topic(

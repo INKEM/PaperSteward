@@ -15,6 +15,7 @@ from papersteward.errors import InvalidRequestError
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.governance import (
     confirm_weight_change,
+    count_changes,
     get_change,
     list_changes,
     preview_from_config,
@@ -94,7 +95,7 @@ def changes(
     items = list_changes(session, limit=limit, offset=offset)
     return ScoringChangeListResponse(
         items=[_read(item) for item in items],
-        total=len(items),
+        total=count_changes(session),
         limit=limit,
         offset=offset,
     )

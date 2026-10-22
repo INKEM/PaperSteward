@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7 独立验收返工**：F1 治理 allowlist（仅 8 个线性权重，非权重字段 400）；
+  F2 确认后处理/提升的文献补写生效日静态快照；F3 `shelf reopen` 受控重开 rejected
+  提名并审计。N1 changes 全量 total；N2 迁移 `0015` 持久化档位 `reviewed_by`；
+  N3 runtime 本地日且不污染 binding hash；N4 预览按 rank_score。新增 5 项回归；
+  `make check` 1015 passed、integration 336、e2e 4、migrate 0014↔0015 通过。
+  独立复验未执行，P7 仍 Not Accepted，tag/Beta/P8 阻塞。
+
 - **P7-S6**：P7 最终 e2e 与特殊桶提升。真实 Uvicorn/CLI 链路新增 5 篇合成论文，
   覆盖特殊桶 review/distant/classic、档位/桥接/经典依据、视图重排、权重预览/确认与
   生效日队列；新增 `shelf promote`（特殊桶回主标签主题桶、R 门槛、静态复用/重算、

@@ -616,6 +616,21 @@ class SpecialNominationRepository(_Repository):
         )
         return self._session.scalar(statement) is not None
 
+    def reopen(self, nomination_id: str, *, now: datetime) -> SpecialNominationRecord:
+        row = self._session.get(SpecialNominationRow, nomination_id)
+        if row is None:
+            raise InvariantViolation("special_nomination", "提名不存在")
+        if row.status != SpecialNominationStatus.REJECTED.value:
+            raise InvariantViolation("special_nomination.status", "只有 rejected 提名可重新打开")
+        row.status = SpecialNominationStatus.PENDING.value
+        row.decided_at = None
+        row.decided_by = None
+        row.decision_note = None
+        self._flush()
+        updated = special_nomination_from_row(row)
+        assert updated.decided_at is None
+        return updated
+
     def upsert(self, item: SpecialNominationRecord) -> SpecialNominationRecord:
         """按 paper_id+kind 幂等写入；已决策行保持原状。"""
         row = self._session.scalar(
@@ -833,6 +848,20 @@ class ScoringChangeRepository(_Repository):
             .order_by(ScoringChangeRow.created_at.desc(), ScoringChangeRow.id.desc())
             .offset(offset)
             .limit(limit)
+        )
+        return [scoring_change_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def count(self) -> int:
+        return self._session.scalar(select(func.count()).select_from(ScoringChangeRow)) or 0
+
+    def pending_after(self, day: date) -> Sequence[ScoringChange]:
+        statement = (
+            select(ScoringChangeRow)
+            .where(
+                ScoringChangeRow.status == ScoringChangeStatus.CONFIRMED.value,
+                ScoringChangeRow.effective_on > day,
+            )
+            .order_by(ScoringChangeRow.effective_on.asc(), ScoringChangeRow.id.asc())
         )
         return [scoring_change_from_row(row) for row in self._session.scalars(statement).all()]
 

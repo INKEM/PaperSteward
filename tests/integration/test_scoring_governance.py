@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from test_api_dry_run import client as client
-from test_custom_views import DAY, NOW, _prepare
+from test_custom_views import DAY, NOW, _prepare, _seed
 
 from papersteward.cli.main import main
 from papersteward.config import get_settings
-from papersteward.core.enums import EventType, ScoringChangeStatus
-from papersteward.pipeline.context import bound_context
+from papersteward.core.enums import EventType, PaperStatus, ScoringChangeStatus
+from papersteward.pipeline.context import bound_context, runtime_local_day
+from papersteward.scoring.config import ScoringConfig, config_value_json
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.repositories import (
     ConfigRepository,
@@ -38,6 +40,7 @@ def test_preview_confirm_activate_and_queue_uses_new_config(client, migrated_eng
     assert change["config_version"] == "1.0.1"
     assert change["preview"]["items"][0]["paper_id"] == "high-e"
     assert change["preview"]["changed"] == 2
+    assert "new_rank_score" in change["preview"]["items"][0]
 
     with _session(migrated_engine) as session:
         assert ConfigRepository(session).get("scoring", "1.0.1") is None
@@ -108,6 +111,31 @@ def test_preview_rejects_invalid_overrides_dates_and_versions(client, migrated_e
         ).status_code
         == 400
     )
+    for override in (
+        {"gates.max_daily_push": 99},
+        {"stability.rank_ema": 0.1},
+        {"dynamic.half_life_days.fast": 1},
+        {"quasi_dynamic.tag_weight": 0.6},
+    ):
+        rejected = client.post(
+            "/config/scoring/preview",
+            json={"overrides": override, "score_date": str(DAY)},
+        )
+        assert rejected.status_code == 400, (override, rejected.text)
+        assert "线性权重" in rejected.json()["error"]["message"]
+    with _session(migrated_engine) as session:
+        base = ConfigRepository(session).get("scoring", "1.0.0")
+        assert base is not None
+        full = config_value_json(ScoringConfig.model_validate(base.value_json))
+    full["version"] = "1.0.1"
+    full["gates"]["max_daily_push"] = 99
+    assert (
+        client.post(
+            "/config/scoring/preview",
+            json={"config": full, "score_date": str(DAY)},
+        ).status_code
+        == 400
+    )
     assert (
         client.post(
             "/config/scoring/preview",
@@ -135,6 +163,31 @@ def test_preview_rejects_invalid_overrides_dates_and_versions(client, migrated_e
     )
 
 
+def test_changes_total_is_not_page_size(client, migrated_engine, monkeypatch):
+    _prepare(client, migrated_engine, monkeypatch)
+    for version in ("2.0.0", "2.0.1"):
+        response = client.post(
+            "/config/scoring/preview",
+            json={
+                "overrides": OVERRIDES,
+                "score_date": str(DAY),
+                "version": version,
+            },
+        )
+        assert response.status_code == 201, response.text
+    page = client.get("/config/scoring/changes", params={"limit": 1}).json()
+    assert len(page["items"]) == 1
+    assert page["total"] == 2
+
+
+def test_bound_context_local_day_uses_runtime_timezone(client, migrated_engine, monkeypatch):
+    _prepare(client, migrated_engine, monkeypatch)
+    moment = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
+    with _session(migrated_engine) as session:
+        _, binding = bound_context(session, moment, enforce_schedule=False)
+        assert runtime_local_day(session, moment, binding).isoformat() == "2026-10-22"
+
+
 def test_cli_preview_confirm_and_history(client, migrated_engine, monkeypatch, capsys):
     _prepare(client, migrated_engine, monkeypatch)
     monkeypatch.setenv("PAPERSTEWARD_DATABASE_URL", str(migrated_engine.url))
@@ -160,8 +213,29 @@ def test_cli_preview_confirm_and_history(client, migrated_engine, monkeypatch, c
         assert change["status"] == "previewed"
         assert change["preview"]["items"][0]["paper_id"] == "high-e"
 
-        assert main(["config", "changes", "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["total"] == 1
+        assert (
+            main(
+                [
+                    "config",
+                    "preview",
+                    "--set",
+                    "static.relevance=0.50",
+                    "--set",
+                    "static.extra_value=0.30",
+                    "--version",
+                    "2.0.0",
+                    "--date",
+                    str(DAY),
+                    "--json",
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        assert main(["config", "changes", "--limit", "1", "--json"]) == 0
+        history = json.loads(capsys.readouterr().out)
+        assert len(history["items"]) == 1
+        assert history["total"] == 2
         assert main(["config", "show", change["id"], "--json"]) == 0
         assert json.loads(capsys.readouterr().out)["id"] == change["id"]
 
@@ -185,7 +259,8 @@ def test_cli_preview_confirm_and_history(client, migrated_engine, monkeypatch, c
         assert confirmed["static_recomputed"] == 3
 
         assert main(["config", "changes", "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["items"][0]["status"] == "confirmed"
+        statuses = {item["status"] for item in json.loads(capsys.readouterr().out)["items"]}
+        assert "confirmed" in statuses and "previewed" in statuses
 
         assert (
             main(
@@ -204,3 +279,219 @@ def test_cli_preview_confirm_and_history(client, migrated_engine, monkeypatch, c
         assert "错误" in capsys.readouterr().err
     finally:
         get_settings.cache_clear()
+
+
+def test_late_process_after_confirmation_gets_effective_snapshot(
+    client, migrated_engine, monkeypatch
+):
+    from test_pipeline_ingest import activate
+
+    activate(client, quiet_start=None, quiet_end=None)
+    monkeypatch.setattr("papersteward.api.queue.utc_now", lambda: NOW)
+    with _session(migrated_engine) as session:
+        _seed(session, "high-r", relevance=90, authority=50, extra=0)
+        _seed(session, "high-e", relevance=65, authority=50, extra=100)
+        _seed(session, "low-r", relevance=40, authority=50, extra=100)
+    response = client.post("/scores/snapshot", json={"score_date": str(DAY)})
+    assert response.status_code == 200, response.text
+    preview = client.post(
+        "/config/scoring/preview",
+        json={"overrides": OVERRIDES, "score_date": str(DAY)},
+    )
+    assert preview.status_code == 201, preview.text
+    change = preview.json()
+    confirmed = client.post(
+        f"/config/scoring/changes/{change['id']}/confirm",
+        json={"confirmed_by": "fixture-user", "note": "F2 late process"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    effective = DAY + timedelta(days=1)
+    late_now = datetime.now(UTC)
+    effective_now = late_now + timedelta(days=1)
+
+    from test_special_shelf import (
+        CONFIG,
+        PROFILE,
+        TAXONOMY,
+        _buckets,
+    )
+
+    from papersteward.core.entities import Bucket, Paper
+    from papersteward.core.enums import BucketType
+    from papersteward.llm import FakeLLM, LLMGateway
+    from papersteward.pipeline.embeddings import HashingEmbeddingProvider
+    from papersteward.pipeline.process import process_paper
+    from papersteward.storage.repositories import BucketRepository, PaperRepository
+
+    payload = json.loads(
+        (Path(__file__).resolve().parents[1] / "fixtures/process/p7_topic_a.json").read_text()
+    )
+    gateway = LLMGateway(
+        FakeLLM(
+            [
+                json.dumps(payload[key], ensure_ascii=False)
+                for key in (
+                    "relevance",
+                    "summary",
+                    "classification",
+                    "special_nomination",
+                )
+            ],
+            model_id="fake-llm",
+        ),
+        clock=lambda: NOW,
+    )
+    with _session(migrated_engine) as session:
+        if BucketRepository(session).get("b-t02") is None:
+            BucketRepository(session).add(
+                Bucket(
+                    id="b-t02",
+                    name="Topic T02",
+                    bucket_type=BucketType.TOPIC,
+                    tag_code="T02",
+                )
+            )
+        late_paper = Paper(
+            id="late-f2",
+            title="P7 Topic High Relevance",
+            abstract=(
+                "P7 synthetic long-document QA. Sparse retrieval and cross-layer "
+                "reranking improve grounding. We report EM gains of 2-4 points, "
+                "but offline clustering adds latency."
+            ),
+            status=PaperStatus.SCREENED,
+            first_seen_at=NOW,
+        )
+        PaperRepository(session).add(late_paper)
+        outcome = process_paper(
+            session,
+            late_paper,
+            profile=PROFILE,
+            taxonomy=TAXONOMY,
+            topic_buckets=_buckets(),
+            config=CONFIG,
+            gateway=gateway,
+            embedding_provider=HashingEmbeddingProvider(),
+            now=late_now,
+            score_date=DAY,
+        )
+        assert outcome.static.score_date == DAY
+        assert outcome.static.config_version == "1.0.0"
+        latest = StaticScoreSnapshotRepository(session).latest(late_paper.id)
+        assert latest is not None
+        assert latest.score_date == effective
+        assert latest.config_version == "1.0.1"
+        created = create_snapshots(session, effective, now=effective_now)
+        assert created.created >= 3
+        queue = read_queue(session, effective, now=effective_now, limit=200)
+        assert late_paper.id in {item.paper_id for item in queue.items}
+
+
+def test_late_promotion_after_confirmation_gets_effective_snapshot(
+    client, migrated_engine, monkeypatch
+):
+    from test_shelf_view import _seed_special
+    from test_special_shelf import NOW as SPECIAL_NOW
+
+    from papersteward.core.entities import Bucket, StaticScoreSnapshot
+    from papersteward.core.enums import BucketType, SpecialBucketKind
+    from papersteward.pipeline.shelf import promote_to_topic
+    from papersteward.storage.repositories import BucketRepository
+
+    _prepare(client, migrated_engine, monkeypatch)
+    preview = client.post(
+        "/config/scoring/preview",
+        json={"overrides": OVERRIDES, "score_date": str(DAY)},
+    )
+    assert preview.status_code == 201, preview.text
+    change = preview.json()
+    confirmed = client.post(
+        f"/config/scoring/changes/{change['id']}/confirm",
+        json={"confirmed_by": "fixture-user", "note": "F2 late promote"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    effective = DAY + timedelta(days=1)
+
+    with _session(migrated_engine) as session:
+        BucketRepository(session).add(
+            Bucket(
+                id="b-t02",
+                name="Topic T02",
+                bucket_type=BucketType.TOPIC,
+                tag_code="T02",
+            )
+        )
+        _seed_special(
+            session,
+            "promote-late",
+            SpecialBucketKind.REVIEW,
+            title="Late promotion",
+        )
+        StaticScoreSnapshotRepository(session).append(
+            StaticScoreSnapshot(
+                paper_id="promote-late",
+                score_date=DAY,
+                relevance=70.0,
+                authority=50.0,
+                extra_value=50.0,
+                static_score=63.0,
+                confidence=0.9,
+                config_version="1.0.0",
+                profile_version="1.0",
+                taxonomy_version="1.0",
+                input_hash="a" * 64,
+                breakdown_json={},
+                created_at=SPECIAL_NOW,
+            )
+        )
+        promotion = promote_to_topic(
+            session,
+            "promote-late",
+            reviewed_by="fixture-user",
+            note="F2 late promote",
+            now=SPECIAL_NOW,
+        )
+        assert promotion.paper.status.value == "classified"
+        latest = StaticScoreSnapshotRepository(session).latest("promote-late")
+        assert latest is not None
+        assert latest.score_date == effective
+        assert latest.config_version == "1.0.1"
+
+        _seed_special(
+            session,
+            "promote-future",
+            SpecialBucketKind.REVIEW,
+            title="Future promotion",
+        )
+        StaticScoreSnapshotRepository(session).append(
+            StaticScoreSnapshot(
+                paper_id="promote-future",
+                score_date=effective,
+                relevance=70.0,
+                authority=50.0,
+                extra_value=50.0,
+                static_score=60.0,
+                confidence=0.9,
+                config_version="1.0.1",
+                profile_version="1.0",
+                taxonomy_version="1.0",
+                input_hash="b" * 64,
+                breakdown_json={},
+                created_at=SPECIAL_NOW,
+            )
+        )
+        future = promote_to_topic(
+            session,
+            "promote-future",
+            reviewed_by="fixture-user",
+            note="future promote",
+            now=SPECIAL_NOW,
+        )
+        assert future.static.score_date == effective
+        assert future.static.config_version == "1.0.1"
+        assert (
+            StaticScoreSnapshotRepository(session).latest("promote-future").score_date == effective
+        )
+
+
+from papersteward.scoring.queue import create_snapshots, read_queue  # noqa: E402

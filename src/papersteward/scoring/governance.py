@@ -33,14 +33,14 @@ from papersteward.core.enums import (
     ScoringChangeStatus,
 )
 from papersteward.errors import ConflictError, InvalidRequestError, NotFoundError
-from papersteward.pipeline.context import bound_context
+from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.scoring.config import (
     ConfigError,
     ScoringConfig,
     config_value_json,
     validate_scoring_config,
 )
-from papersteward.scoring.priority import rank_key
+from papersteward.scoring.priority import compute_priority, rank_key
 from papersteward.scoring.queue import read_queue
 from papersteward.scoring.service import read_scoring_config, save_scoring_config
 from papersteward.storage.repositories import (
@@ -52,6 +52,18 @@ from papersteward.storage.repositories import (
 )
 
 COMPONENTS = VIEW_COMPONENT_ORDER
+WEIGHT_PATHS = frozenset(
+    {
+        "static.weight",
+        "static.relevance",
+        "static.authority",
+        "static.extra_value",
+        "dynamic.weight",
+        "dynamic.freshness",
+        "dynamic.hunger",
+        "quasi_dynamic.weight",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +127,10 @@ def apply_overrides(
         parts = [part for part in path.strip().split(".") if part]
         if len(parts) < 2:
             raise InvalidRequestError(f"覆盖路径必须包含顶层字段：{path}")
+        if path.strip() not in WEIGHT_PATHS:
+            raise InvalidRequestError(
+                "P7 权重治理只允许修改线性权重字段：" + ", ".join(sorted(WEIGHT_PATHS))
+            )
         cursor: dict[str, Any] = data
         for part in parts[:-1]:
             nested = cursor.get(part)
@@ -176,6 +192,7 @@ def preview_weight_change(
     if len(proposed.version) > 64:
         raise InvalidRequestError("配置版本号不能超过 64 个字符")
     base, _ = _base_config(session, preview_day, timestamp)
+    _assert_weight_only(proposed, base)
     if proposed.version == base.version:
         raise InvalidRequestError("新版本号必须与当前激活版本不同")
     if ConfigRepository(session).get("scoring", proposed.version) is not None:
@@ -250,9 +267,9 @@ def confirm_weight_change(
         raise NotFoundError("权重变更不存在")
     if change.status is not ScoringChangeStatus.PREVIEWED:
         raise ConflictError("权重变更已确认")
-    if change.effective_on < timestamp.date():
+    base, binding = _base_config(session, change.preview_day, timestamp)
+    if change.effective_on < runtime_local_day(session, timestamp, binding):
         raise ConflictError("生效日已过；请重新预览并使用未来生效日")
-    base, _ = _base_config(session, change.preview_day, timestamp)
     if base.version != change.base_version:
         raise ConflictError("预览基线已变化；请重新预览")
     try:
@@ -260,6 +277,7 @@ def confirm_weight_change(
     except ValidationError as exc:
         raise ConflictError("预览中的配置已不可解析；请重新预览") from exc
     validate_scoring_config(proposed, source=f"config-confirm:{change.config_version}")
+    _assert_weight_only(proposed, base)
     if proposed.version != change.config_version:
         raise ConflictError("预览配置版本不一致")
     if ConfigRepository(session).get("scoring", proposed.version) is not None:
@@ -310,11 +328,33 @@ def list_changes(session: Session, *, limit: int = 50, offset: int = 0) -> list[
     return ScoringChangeRepository(session).list(limit=limit, offset=offset)
 
 
+def count_changes(session: Session) -> int:
+    return ScoringChangeRepository(session).count()
+
+
 def get_change(session: Session, change_id: str) -> ScoringChange:
     change = ScoringChangeRepository(session).get(change_id)
     if change is None:
         raise NotFoundError("权重变更不存在")
     return change
+
+
+def _assert_weight_only(proposed: ScoringConfig, base: ScoringConfig) -> None:
+    """P7 只治理线性权重；门槛、EMA、half-life、U 子权重等不得借预览激活。"""
+    proposed_data = config_value_json(proposed)
+    base_data = config_value_json(base)
+    for data in (proposed_data, base_data):
+        data.pop("version", None)
+        for path in WEIGHT_PATHS:
+            head, _, leaf = path.partition(".")
+            nested = data.get(head)
+            if isinstance(nested, dict):
+                nested.pop(leaf, None)
+    if proposed_data != base_data:
+        raise InvalidRequestError(
+            "只允许修改线性权重字段；gates/stability/dynamic 内部参数/"
+            "quasi_dynamic 子权重必须保持不变"
+        )
 
 
 def _base_config(
@@ -346,17 +386,26 @@ def _build_impact(
     new_weights = component_weights(proposed)
     queue_items = _all_queue_items(session, preview_day, now)
     old_rank = {item.paper_id: index + 1 for index, item in enumerate(queue_items)}
-    rows: list[tuple[Any, float, dict[str, Any]]] = []
+    rows: list[tuple[Any, float, float, dict[str, Any]]] = []
     for item in queue_items:
         scores = {key: item.explanation.components[key].score for key in COMPONENTS}
-        new_priority = round(math.fsum(scores[key] * new_weights[key] for key in COMPONENTS), 1)
-        rows.append((item, new_priority, scores))
+        static_new = round(math.fsum(scores[key] * new_weights[key] for key in ("R", "A", "E")), 1)
+        dynamic_new = round(math.fsum(scores[key] * new_weights[key] for key in ("F", "H")), 1)
+        priority = compute_priority(
+            static_new,
+            dynamic_new,
+            scores["U"],
+            proposed,
+            previous_rank=item.rank_score,
+            reset=True,
+        )
+        rows.append((item, priority.priority, priority.rank_score, scores))
     rows.sort(
         key=lambda row: rank_key(
-            rank_score=row[1],
-            relevance=row[2]["R"],
+            rank_score=row[2],
+            relevance=row[3]["R"],
             published_on=row[0].published_on,
-            authority=row[2]["A"],
+            authority=row[3]["A"],
             title=row[0].title,
             paper_id=row[0].paper_id,
         )
@@ -364,7 +413,7 @@ def _build_impact(
     items: list[dict[str, Any]] = []
     ranking: list[list[Any]] = []
     changed = 0
-    for new_rank, (item, new_priority, scores) in enumerate(rows, start=1):
+    for new_rank, (item, new_priority, new_rank_score, scores) in enumerate(rows, start=1):
         old = old_rank[item.paper_id]
         if old != new_rank:
             changed += 1
@@ -375,6 +424,8 @@ def _build_impact(
                 new_rank,
                 item.priority,
                 new_priority,
+                item.rank_score,
+                new_rank_score,
             ]
         )
         items.append(
@@ -387,6 +438,8 @@ def _build_impact(
                 "delta_rank": old - new_rank,
                 "old_priority": item.priority,
                 "new_priority": new_priority,
+                "old_rank_score": item.rank_score,
+                "new_rank_score": new_rank_score,
                 "components": {
                     key: {
                         "score": scores[key],
@@ -508,9 +561,11 @@ def _validate_limit(limit: int) -> None:
 __all__ = [
     "COMPONENTS",
     "WeightImpact",
+    "WEIGHT_PATHS",
     "apply_overrides",
     "component_weights",
     "confirm_weight_change",
+    "count_changes",
     "get_change",
     "list_changes",
     "next_config_version",

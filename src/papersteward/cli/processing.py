@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError, NotFoundError
 from papersteward.llm import FakeLLM, LLMGateway, build_llm_provider
 from papersteward.llm.errors import LLMError
-from papersteward.pipeline.context import bound_context
+from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
 from papersteward.pipeline.process import ensure_topic_buckets, process_paper
 from papersteward.pipeline.review import (
@@ -88,8 +88,8 @@ def _fixture_provider(path: str) -> FakeLLM:
 
 def _processor_context(
     session: Session, now: datetime
-) -> tuple[ResearchProfile, Taxonomy, ScoringConfig, dict[str, Bucket]]:
-    profile, binding = bound_context(session, now, action="process", day=now.date())
+) -> tuple[ResearchProfile, Taxonomy, ScoringConfig, dict[str, Bucket], date]:
+    profile, binding = bound_context(session, now, action="process")
     taxonomy = TaxonomyRepository(session).get(binding["taxonomy_id"], binding["taxonomy_version"])
     if taxonomy is None:
         raise InvalidRequestError("选定分类法不存在")
@@ -97,7 +97,8 @@ def _processor_context(
     if config_row is None:
         raise InvalidRequestError("选定评分配置不存在")
     config = validate_scoring_config(ScoringConfig.model_validate(config_row.value_json))
-    return profile, taxonomy, config, ensure_topic_buckets(session, taxonomy)
+    local_day = runtime_local_day(session, now, binding)
+    return profile, taxonomy, config, ensure_topic_buckets(session, taxonomy), local_day
 
 
 def _run_process(args: argparse.Namespace) -> int:
@@ -130,7 +131,7 @@ def _run_process(args: argparse.Namespace) -> int:
     try:
         factory = create_session_factory(engine)
         with session_scope(factory) as session:
-            profile, taxonomy, config, buckets = _processor_context(session, now)
+            profile, taxonomy, config, buckets, local_day = _processor_context(session, now)
             papers_repo = PaperRepository(session)
             papers = []
             if args.paper:
@@ -155,6 +156,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     gateway=gateway,
                     embedding_provider=HashingEmbeddingProvider(),
                     now=now,
+                    score_date=local_day,
                 )
                 for paper in papers
             ]

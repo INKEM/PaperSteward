@@ -32,6 +32,7 @@ from papersteward.scoring import (
 )
 from papersteward.scoring.governance import (
     confirm_weight_change,
+    count_changes,
     get_change,
     list_changes,
     preview_from_config,
@@ -255,6 +256,7 @@ def run_config_changes(*, limit: int, json_output: bool) -> int:
     try:
         with _session() as session:
             changes = list_changes(session, limit=limit)
+            total = count_changes(session)
     except SQLAlchemyError:
         _print_error(ValueError(_MIGRATION_HINT))
         return 1
@@ -263,7 +265,7 @@ def run_config_changes(*, limit: int, json_output: bool) -> int:
             json.dumps(
                 {
                     "items": [_change_json(item) for item in changes],
-                    "total": len(changes),
+                    "total": total,
                     "limit": limit,
                     "offset": 0,
                 },

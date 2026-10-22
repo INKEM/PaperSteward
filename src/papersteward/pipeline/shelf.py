@@ -26,6 +26,7 @@ from papersteward.core.entities import (
     utc_now,
 )
 from papersteward.core.enums import (
+    SPECIAL_BUCKET_PRIORITY,
     AssignedBy,
     BucketRole,
     BucketType,
@@ -38,8 +39,9 @@ from papersteward.core.enums import (
 )
 from papersteward.core.invariants import choose_special_filing_kind, ensure_shelvable
 from papersteward.errors import ConflictError, NotFoundError
-from papersteward.pipeline.context import bound_context
+from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.pipeline.special import SpecialNominationResult
+from papersteward.scoring.activation import append_future_activation_snapshots
 from papersteward.scoring.service import read_scoring_config
 from papersteward.scoring.special import DEFAULT_SPECIAL_QUOTAS, assess_special
 from papersteward.storage.repositories import (
@@ -363,29 +365,53 @@ def promote_to_topic(
     if topic is None:
         raise ConflictError("主标签没有可用的激活主题桶")
 
-    _, binding = bound_context(
+    _, today_binding = bound_context(
         session,
         timestamp,
         action="shelf.promote",
         enforce_schedule=False,
-        day=timestamp.date(),
     )
-    config = read_scoring_config(session, version=binding["scoring_version"])
-    if config is None:
-        raise ConflictError("当前激活的评分配置不存在")
     repository = StaticScoreSnapshotRepository(session)
     latest = repository.latest(paper_id)
     if latest is None:
         raise ConflictError("文献缺少静态分快照，无法提升")
+    local_day = runtime_local_day(session, timestamp, today_binding)
+    target_day = max(local_day, latest.score_date)
+    _, target_binding = bound_context(
+        session,
+        timestamp,
+        action="shelf.promote",
+        enforce_schedule=False,
+        day=target_day,
+    )
+    config = read_scoring_config(session, version=target_binding["scoring_version"])
+    if config is None:
+        raise ConflictError("目标日的评分配置不存在")
     if latest.relevance < max(55.0, config.gates.min_relevance_for_push):
         raise ConflictError("相关度低于主队列门槛，不能提升到主题桶")
-    versions = (config.version, binding["profile_version"], binding["taxonomy_version"])
-    if (latest.config_version, latest.profile_version, latest.taxonomy_version) != versions:
-        target = max(timestamp.date(), latest.score_date + timedelta(days=1))
+    versions = (
+        config.version,
+        target_binding["profile_version"],
+        target_binding["taxonomy_version"],
+    )
+    if (latest.config_version, latest.profile_version, latest.taxonomy_version) == versions:
+        static = latest
+    else:
+        append_day = max(local_day, latest.score_date + timedelta(days=1))
+        _, append_binding = bound_context(
+            session,
+            timestamp,
+            action="shelf.promote",
+            enforce_schedule=False,
+            day=append_day,
+        )
+        append_config = read_scoring_config(session, version=append_binding["scoring_version"])
+        if append_config is None:
+            raise ConflictError("补写日的评分配置不存在")
         static_score = round(
-            latest.relevance * config.static.relevance
-            + latest.authority * config.static.authority
-            + latest.extra_value * config.static.extra_value,
+            latest.relevance * append_config.static.relevance
+            + latest.authority * append_config.static.authority
+            + latest.extra_value * append_config.static.extra_value,
             1,
         )
         breakdown = dict(latest.breakdown_json)
@@ -393,24 +419,37 @@ def promote_to_topic(
         static = repository.append(
             StaticScoreSnapshot(
                 paper_id=paper_id,
-                score_date=target,
+                score_date=append_day,
                 relevance=latest.relevance,
                 authority=latest.authority,
                 extra_value=latest.extra_value,
                 static_score=static_score,
                 confidence=latest.confidence,
-                config_version=config.version,
-                profile_version=binding["profile_version"],
-                taxonomy_version=binding["taxonomy_version"],
+                config_version=append_config.version,
+                profile_version=append_binding["profile_version"],
+                taxonomy_version=append_binding["taxonomy_version"],
                 input_hash=hashlib.sha256(
-                    f"{latest.input_hash}:promote:{config.version}:{target.isoformat()}".encode()
+                    f"{latest.input_hash}:promote:{append_config.version}:"
+                    f"{append_day.isoformat()}".encode()
                 ).hexdigest(),
                 breakdown_json=breakdown,
                 created_at=timestamp,
             )
         )
-    else:
-        static = latest
+    append_future_activation_snapshots(
+        session,
+        paper_id=paper_id,
+        relevance=static.relevance,
+        authority=static.authority,
+        extra_value=static.extra_value,
+        confidence=static.confidence,
+        profile_version=static.profile_version,
+        taxonomy_version=static.taxonomy_version,
+        base_input_hash=static.input_hash,
+        breakdown=static.breakdown_json,
+        after_day=static.score_date,
+        now=timestamp,
+    )
 
     PaperBucketRepository(session).replace_filing(
         paper_id,
@@ -482,6 +521,56 @@ def reject_nomination(
     return ShelfDecision(paper=paper, nomination=decided, bucket=None)
 
 
+def reopen_nomination(
+    session: Session,
+    paper_id: str,
+    *,
+    kind: SpecialBucketKind | None = None,
+    reviewed_by: str,
+    note: str | None = None,
+    now: datetime | None = None,
+) -> SpecialNominationRecord:
+    """把已拒绝提名受控回到 pending；只留审计事件，不重新跑 LLM。"""
+    if not reviewed_by.strip():
+        raise ConflictError("必须记录审核人")
+    timestamp = now or utc_now()
+    paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        raise NotFoundError("文献不存在")
+    if paper.status is not PaperStatus.CLASSIFIED:
+        raise ConflictError("只有 classified 文献可以重新打开特殊桶提名")
+    repository = SpecialNominationRepository(session)
+    records = repository.list_for_paper(paper_id)
+    rejected = [item for item in records if item.status is SpecialNominationStatus.REJECTED]
+    if kind is not None:
+        rejected = [item for item in rejected if item.kind is kind]
+    if not rejected:
+        raise ConflictError("没有可重新打开的被拒绝提名")
+    rejected.sort(key=lambda item: (-SPECIAL_BUCKET_PRIORITY[item.kind], item.kind.value))
+    target = rejected[0]
+    reopened = repository.reopen(target.id, now=timestamp)
+    EventRepository(session).append(
+        Event(
+            id=uuid4().hex,
+            event_type=EventType.SPECIAL_NOMINATION_REOPENED,
+            created_at=timestamp,
+            paper_id=paper_id,
+            payload_json={
+                "nomination_id": target.id,
+                "kind": target.kind.value,
+                "previous_decided_at": (
+                    target.decided_at.isoformat() if target.decided_at else None
+                ),
+                "previous_decided_by": target.decided_by,
+                "previous_note": target.decision_note,
+                "reopened_by": reviewed_by.strip(),
+                "note": note,
+            },
+        )
+    )
+    return reopened
+
+
 __all__ = [
     "SPECIAL_BUCKETS",
     "ShelfDecision",
@@ -491,5 +580,6 @@ __all__ = [
     "list_pending_nominations",
     "persist_nominations",
     "promote_to_topic",
+    "reopen_nomination",
     "reject_nomination",
 ]

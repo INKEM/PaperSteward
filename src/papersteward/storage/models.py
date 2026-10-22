@@ -595,6 +595,7 @@ class SpecialTierSnapshotRow(Base):
     rubric_version: Mapped[str] = mapped_column(String(64), nullable=False)
     assigned_by: Mapped[str] = mapped_column(String(16), nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

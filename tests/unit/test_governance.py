@@ -49,5 +49,11 @@ def test_apply_overrides_bumps_version_and_validates_cross_fields() -> None:
         apply_overrides(CONFIG, {"static.relevance": 0.40})
     with pytest.raises((DomainError, AppError)):
         apply_overrides(CONFIG, {"unknown.field": 1})
+    with pytest.raises((DomainError, AppError), match="线性权重"):
+        apply_overrides(CONFIG, {"gates.max_daily_push": 99})
+    with pytest.raises((DomainError, AppError), match="线性权重"):
+        apply_overrides(CONFIG, {"dynamic.half_life_days.fast": 1})
+    with pytest.raises((DomainError, AppError), match="线性权重"):
+        apply_overrides(CONFIG, {"quasi_dynamic.tag_weight": 0.6})
     with pytest.raises((DomainError, AppError)):
         apply_overrides(CONFIG, {"static.relevance": 0.50}, version="1.0.0")

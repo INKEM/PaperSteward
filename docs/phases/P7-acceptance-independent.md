@@ -5,6 +5,10 @@
 > 验收对象：`6a877e9`（`feat/p7-s6-e2e`，PR #10，base `origin/main` `3026696`）；
 > head `0014`；验收日期 2026-10-22（Asia/Shanghai）。验收只读取/运行，不修改实现代码；
 > 临时探针在取证后删除。
+>
+> **后续状态**：F1–F3/N1–N4 已返工，见
+> [P7 返工验证记录](P7-acceptance-rework.md)；独立复验尚未执行，本报告结论保持
+> Not Accepted，P7 tag/Beta/P8 继续阻塞。
 
 ## 1. 结论
 

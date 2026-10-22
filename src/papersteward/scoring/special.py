@@ -396,6 +396,7 @@ def override_special_tier(
         rubric_version=latest.rubric_version,
         assigned_by=AssignedBy.USER,
         note=note,
+        reviewed_by=reviewed_by.strip(),
         created_at=now or utc_now(),
     )
     return repository.append(snapshot)

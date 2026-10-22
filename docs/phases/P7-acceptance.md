@@ -1,8 +1,10 @@
 # P7 本地阶段验收（特殊桶、自定义排序与权重治理）
 
-> 状态：**P7 独立验收 Not Accepted（2026-10-22）；需返工复验。P7 tag/Beta 未发布。**
-> 证据日期：2026-10-22。范围：S1–S6，head `0014`，无新依赖。
-> 独立结论与阻断项见 [P7-acceptance-independent.md](P7-acceptance-independent.md)。
+> 状态：**P7 独立验收 Not Accepted（2026-10-22）；F1–F3/N1–N4 返工完成，
+> 待独立复验。P7 tag/Beta 未发布。**
+> 证据日期：2026-10-22。范围：S1–S6 + 返工，head `0015`，无新依赖。
+> 独立结论见 [P7-acceptance-independent.md](P7-acceptance-independent.md)；
+> 返工证据见 [P7-acceptance-rework.md](P7-acceptance-rework.md)。
 
 ## 结论
 

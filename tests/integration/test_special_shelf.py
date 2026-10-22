@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,7 @@ from papersteward.pipeline.shelf import (
     list_pending_nominations,
     persist_nominations,
     reject_nomination,
+    reopen_nomination,
 )
 from papersteward.scoring.config import load_scoring_config_file
 from papersteward.storage import (
@@ -261,6 +262,65 @@ def test_reject_keeps_topic_filing_and_status(migrated_engine):
         assert list_pending_nominations(session)[1] == 0
 
 
+def test_rejected_nomination_can_be_reopened_and_accepted(migrated_engine):
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        _setup(session)
+        _process(session)
+        rejected = reject_nomination(
+            session,
+            PAPER.id,
+            kind=SpecialBucketKind.REVIEW,
+            reviewed_by="fixture-user",
+            note="先拒绝",
+            now=NOW,
+        )
+        reopened = reopen_nomination(
+            session,
+            PAPER.id,
+            kind=SpecialBucketKind.REVIEW,
+            reviewed_by="fixture-user",
+            note="重新考虑",
+            now=NOW,
+        )
+        assert reopened.id == rejected.nomination.id
+        assert reopened.status is SpecialNominationStatus.PENDING
+        assert reopened.decided_at is None and reopened.decided_by is None
+        pending, total = list_pending_nominations(session)
+        assert total == 2
+        assert any(record.id == reopened.id for record, _ in pending)
+        assert any(
+            event.event_type is EventType.SPECIAL_NOMINATION_REOPENED
+            for event in EventRepository(session).recent(limit=20)
+        )
+        with pytest.raises(ConflictError, match="没有可重新打开"):
+            reopen_nomination(
+                session,
+                PAPER.id,
+                kind=SpecialBucketKind.CLASSIC,
+                reviewed_by="fixture-user",
+                now=NOW,
+            )
+        accepted = accept_nomination(
+            session,
+            PAPER.id,
+            kind=SpecialBucketKind.REVIEW,
+            reviewed_by="fixture-user",
+            note="重新接受",
+            now=NOW,
+        )
+        assert accepted.nomination.status is SpecialNominationStatus.ACCEPTED
+        assert accepted.bucket is not None
+        with pytest.raises(ConflictError, match="classified"):
+            reopen_nomination(
+                session,
+                PAPER.id,
+                kind=SpecialBucketKind.REVIEW,
+                reviewed_by="fixture-user",
+                now=NOW,
+            )
+
+
 def test_accept_requires_classified_and_force_with_note(migrated_engine):
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
@@ -349,4 +409,26 @@ def test_shelf_cli_lists_and_rejects(migrated_engine, monkeypatch, capsys):
     assert "rejected" in capsys.readouterr().out
     assert main(["shelf", "review", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 1
+    monkeypatch.setattr("papersteward.pipeline.shelf.utc_now", lambda: NOW + timedelta(hours=1))
+    assert (
+        main(
+            [
+                "shelf",
+                "reopen",
+                PAPER.id,
+                "--kind",
+                "distant",
+                "--by",
+                "fixture-user",
+                "--note",
+                "重新考虑",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    reopened = json.loads(capsys.readouterr().out)
+    assert reopened["status"] == "pending"
+    assert main(["shelf", "review", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 2
     get_settings.cache_clear()
