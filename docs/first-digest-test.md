@@ -481,10 +481,19 @@ G1/G2 仍按 A1/A2 的步骤提交，只是文件换成 `var/first-digest/profil
 5. **临时绕行**：本次用 `var/first-digest/process_with_schema.py` 在运行时补
    schema 并截断摘要，**不是产品代码**；修复后应删除。
 
+### 修复验证
+
+- `make check`：1017 passed（含 prompt 版本与 schema 内联断言）。
+- live `deepseek-chat` 回归（不带测试包装）：
+  - CycleVLA：`relevance/v2` 返回扁平四维分；`summary/v3+repair` 通过，78 字。
+  - GAVEL：`relevance/v2` 扁平；`summary/v3` 通过，92 字。
+- 修复分支：`fix/llm-prompt-schema`（提交 `8f498e2`）。
+
 ### 后续
 
-- 代码：prompt 新版本内联 schema、repair 提示带 schema 与长度约束；补回归测试
-  （本次已在 `fix/llm-prompt-schema` 修复）。
+- 代码（已完成）：`classification/v3`、`summary/v3`、`relevance/v2`、
+  `special_nomination/v2`、`repair/v2` 内联 schema；repair 提示带 schema 与
+  摘要长度约束；已补回归测试。
 - 配置：`.env` 使用 `deepseek-chat`。
 - 评估：P8-S1 固定样本评估相关度与摘要，再决定 embedding 和门槛。
 - Pilot：按 P8 五问跑两周；查询改为主题轮换或 profile 生成查询。
