@@ -1,6 +1,6 @@
 # P5 优先级排序、动态分与解释
 
-> 状态：执行中；按 S1→S2→S3→S4→S5→S6 顺序，本地 stacked 分支。
+> 状态：**S1–S6按顺序实现并通过本地阶段门**；独立验收、Docker/CI、合并/推送/tag待后续流程。
 > 依据：开发计划 §3 P5；设计 §10；P4 enrichment handoff/返工复验。
 > 不新增依赖；测试固定日期、FakeLLM、临时 SQLite；禁止真实来源/LLM。
 
@@ -68,3 +68,99 @@
 - 规模超过8文件/400行：契约、可信上下文的只读选项、快照与状态事务、API/CLI、失败路径
   集成测试和指南共同构成S5完整竖切；未开始S6/P6，无新依赖。
 - 回滚保留日快照/状态；完整撤销需恢复操作前备份。无推送/阅读写入/归档/特殊分档。
+
+## S6 完成与阶段验收（2026-10-22）
+
+- 新增priority_golden.json：§10.10组件75.1、P4冻结后分层75.2、EMA74.8、固定日期F/H/D、
+  完整冷启动日快照。QueueItem/ScoreExplanation/RankConfig契约冻结。
+- 真实Uvicorn + CLI链路扩展：G4前queue/snapshot拒绝→G1–G4→ingest→process→review
+  →snapshot→queue/explain；同日幂等、R置信度/证据、无阅读H50/无评分U50均断言。
+- 补齐摘要未通过/静态或标签版本漂移/未经批准低置信度/倒序/同日依据变更/暂停只读/
+  归档历史不改写/特殊桶阅读计数/周评分修订/备注SQL不加载等验收。
+- e2e发现并修正P4分类payload.primary_tag为对象的兼容读取；纯函数半衰期拒绝NaN/Inf。
+  这些为S6验收发现的P5修复，没有扩展P6行为。
+
+### 完整本地阶段门
+
+| 检查 | 结果 |
+|---|---|
+| make check | **876 passed / 4 deselected**；ruff格式/lint、strict mypy **101**源文件通过 |
+| make test-integration | **265 passed** |
+| make e2e | **4 passed**（真实localhost Uvicorn/子进程CLI，包含完整P5链路） |
+| make migrate-check | base→**0008**→base→0008，upgrade/downgrade/upgrade成功 |
+| make demo DEMO_PORT=8075 | 独立临时库迁移/seed、health/papers正常，服务退出 |
+| make secret-scan / git diff --check | 通过 |
+
+所有数据库使用pytest tmp_path（basetemp=/dev/shm/p5-s6-*）或mktemp临时库，未碰var数据库。
+可复制命令：
+
+```bash
+make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p5-s6-final-check'
+make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p5-s6-final-integration'
+make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p5-s6-final-e2e'
+TMPDIR=/dev/shm make migrate-check
+# demo必须显式指定临时PAPERSTEWARD_DATABASE_URL，避免写用户库
+make secret-scan
+```
+
+### 验收矩阵
+
+| 计划要求 | 证据 |
+|---|---|
+| 75.1示例 | test_p5_golden；中间舍入边界ADR0015，不改P4冻结值 |
+| 无评分/无阅读U/H中性 | unit preference/dynamic、snapshot golden、真实e2e |
+| 缺失A/E中性 | 继承P4静态golden/已有回归；P5只读冻结结果 |
+| 特殊桶排除P | priority_queue集成：特殊FILING无P/rank、MEMBERSHIP保留；special_reading仍计H |
+| 非法配置拒绝保存 | ranking_config/save：NaN/Inf、构造绕过、权重护栏、零配置/事件残留 |
+| 每项解释 | QueueItem.explanation含分项/权重/贡献/置信度/版本/证据、舍入差额与稳定参数 |
+| 稳定排序与历史 | priority unit、snapshot golden、次日EMA、同日幂等/倒序拒绝、归档历史冻结 |
+
+### 非阻断限制与未执行项
+
+- 本轮未运行Docker/远端CI/独立验收；没有合并、推送、创建PR或打tag，不声称发布Alpha。
+- 继承P1 F5（Starlette/httpx警告）、P1 F3失败usage回归债；不在本阶段顺手改依赖。
+- 额外覆盖率测量：纯函数报告dynamic90%/preference98%/priority100%/config99%；组合测量
+  中SQLite/Alembic路径触发SQLAlchemy C扩展 `InternalTraversal object is not callable`，
+  默认与ctrace均复现。普通check/integration/e2e均通过；不将该不完整报告计为全scoring
+  覆盖率证据，不为测量修改依赖/应用数据库设置。后续维护窗口排查工具兼容。
+- P4部分历史条目的R原始证据未持久化；解释明确缺失与置信度0，现存摘要证据/静态
+  breakdown保留。无新R证据持久化、人工静态重算/新配置激活流程（后续版本治理）。
+- 静态分一位小数传播会使示例P为75.2，独立组件示例仍为75.1，详见ADR0015。
+
+## P5 Handoff → P6
+
+### 当前能做什么
+
+- 离线确定性计算F/H/D/U/P/rank；按G4精确配置批量追加日快照、原子入队、分页读取队列、
+  查看单篇当前/历史解释；没有评分/阅读时中性，不自动发送。
+- 冻结契约：scoring/contracts.py 的QueueItem、ScoreExplanation，priority.py的RankConfig；
+  API/CLI见priority-queue.md。日快照沿用score_snapshot，rank/稳定参数存breakdown_json。
+
+### P6可直接消费的输入
+
+- `create_snapshots(session, day, now=...)`、`read_queue(session, day, now=..., limit, offset)`；
+  日期必须按已确认runtime时区生成；读为空不代表生成成功，应先明确生成并检查excluded。
+- 队列按rank/R/date/A/title/id排序。P6编排在该合格候选集上做容量/多样性/冷却，不重算
+  静态分、不扩大R门槛、不混入特殊桶。首次生成已推进queued；不要重复写状态事件。
+- `explain_score(..., day=...)`可构造归档当日评分快照；P6应保存当时的日期/版本/完整解释，
+  不以未来的latest替换历史。历史解释不追溯重排；摘要/标签/备注归档仍需P6独立冻结。
+- 阅读完成须写paper.done和Rating：tags_at_read含主标签/副标签，null分不等于低分；
+  每篇按周截止前最后评分修订聚合，done按主标签统计（含特殊桶）。作者/venue目前从
+  Paper读取，P6提供阅读时快照后可增强；备注默认不读不外发。
+- 发送与归档必须保留ensure_active；真实发送还须执行暂停/安静/渠道等完整runtime门禁。
+  `bound_context(enforce_schedule=False)`只用于只读审阅，不可用于发送。
+
+### 不能做什么与回滚
+
+- 无日报渲染/推送、阅读操作API、归档/导出、定时任务、特殊桶分档/配额、自定义视图。
+- 不因本地实现完成而自动认可真实用户摘要或启用真实网络；真实模型质量仍待独立评估。
+- 无新迁移/依赖，head0008。代码回退保留快照/入队状态；完整撤销操作须停应用并恢复
+  操作前备份。旧代码不认识非默认配置扩展时须先导出并恢复旧配置版本。
+- S6超过8文件/400行指引：golden/契约冻结、失败与隐私集成验收、真实e2e、验收发现修复、
+  README/AGENTS/计划/CHANGELOG与handoff构成收尾；无P6实现。
+
+### 提交链与发布状态
+
+S1 `5049cfe` → S2 `5376b57` → S3 `1a06993` → S4 `df78ea9` → S5 `7685a79` → S6本分支提交。
+每张卡前一提交验证后才开始下一卡；当前均为本地stacked分支。独立验收、Docker/CI、
+合并/推送/tag留待后续流程；P6契约与输入已就绪。

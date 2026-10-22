@@ -77,7 +77,7 @@ class DynamicScore:
 
 def freshness(published_on: date | None, as_of: date, half_life: int = 180) -> float:
     natural_day(as_of)
-    if isinstance(half_life, bool) or half_life <= 0:
+    if isinstance(half_life, bool) or not isinstance(half_life, int) or half_life <= 0:
         raise DomainValidationError("half_life", "必须为正数")
     if published_on is None:
         return 50.0

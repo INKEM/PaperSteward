@@ -92,6 +92,12 @@ def _eligibility(
     if tag not in ctx["shares"] or bucket is None or not bucket.active or bucket.tag_code != tag:
         reasons.append("invalid_classification_or_filing")
     review = ReviewRepository(session).get(paper.id)
+    if any(t.taxonomy_version != ctx["binding"]["taxonomy_version"] for t in assigned):
+        reasons.append("classification_version_mismatch")
+    if any(t.role is TagRole.PRIMARY and t.confidence < 0.7 for t in assigned) and (
+        review is None or review.status is ReviewStatus.OPEN
+    ):
+        reasons.append("unapproved_low_confidence_classification")
     if review is not None and review.status is ReviewStatus.OPEN:
         reasons.append("open_review")
     summary = SummaryRepository(session).get(paper.id)
@@ -120,6 +126,8 @@ def _eligibility(
         # 改主标签须重算；不能把旧分类对应的静态分快照用于新分类。
         if review is not None:
             original = review.payload_json.get("classification", {}).get("primary_tag")
+            if isinstance(original, dict):
+                original = original.get("tag_code")
             if (
                 original
                 and original != tag

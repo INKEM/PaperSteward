@@ -1,0 +1,11 @@
+{
+  "component_example": {
+    "scores": {"R":84,"A":72,"E":65,"F":80,"H":55,"U":60},
+    "weights": {"R":0.45,"A":0.15,"E":0.10,"F":0.12,"H":0.08,"U":0.10},
+    "P":75.1
+  },
+  "frozen_layers": {"S":78.8,"D":70,"U":60,"P":75.2,"previous_rank":74,"rank_score":74.8},
+  "dynamic": {"as_of":"2026-10-22","published_on":"2026-04-25","F":52.5,"H":85.7,"D":65.8},
+  "cold_start": {"H":50,"U":50,"confidence":0},
+  "snapshot": {"R":80,"A":50,"E":50,"S":69.5,"F":100,"H":50,"D":80,"U":50,"P":69.7,"rank_score":69.7}
+}

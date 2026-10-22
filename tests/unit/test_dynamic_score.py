@@ -56,3 +56,9 @@ def test_mapping_and_failures():
     with pytest.raises(DomainValidationError):
         freshness(DAY, DAY, 0)
     assert freshness(None, DAY) == 50
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), True, -1])
+def test_invalid_half_life_fails_instead_of_returning_nonfinite(invalid):
+    with pytest.raises(DomainValidationError):
+        freshness(DAY, DAY, invalid)
