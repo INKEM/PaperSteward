@@ -19,6 +19,7 @@ def test_default_registry_is_versioned() -> None:
     assert registry.versions("classification") == ("classification/v1",)
     assert registry.get("classification") == CLASSIFICATION_V1
     assert registry.get("relevance") == RELEVANCE_V1
+    assert registry.versions("summary") == ("summary/v1", "summary/v2")
 
 
 def test_latest_and_explicit_version_lookup() -> None:

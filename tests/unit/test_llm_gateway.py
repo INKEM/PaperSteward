@@ -132,7 +132,7 @@ def test_summary_prompt_uses_summary_schema() -> None:
     )
 
     assert isinstance(result.data, SummaryOutput)
-    assert result.provenance.prompt_version == "summary/v1"
+    assert result.provenance.prompt_version == "summary/v2"
 
 
 def test_ping_and_input_hash_are_deterministic() -> None:

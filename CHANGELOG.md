@@ -6,6 +6,9 @@
 
 ### Added
 
+- **P4-S4**：100 字概括 `summary/v2` 与 `pipeline/summarize.py`：四槽生成、逐字证据
+  覆盖、数字 claim 对齐证据、空泛词检查与 `needs_review`；复用 `summary` 表持久化，
+  保留 `summary/v1`。无迁移，测试只用 FakeLLM。
 - **P4-S3**：相关度 R 管线：离线哈希 embedding、profile facet 提取、rubric prompt/
   `relevance` schema、逐字标题/摘要证据校验、55/65 band 与 `needs_review`。缺失/伪造
   证据用中性 2.5 降级；默认未校准（`calibrated=False`），不持久化/不改变状态。

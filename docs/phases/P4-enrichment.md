@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S3 完成并通过本地阶段门；P4-S4–S8 未开始。**
+> 状态：**P4-S1–S4 完成并通过本地阶段门；P4-S5–S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -55,11 +55,12 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
   golden/正反例 fixtures；
 - 范围外：真实 embedding 供应商选择（需单独 ADR）；预估 2–3 天。
 
-### P4-S4：100 字概括与三槽校验
+### P4-S4：100 字概括与四槽/证据校验（完成）
 
 - 目标：生成 ≤100 非空白字符摘要 + what/how/finding/limitation + evidence；
-- 输出：summary prompt/schema 版本、长度/证据校验、失败一次修复、`needs_review`；
-- 范围外：全文解析；预估 1–2 天。
+- 输出：`summary/v2` prompt、`pipeline/summarize.py`、逐字段证据/数字/空泛词校验、
+  持久化与 `needs_review`；schema 复用 P1 `SummaryOutput`；
+- 范围外：全文解析、真实 LLM 质量验收；预估 1–2 天。
 
 ### P4-S5：分类、置信度与边界案例
 
@@ -286,6 +287,69 @@ P4-S2 超过 8 文件指引：领域实体、迁移、ORM/映射/仓储、中性
 
 P4-S3 超过 8 文件指引：embedding 协议/实现、R 管线、schema/prompt、contract freeze
 更新、golden/正反例与文档共同构成本次竖切；未实现 P4-S4 摘要或任何持久化/入队逻辑。
+
+## P4-S4 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s4-make-check'`：
+  ruff format/check（173 文件）、strict mypy（**87 源文件**）通过；
+  **792 passed / 4 e2e excluded**（P4-S3 后基线 780，新增 12 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s4-integration'`：
+  **240 passed**（P4-S3 后基线 237；新增 3 项摘要持久化）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s4-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → 0006 → base → 0006 通过（无新迁移；
+  复用 P1 的 `summary` 表）。
+- `make demo DEMO_PORT=8059`：`/health`、`/papers` 正常；head 仍为 0006。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 LLM。
+- 离线演示：`summary/v2` + `FakeLLM` 生成 63 字四槽摘要，what/how/finding/limitation
+  四条证据均逐字有效、数字 2–4 有据、`validation_status=passed`、`needs_review=false`。
+
+### 实现
+
+- `summary/v2` prompt：要求 60–95 目标长度、四槽非空、每槽至少一条逐字证据、
+  数字有据、无空泛评价词；`summary/v1` 保留。
+- `pipeline/summarize.py`：`generate_summary` 调用 gateway（含一次 schema 修复），
+  然后做业务校验；`persist_summary` 复用 `SummaryRepository`。
+- 校验项：四字段非空（schema/entity）、summary_100 ≤100 非空白字符、每条 quote 必须
+  逐字出现在标题/摘要、每个槽位至少一条有效证据、summary 中的数字 token 必须出现在
+  有效证据中、空泛词黑名单。
+- 失败降级：任一校验失败写入 `SummaryValidationStatus.NEEDS_REVIEW`，不丢弃摘要；
+  证据列表只持久化有效 quote，`SummaryResult` 保留字段映射/无效 quote/原因。
+- 缺少摘要时在调用 LLM 前拒绝，由调用方转人工；schema 修复后仍失败时向上抛出
+  `LLMValidationError`，不写非法摘要。
+
+### 能做什么
+
+- 从标题/摘要生成受校验的 100 字概括与 what/how/finding/limitation 四槽；
+- 区分 PASSED 与 NEEDS_REVIEW，并保留 provenance、有效证据与 review 原因；
+- 对已有摘要幂等覆盖（每篇一行），支持后续 P4-S8 审核队列读取。
+
+### 不能做什么
+
+- 不解析全文；只基于标题/摘要，缺少摘要直接失败；
+- 不实现与摘要的余弦相似度阈值（需要真实/校准 embedding，后续 ADR）；
+- 不改变 `PaperStatus`、不入队/推送；摘要失败后的状态迁移由 P4-S8 编排；
+- 持久化只保存有效 quote 列表，字段映射仅保留在内存 `SummaryResult`；如需结构化
+  evidence 表需新增迁移；
+- 不调用真实 LLM；FakeLLM/golden 覆盖正反例与 repair。
+
+### P4-S5 输入与开工约束
+
+- 输入：`SummaryResult`/`SummaryRepository`、`relevance`/`needs_review`、已确认 taxonomy；
+- 分类只读取精确确认的 taxonomy 版本；主标签唯一、副标签 0–5；
+- 低置信度/边界案例进入 review，不直接入队；
+- 继续使用 FakeLLM/fixtures；新字段/表走新增迁移（当前 0006）。
+
+### 回滚
+
+- 无迁移；撤销 `summary/v2`、`pipeline/summarize.py`、fixtures/测试即可；
+- 已写入的 `summary` 行保留，回滚代码后仍可读；不删除用户 `.env` 或 LLM 配置。
+
+### 规模说明
+
+P4-S4 超过 8 文件指引：prompt 版本、摘要服务/校验、持久化、正反例与文档共同构成
+本次竖切；没有提前实现 P4-S5 分类逻辑。
 
 ## 与 P5 的边界
 
