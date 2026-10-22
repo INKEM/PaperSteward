@@ -1,6 +1,7 @@
 """G4绑定的可解释主题队列；日快照追加、同日幂等，读取不写库。"""
 
 from collections import Counter
+from collections.abc import Set
 from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any
@@ -53,7 +54,9 @@ from papersteward.storage.repositories import (
     TaxonomyRepository,
 )
 
-ELIGIBLE = {PaperStatus.CLASSIFIED, PaperStatus.SCORED, PaperStatus.QUEUED}
+ELIGIBLE = frozenset({PaperStatus.CLASSIFIED, PaperStatus.SCORED, PaperStatus.QUEUED})
+# 周任务只读候选：已投递未读同样需要当日U；不重新入队，避免改变投递历史。
+WEEKLY_ELIGIBLE = ELIGIBLE | {PaperStatus.PUSHED}
 
 
 def _context(session: Session, now: datetime, *, execution: bool = False) -> dict[str, Any]:
@@ -76,7 +79,12 @@ def _context(session: Session, now: datetime, *, execution: bool = False) -> dic
 
 
 def _eligibility(
-    session: Session, paper: Paper, ctx: dict[str, Any], day: date
+    session: Session,
+    paper: Paper,
+    ctx: dict[str, Any],
+    day: date,
+    *,
+    eligible: Set[PaperStatus] = ELIGIBLE,
 ) -> tuple[list[str], str | None, StaticScoreSnapshot | None]:
     reasons: list[str] = []
     buckets = PaperBucketRepository(session).list_for_paper(paper.id)
@@ -84,7 +92,7 @@ def _eligibility(
     bucket = BucketRepository(session).get(filing[0].bucket_id) if len(filing) == 1 else None
     if bucket is not None and bucket.bucket_type is not BucketType.TOPIC:
         return ["special_bucket"], None, None
-    if paper.status not in ELIGIBLE:
+    if paper.status not in eligible:
         reasons.append("ineligible_status:" + paper.status.value)
     assigned = PaperTagRepository(session).list_for_paper(paper.id)
     primary = [t.tag_code for t in assigned if t.role is TagRole.PRIMARY]
@@ -367,7 +375,14 @@ def _build(
     )
 
 
-def create_snapshots(session: Session, day: date, *, now: datetime) -> SnapshotResponse:
+def create_snapshots(
+    session: Session,
+    day: date,
+    *,
+    now: datetime,
+    eligible: Set[PaperStatus] = ELIGIBLE,
+) -> SnapshotResponse:
+    """追加当日快照；周任务可传入 ``WEEKLY_ELIGIBLE`` 以覆盖已投递未读候选。"""
     natural_day(day)
     with _atomic(session):
         ctx = _context(session, now, execution=True)
@@ -376,7 +391,7 @@ def create_snapshots(session: Session, day: date, *, now: datetime) -> SnapshotR
         candidates = []
         excluded = []
         for paper in PaperRepository(session).list():
-            reasons, tag, static = _eligibility(session, paper, ctx, day)
+            reasons, tag, static = _eligibility(session, paper, ctx, day, eligible=eligible)
             if reasons:
                 excluded.append(Exclusion(paper_id=paper.id, reasons=reasons))
             else:

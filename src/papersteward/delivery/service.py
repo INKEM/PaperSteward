@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from papersteward.config import Settings
 from papersteward.core.entities import Event
 from papersteward.core.enums import EventType, PaperStatus, TagRole
-from papersteward.core.errors import InvariantViolation
+from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.delivery.channels import send_smtp, smtp_destination, write_file
 from papersteward.delivery.compose import DeliveryHistory, compose_digest
 from papersteward.delivery.contracts import Digest
@@ -234,8 +234,17 @@ def deliver(
                         "channel": channel,
                     }
                 if not (recover_file and channel == "local_markdown"):
-                    raise InvariantViolation(
-                        "delivery.status", "已有投递预约或送达不确定；禁止自动重发"
+                    if not (channel == "smtp" and row.status == "failed"):
+                        raise InvariantViolation(
+                            "delivery.status", "已有投递预约或送达不确定；禁止自动重发"
+                        )
+                    # 复核失败未触发SMTP I/O，重置为reserved后允许本次显式重试。
+                    row.status, row.error = "reserved", None
+                    audit(
+                        session,
+                        EventType.DELIVERY_RESERVED,
+                        now,
+                        {"date": str(day), "channel": channel, "retry": "preflight_failed"},
                     )
             else:
                 session.add(
@@ -257,9 +266,25 @@ def deliver(
             _preflight(session, digest, channel, now)
     except IntegrityError as exc:
         raise InvariantViolation("delivery.status", "投递已被其他进程预约") from exc
+    # 第二次复核仍在任何外部I/O之前；失败只记为failed，不能伪造成“可能已发送”。
     try:
         with session_scope(factory) as session:
             _preflight(session, digest, channel, now)
+    except Exception as exc:
+        detail = exc.message if isinstance(exc, DomainError) else "复核执行失败"
+        error = f"投递前复核失败，未尝试投递：{detail}"
+        with session_scope(factory) as session:
+            row = session.get(DeliveryRow, (day, channel))
+            assert row is not None
+            row.status, row.error = "failed", error
+            audit(
+                session,
+                EventType.DELIVERY_FAILED,
+                now,
+                {"date": str(day), "channel": channel, "status": "failed", "stage": "preflight"},
+            )
+        raise InvariantViolation("delivery.preflight", error) from exc
+    try:
         if channel == "local_markdown":
             assert out is not None
             write_file(out, render_markdown(digest))

@@ -1,6 +1,6 @@
 # P6 日报推送、阅读反馈与归档
 
-状态：**S1→S7本地实现与完整本地阶段门通过**；本地stacked逐卡验证/提交，远程合并/发布另记。
+状态：**S1→S7 本地实现、Docker/CI 与本地阶段门通过；独立验收未通过（F1/F2），返工已实施并通过本地阶段门，独立复验待执行**。
 依据：开发计划 §3 P6、设计 §9/11/12、P5 handoff 与独立验收。测试离线、固定时钟、tmp_path。
 
 ## 执行卡（每卡预计 0.5–2 天）
@@ -64,7 +64,7 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
 
 - 六种阅读操作API/CLI、严格字段/评分、全局request_id回执、冷却/到期恢复、Rating修订
   与状态/事件原子写入完成。done暂落DONE；S5接入同事务归档。发送前阻止已变化条目，
-  已送达回执在完成后仍可幂等读取；未声称user_read事件是邮件投递。
+  已送达回执在完成后仍可幂等读取；未声称paper.pushed的user_read触发是邮件投递。
 - make check：915 passed / 4 deselected，ruff/mypy112源文件；secret-scan/diff通过。
   新增8单元+7集成，覆盖G4/非法状态/幂等冲突/修订历史/延期与skip/回滚/真实CLI。
 - 无迁移；完整撤销需恢复操作前备份。超8文件/400行：输入校验、服务/API/CLI、审计
@@ -111,20 +111,55 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
   **297 passed**，e2e **4 passed**；base↔0010、临时库demo8789、secret-scan/diff通过。
   有数据0010↔0009与wheel静态资源/SRI核对通过；Docker因权限未验证，远程CI未触发。
 
+### S7 返工（2026-10-22，F1/F2/N1–N4）
+
+- F1：周任务候选改为 `WEEKLY_ELIGIBLE = ELIGIBLE | PUSHED`，`create_snapshots` 接受
+  候选集合；PUSHED 不重新入队，报告查询同步。snooze 到期的 SNOOZED 按日报同规则恢复，
+  报告新增 `resumed`。归档/特殊桶仍无新P且不被回写。
+- F2：第二次无副作用 preflight 与文件/SMTP I/O 分开捕获；复核失败记录 `failed` 和
+  “未尝试投递”，不写 `uncertain`；SMTP 修正后同一预约可直接重试，文件仍用
+  `--recover-file`。只有实际 I/O 异常才写 SMTP `uncertain`。
+- N1：文档明确同日快照不可重写；按设计在 update_weekday 20:00、当日日报投递后运行，
+  报告复用已有同日快照，U 从下一自然日快照继续使用同一周截止。提前到投递前运行则当日
+  稍后变 PUSHED 的条目不进入本次 Run，但仍由日报创建当日快照。
+- N2：无日报页面的生成表单携带所选 `day`，生成后回到该日期。
+- N3：文档统一为 `queued→pushed` 时写 `paper.pushed` 并在 payload 标记
+  `trigger=user_read`，已 pushed 不重复写，无独立事件。
+- N4：`safe_url` 拒绝任何 userinfo（含空用户名、空密码），补 URL 回归。
+- make check **944 passed / 4 deselected**、ruff/mypy **120**源文件；新增 5 项回归
+  （F1 投递后周任务、snooze 恢复、同日快照、F2 二次 preflight、N2 日期表单），
+  N4 扩展现有 URL 用例。完整阶段门与限制见[返工验证记录](P6-acceptance-rework.md)。
+
 ## P6 Handoff → P7
 
 - 已具备日报/动作/归档/导出/API/CLI/最小页面、周任务；操作指南delivery-cli.md。
   Digest/Action/ArchiveRecord冻结；可直接使用QueueItem解释、特殊桶空占位和反馈事件。
 - head0010；0009日报/投递，0010完整归档内容；P5日快照/静态快照仍只读历史。
   跨日冷却、未知SMTP预约、归档不可变与备注隐私必须保留；不要绕过G4选定版本。
-- P7先独立验收P6并让用户审阅真实首日报，再按计划拆特殊桶/自定义视图/权重治理卡片。
-  本轮未使用合成4分/认可替代真实反馈，不自动修改研究方向或全局配置。
+- P6 独立验收未通过后已按 F1/F2/N1–N4 返工：周任务覆盖 PUSHED 未读、二次 preflight
+  不再伪造 uncertain，并补齐同日快照/日期表单/URL/事件语义。返工阶段门通过；独立复验
+  通过前 P7 不开始、P6 tag 不创建。复验后再让用户审阅真实首日报，然后按计划拆特殊桶/
+  自定义视图/权重治理卡片。本轮未使用合成4分/认可替代真实反馈，不自动修改研究方向或全局配置。
 - 当前没有归档删除/撤销、完整特殊桶分档/配额、权重激活、常驻调度、真实模型/邮件质量
   验收。P8处理真实偏好评估、隐私文本授权与运维硬化；不能暗中外发备注。
-- Docker本地权限受限，CI/独立验收/远程PR与tag待执行；不宣称已发布Alpha。
-  继承P1 F5/F3与既有阶段tag债务。完整风险/回滚/命令/证据见P6-acceptance.md及ADR0016/0017。
+- Docker 本地与远程 CI 已通过；PR #8 已合并到 main，P6 tag 未创建，独立复验待执行。
+  继承P1 F5/F3与既有阶段tag债务。完整风险/回滚/命令/证据见 P6-acceptance.md、
+  [P6 独立验收报告](P6-acceptance-independent.md)、[P6 返工验证](P6-acceptance-rework.md)
+  及 ADR0016/0017。
 
 ### 本地提交链
 
 S1 `4c5fff1` → S2 `2233b5e` → S3 `e8fdac5` → S4 `03659e0` → S5 `439dd3f`
 → S6 `2d1c717` → S7本分支收尾提交。每张卡前一检查通过后才建立下一张stacked分支。
+返工：`38e3293`（F1）→ `77b0d50`（F2）→ `dc590e5`（N2/N4）→ `a6fbe58`（返工文档）
+→ 随后仅追加全新 clone 证据与规模说明的文档提交。返工基线为独立验收文档 `5684be0`。
+
+## 独立验收（2026-10-22）
+
+独立验收结论为 **未通过（Not Accepted）**：阶段门、全新 clone、Docker、CI 与浏览器闭环通过，
+但 F1（`PUSHED` 未读候选不进入周任务）和 F2（第二次 preflight 失败在未发送时被写成 SMTP
+`uncertain`）属于 P6 契约内缺陷。P6 暂不关闭，P7 不开始，P6 tag 不创建。
+返工条件、复现与证据见[P6 独立验收报告](P6-acceptance-independent.md)。
+
+返工已按该报告实施（F1/F2/N1–N4），本地阶段门重跑通过；独立复验仍未执行。返工代码、
+回归与门禁证据见[P6 返工验证记录](P6-acceptance-rework.md)。

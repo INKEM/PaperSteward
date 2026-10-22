@@ -18,8 +18,11 @@ POST /digests body `{"digest_date":"2026-10-22"}` 生成不可变日报；GET /d
 
 日期按G4选定时区；正式发送只能发送本地今日、到达已确认push_time后且非暂停/安静时段。
 日报按日期唯一；投递按日期/渠道唯一。输出文件0600、不覆盖不同内容；路径冲突后先核对
-文件，解决后用相同目标 `--recover-file` 显式恢复。SMTP失败/崩溃后可能实际已送达，
-预约/uncertain状态禁止自动重发，须人工核对；无提供绕过SMTP幂等的重置命令。
+文件，解决后用相同目标 `--recover-file` 显式恢复。外部I/O前的第二次复核失败会记为
+`failed` 并明确“未尝试投递”，不会写成 `uncertain`：SMTP修正后可直接重试同一预约，
+本地文件仍需 `--recover-file`。只有实际进入文件写入或SMTP发送后的异常/崩溃才可能留下
+`failed`（文件）或 `uncertain`（SMTP）；SMTP预约/uncertain禁止自动重发，须人工核对；
+无提供绕过SMTP幂等的重置命令。
 同日第二渠道可以独立发送；SMTP失败不会阻止本地文件。G4选择local_markdown时不发邮件。
 
 SMTP配置：HOST、PORT（默认465）、FROM、TO、SECURITY（ssl/starttls）、TIMEOUT_S；
@@ -48,7 +51,9 @@ POST /papers/{id}/actions 接收request_id和kind。done必填mode，可选score
 请求ID在整个操作日志中唯一；同ID同正文复用回执，不同正文409；CLI省略ID时生成新ID。
 评分为严格1–5整数或null，未评分不当低分；修订时间必须晚于此前反馈。修订保留旧值，
 不改初始Rating。done只允许已入队/已推送/阅读中且摘要/审核/分类/快照就绪的条目。
-用户主动完成队列文献会沿状态机写user_read触发，paper.pushed不表示发过邮件。
+用户主动完成尚未投递的队列文献时，会在 `queued→pushed` 迁移中写 `paper.pushed`
+事件，并在 payload 标记 `trigger=user_read`；已处于 `pushed` 的条目不会重复写该事件。
+没有独立的 `user_read` 事件，`paper.pushed` 也不表示邮件已送达。
 阅读操作只需要G4、不受暂停影响；发送已生成但随后被跳过/拒绝/完成的条目会拒绝。
 S5已加入同事务即时归档；归档写入失败将撤销done、Rating和事件。返回status=archived。
 
@@ -87,8 +92,14 @@ papersteward jobs preference-weekly --run-id weekly-recheck-20261025 --json
 POST /jobs/preference/weekly body `{}` 或 `{"run_id":"weekly-recheck-20261025"}`；调用P5的
 create_snapshots/周偏好算法，按已确认时区和update_weekday的00:00排他截止；同周后续评分
 下周生效。默认ID由周截止+G4绑定组成，重复任务返回原Run，不重复更新候选或归档P。
-只处理未读合格主题候选；已归档/特殊桶不产生P。Run报告含完成/评分数、覆盖率/弱信号、
-修订数、非法评分/标签、孤立评分、快照数量和U/置信度；null不作负分，覆盖率<30%弱化。
+候选是未读合格主题集合加上已投递未读（PUSHED）；PUSHED不重新入队，日报投递历史不受
+影响。snooze到期的SNOOZED与日报一致恢复为QUEUED，报告以 `resumed` 计数。
+建议按设计在 update_weekday **20:00、当日日报投递后**运行周任务：这样本周已投递未读也
+在候选内；若当日日报已生成同日快照，周任务不会重写该快照，报告复用其中的U，下一自然日
+快照继续使用同一周截止。若提前到当日投递前运行，当日稍后才变为PUSHED的条目不进入本次
+Run（同run_id幂等，不会事后补录），但仍会由当日日报创建快照。归档/特殊桶始终不产生P。
+Run报告含完成/评分数、覆盖率/弱信号、修订数、非法评分/标签、孤立评分、恢复数、
+快照数量和U/置信度；null不作负分，覆盖率<30%弱化。
 非法评分数据返回failed报告且不写候选快照，CLI非0；历史缺阅读方式/空标签仅警告，
 保留P1可选字段兼容。原始Rating和报告不被自动修复、删除或覆盖。
 

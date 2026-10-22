@@ -1,6 +1,6 @@
 """手动/调度器可调用的周度U任务；复用P5算术，报告幂等，不读取备注。"""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -9,15 +9,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from papersteward.core.entities import Event, Run
-from papersteward.core.enums import EventType, RunStatus
+from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
+from papersteward.delivery.service import delivery_history
 from papersteward.onboarding.service import _atomic
 from papersteward.scoring.preference import weekly_cutoff
-from papersteward.scoring.queue import ELIGIBLE, _context, _history, create_snapshots
+from papersteward.scoring.queue import (
+    WEEKLY_ELIGIBLE,
+    _context,
+    _history,
+    create_snapshots,
+)
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import EventRow, PaperRow, RatingRow, ScoreSnapshotRow
-from papersteward.storage.repositories import EventRepository, RunRepository
+from papersteward.storage.repositories import (
+    EventRepository,
+    PaperRepository,
+    RunRepository,
+)
 
 
 def _check_data(session: Session, *, cutoff: str, timezone: ZoneInfo) -> dict[str, Any]:
@@ -75,6 +85,29 @@ def _check_data(session: Session, *, cutoff: str, timezone: ZoneInfo) -> dict[st
     }
 
 
+def _resume_due_snoozed(session: Session, day: date, *, now: datetime) -> int:
+    """与日报一致地恢复 snooze 已到期的未读候选；PUSHED 无需改状态。"""
+    history = delivery_history(session)
+    resumed = 0
+    for paper in PaperRepository(session).list():
+        old = history.get(paper.id)
+        if (
+            paper.status is PaperStatus.SNOOZED
+            and old is not None
+            and old.snooze_until is not None
+            and day >= old.snooze_until
+        ):
+            PaperRepository(session).transition(
+                paper.id,
+                PaperStatus.QUEUED,
+                event_id=uuid4().hex,
+                occurred_at=now,
+                payload={"stage": "weekly_recheck"},
+            )
+            resumed += 1
+    return resumed
+
+
 def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None) -> Run:
     with _atomic(session):
         ctx = _context(session, now, execution=True)
@@ -112,11 +145,12 @@ def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None
                 },
             )
         else:
+            resumed = _resume_due_snoozed(session, day, now=now)
             _, feedback = _history(session, ctx, day)
             history = [f for f in feedback if f.completed_on < cutoff]
             rated = sum(f.rating is not None for f in history)
             coverage = rated / len(history) if history else 0.0
-            snapshot = create_snapshots(session, day, now=now)
+            snapshot = create_snapshots(session, day, now=now, eligible=WEEKLY_ELIGIBLE)
             scores = [
                 {
                     "paper_id": row.paper_id,
@@ -128,7 +162,7 @@ def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None
                     .join(PaperRow, PaperRow.id == ScoreSnapshotRow.paper_id)
                     .where(
                         ScoreSnapshotRow.score_date == day,
-                        PaperRow.status.in_([s.value for s in ELIGIBLE]),
+                        PaperRow.status.in_([s.value for s in WEEKLY_ELIGIBLE]),
                     )
                 )
             ]
@@ -137,6 +171,7 @@ def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None
                 rated_count=rated,
                 coverage=round(coverage, 4),
                 weak_signal=coverage < 0.3,
+                resumed=resumed,
                 created=snapshot.created,
                 existing=snapshot.existing,
                 excluded=len(snapshot.excluded),

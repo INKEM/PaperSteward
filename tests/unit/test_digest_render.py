@@ -28,6 +28,8 @@ def test_untrusted_content_and_unsafe_urls():
         "//host/path",
         "data:text/html,x",
         "https://u:pw@host",
+        "https://:pw@host",
+        "https://user:@host",
         "https://[broken",
         "https://x/\x00",
     ):
