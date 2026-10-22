@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `papersteward start` 显式迁移后启动服务并打开浏览器，支持独立数据目录与关闭浏览器。
+- wheel/sdist 携带迁移资源；源码用户可用 `make start`。
+
 ## [0.1.0b1] - 2026-10-23
 
 ### Added

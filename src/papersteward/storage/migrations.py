@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 
 from alembic.config import Config
@@ -13,6 +14,9 @@ from sqlalchemy.engine import Engine
 
 def find_alembic_ini() -> Path:
     """优先当前目录，其次包所在仓库根目录，返回 alembic.ini。"""
+    packaged = files("papersteward").joinpath("_migrations", "alembic.ini")
+    if packaged.is_file():
+        return Path(str(packaged))
     candidates = [Path.cwd() / "alembic.ini"]
     candidates.extend(parent / "alembic.ini" for parent in Path(__file__).resolve().parents)
     for candidate in candidates:

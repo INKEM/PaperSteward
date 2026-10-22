@@ -11,6 +11,7 @@ PYTEST := $(BIN)/pytest
 RUFF := $(BIN)/ruff
 MYPY := $(BIN)/mypy
 DEMO_PORT ?= 8000
+START_ARGS ?=
 
 .PHONY: help bootstrap check test test-integration e2e migrate-check demo secret-scan docker-build docker-up docker-down
 
@@ -85,3 +86,7 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+.PHONY: start
+start:
+	$(PAPERSTEWARD) start $(START_ARGS)

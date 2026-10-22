@@ -8,7 +8,7 @@
 
 ## 安装与启动
 
-需要 Docker Compose，或 Python 3.11+。当前请从源码安装；PyPI/pipx 独立安装入口正在准备。
+需要 Docker Compose，或 Python 3.11+。当前请从源码安装；也支持从本仓库安装到 pipx：`pipx install .`。
 
 ```bash
 git clone https://github.com/INKEM/PaperSteward.git
@@ -24,8 +24,7 @@ Python 源码方式：
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 cp .env.example .env
-.venv/bin/alembic upgrade head
-.venv/bin/uvicorn papersteward.main:app --host 127.0.0.1 --port 8000
+.venv/bin/papersteward start --data-dir ./var
 ```
 
 安装依赖需要联网。默认使用离线模型替身；处理真实论文前请先[配置模型](docs/llm-provider.md)。
@@ -51,6 +50,8 @@ cp .env.example .env
 配置使用 `.env` 或 `PAPERSTEWARD_*` 环境变量，环境变量优先；示例见 [.env.example](.env.example)。默认只绑定本机，运行页面无需 CDN，不收集遥测。
 
 真实来源采集与模型调用需要明确授权；API key 只放本地配置，阅读备注默认不发送到模型。邮件必须在初始化中明确选择并配置后才能手动发送。
+
+启动会显式升级迁移后运行服务；`--no-browser` 关闭自动打开，`--port 8001` 更换端口，`--data-dir 新目录` 创建独立工作区。源码安装也可用 `make start`。
 
 启动失败先运行 `.venv/bin/papersteward doctor`；它只诊断，不迁移。若报告迁移落后，停止服务、备份数据，再运行 `.venv/bin/alembic upgrade head`。端口占用可用 Uvicorn 的 `--port 8001`。不要删除数据库或投递记录来重试未知送达的邮件。
 
