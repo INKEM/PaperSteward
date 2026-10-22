@@ -41,3 +41,10 @@
 - ADR0015记录中间舍入：组件示例75.1；未舍入S=78.75→P75.1，P4冻结S78.8→P75.2。
 - `make check`：846 passed，96源文件mypy；新增4项unit/contract；secret-scan/diff通过。
 - RankConfig冻结稳定参数；无迁移/依赖。暂未学习U/生成队列；回滚撤销S2代码。
+
+## S3 完成（2026-10-22）
+
+- U按更新日00:00排他截止，lambda亲和度收缩、总体置信度收缩、覆盖率<30%再弱化。
+- 主标签+top3副标签、父标签/全局先验、作者/venue分项；null不作负分；不读取备注。
+- `make check`：851 passed，97源文件mypy；新增5项unit/contract；secret-scan/diff通过。
+- 无反馈写入/后台任务/迁移；S5保存结果与截止依据。回滚撤销S3，不修改Rating。
