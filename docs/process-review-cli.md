@@ -17,19 +17,32 @@ papersteward process --paper p_xxx \
   --json
 ```
 
-- `--paper` 缺省时处理最多 `--limit` 篇 screened；
+- `--paper` 缺省时处理最多 `--limit` 篇 screened；单一 `--llm-fixture` **只支持
+  `--paper` 单篇**，批量请逐篇处理或使用 `--live`；
 - fixture 是 JSON object，必须含四个键，按此顺序回放：
   `relevance`、`summary`、`classification`、`special_nomination`；
 - 每个值可以是 object 或 JSON 字符串；classification/special schema 见
   `papersteward schema show classification|special_nomination`；
 - 成功后写 enrichment、summary、`paper_tag`/`paper_bucket`、静态快照，并按需写
-  `review_item`；命令失败时同一事务回滚。
+  `review_item`；命令失败时同一事务回滚；
+- 已有 enrichment 直接复用，不会被中性 provider 覆盖；仅缺失时才写中性信号；
+- 缺摘要/摘要无法生成时跳过 summary，仍执行 R/分类/特殊桶/静态分，写入
+  `summary:missing_abstract`（或 `summary:unavailable`）并进入 review，不使批次失败；
+- `--live` 在 provider=fake 时明确拒绝；LLM 配置/schema/网络错误只打印可操作信息，
+  不输出 traceback。
 
 退出码：
 
 - `0`：全部处理完成（可能进入 review）；
 - `1`：未激活/暂停/安静时段、schema/证据校验失败、版本冻结冲突、数据库错误；
 - `2`：参数错误（argparse）。
+
+## 静态 A/E 输入边界
+
+process 从 enrichment 读取 `venue_level`、`code_url`、`data_url`、`oa_status`，
+并结合 `published_at`；`author_scores`、`citation_percentile`、`reproducibility`、`rigor`
+是 `process_paper` 的可选 Python API 参数，当前 CLI 不暴露。缺失项按 0.5 中性值并
+在静态快照 `breakdown.authority/extra_value.reasons` 中显式标记，不会伪造精度。
 
 ## 审核队列
 

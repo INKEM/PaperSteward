@@ -13,11 +13,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from papersteward.config import LLMProviderKind
 from papersteward.core.entities import Bucket, Paper, ResearchProfile, ReviewItem, Taxonomy, utc_now
 from papersteward.core.enums import PaperStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError, NotFoundError
 from papersteward.llm import FakeLLM, LLMGateway, build_llm_provider
+from papersteward.llm.errors import LLMError
 from papersteward.pipeline.context import bound_context
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
 from papersteward.pipeline.process import ensure_topic_buckets, process_paper
@@ -103,9 +105,16 @@ def _run_process(args: argparse.Namespace) -> int:
         raise InvalidRequestError("--llm-fixture 与 --live 只能选择一种")
     if not args.llm_fixture and not args.live:
         raise InvalidRequestError("需要 --llm-fixture（离线）或 --live（真实 LLM）")
+    if args.llm_fixture and not args.paper:
+        raise InvalidRequestError("单一 LLM fixture 只支持 --paper；批量请逐篇处理或使用 --live")
     from papersteward.config import get_settings
 
     settings = get_settings()
+    if args.live and settings.llm_provider is LLMProviderKind.FAKE:
+        raise InvalidRequestError(
+            "当前 LLM provider=fake；请设置 PAPERSTEWARD_LLM_PROVIDER=openai_compatible "
+            "并配置模型，或使用 --llm-fixture"
+        )
     provider = (
         _fixture_provider(args.llm_fixture)
         if args.llm_fixture
@@ -155,11 +164,19 @@ def _run_process(args: argparse.Namespace) -> int:
             else:
                 for outcome in outcomes:
                     flag = "review" if outcome.needs_review else "classified"
-                    print(f"{outcome.paper_id}: {flag} ({len(outcome.reasons)} reasons)")
+                    print(
+                        f"{outcome.paper_id}: {flag} "
+                        f"R={outcome.relevance.R:.1f} A={outcome.static.authority:.1f} "
+                        f"E={outcome.static.extra_value:.1f} S={outcome.static.static_score:.1f} "
+                        f"({len(outcome.reasons)} reasons)"
+                    )
                 if not outcomes:
                     print("没有可处理的 screened 文献")
             return 0
     finally:
+        close = getattr(provider, "close", None)
+        if callable(close):
+            close()
         engine.dispose()
 
 
@@ -238,6 +255,9 @@ def run(args: argparse.Namespace) -> int:
     except (AppError, DomainError) as exc:
         message = exc.message if hasattr(exc, "message") else str(exc)
         print(f"错误：{message}", file=sys.stderr)
+        return 1
+    except LLMError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
         return 1
     except (SQLAlchemyError, ValidationError, OSError):
         print(

@@ -36,7 +36,12 @@ from papersteward.pipeline.enrich_service import persist_enrichment
 from papersteward.pipeline.relevance import RelevanceResult, evaluate_relevance
 from papersteward.pipeline.review import open_review
 from papersteward.pipeline.special import SpecialNominationResult, nominate_special
-from papersteward.pipeline.summarize import SummaryResult, generate_summary, persist_summary
+from papersteward.pipeline.summarize import (
+    SummaryError,
+    SummaryResult,
+    generate_summary,
+    persist_summary,
+)
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.static import (
     AuthorityInputs,
@@ -50,6 +55,7 @@ from papersteward.scoring.static import (
 )
 from papersteward.storage.repositories import (
     BucketRepository,
+    EnrichmentRepository,
     PaperRepository,
     StaticScoreSnapshotRepository,
 )
@@ -68,7 +74,7 @@ class ProcessOutcome:
     needs_review: bool
     reasons: tuple[str, ...]
     relevance: RelevanceResult
-    summary: SummaryResult
+    summary: SummaryResult | None
     classification: ClassificationResult
     special: SpecialNominationResult
     static: StaticScoreSnapshot
@@ -81,7 +87,7 @@ class ProcessOutcome:
             "needs_review": self.needs_review,
             "reasons": list(self.reasons),
             "relevance": self.relevance.as_json(),
-            "summary": self.summary.as_json(),
+            "summary": self.summary.as_json() if self.summary is not None else None,
             "classification": self.classification.as_json(),
             "special": self.special.as_json(),
             "static": {
@@ -164,14 +170,17 @@ def _move_to_review(session: Session, paper: Paper, *, now: datetime) -> PaperSt
 
 def _review_reasons(
     relevance: RelevanceResult,
-    summary: SummaryResult,
+    summary: SummaryResult | None,
+    summary_reason: str | None,
     classification: ClassificationResult,
     special: SpecialNominationResult,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
     if relevance.needs_review:
         reasons.extend(f"relevance:{reason}" for reason in relevance.reasons)
-    if summary.needs_review:
+    if summary_reason is not None:
+        reasons.append(summary_reason)
+    if summary is not None and summary.needs_review:
         reasons.extend(f"summary:{reason}" for reason in summary.reasons)
     if classification.needs_review:
         reasons.extend(f"classification:{reason}" for reason in classification.reasons)
@@ -191,12 +200,20 @@ def _static_snapshot(
     config: ScoringConfig,
     now: datetime,
     score_date: date,
+    author_scores: tuple[float, ...] = (),
+    citation_percentile: float | None = None,
+    reproducibility: float | None = None,
+    rigor: float | None = None,
 ) -> StaticScoreSnapshot:
-    enrichment, _ = persist_enrichment(session, paper, now=lambda: now)
+    enrichment = EnrichmentRepository(session).get(paper.id)
+    if enrichment is None:
+        enrichment, _ = persist_enrichment(session, paper, now=lambda: now)
     signals = enrichment.signals
     authority = compute_authority(
         AuthorityInputs(
             venue_level=signals.venue_level,
+            author_scores=author_scores,
+            citation_percentile=citation_percentile,
             published_at=paper.published_at,
             as_of=score_date,
         )
@@ -205,6 +222,8 @@ def _static_snapshot(
         ExtraValueInputs(
             code=1.0 if signals.code_url else None,
             data=1.0 if signals.data_url else None,
+            reproducibility=reproducibility,
+            rigor=rigor,
             oa_status=signals.oa_status,
         )
     )
@@ -274,13 +293,29 @@ def process_paper(
     embedding_provider: EmbeddingProvider,
     now: datetime,
     score_date: date | None = None,
+    author_scores: tuple[float, ...] = (),
+    citation_percentile: float | None = None,
+    reproducibility: float | None = None,
+    rigor: float | None = None,
 ) -> ProcessOutcome:
     """处理一篇 screened 文献；P4 不计算动态分/P。"""
     if paper.status not in _ALLOWED_INPUT_STATUSES:
         raise ConflictError("只处理 screened/enriched/summarized 文献")
     relevance = evaluate_relevance(profile, paper, gateway, embedding_provider)
-    summary = generate_summary(paper, gateway)
-    persist_summary(session, summary)
+    summary: SummaryResult | None = None
+    summary_reason: str | None = None
+    if not paper.abstract:
+        summary_reason = "summary:missing_abstract"
+    else:
+        try:
+            summary = generate_summary(paper, gateway)
+            persist_summary(session, summary)
+        except SummaryError as exc:
+            summary_reason = (
+                "summary:missing_abstract"
+                if exc.field == "summary.abstract"
+                else "summary:unavailable"
+            )
     classification = classify_paper(paper, taxonomy, topic_buckets, gateway)
     persist_classification(session, classification)
     special = nominate_special(paper, profile, gateway)
@@ -293,8 +328,12 @@ def process_paper(
         config=config,
         now=now,
         score_date=score_date or now.date(),
+        author_scores=author_scores,
+        citation_percentile=citation_percentile,
+        reproducibility=reproducibility,
+        rigor=rigor,
     )
-    reasons = _review_reasons(relevance, summary, classification, special)
+    reasons = _review_reasons(relevance, summary, summary_reason, classification, special)
     needs_review = bool(reasons)
     payload = {
         "taxonomy_id": taxonomy.id,
@@ -303,7 +342,8 @@ def process_paper(
         "profile_version": profile.version,
         "config_version": config.version,
         "relevance": relevance.as_json(),
-        "summary": summary.as_json(),
+        "summary": summary.as_json() if summary is not None else None,
+        "summary_error": summary_reason,
         "classification": classification.as_json(),
         "special": special.as_json(),
         "static": {

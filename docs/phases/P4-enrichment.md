@@ -1,7 +1,8 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S8 全部完成并通过本地阶段门；下一阶段 P5。**
+> 状态：**P4-S1–S8 实现完成；独立验收 F1–F5 已返工，待独立复验；P5 不开始。**
+> 验收报告：[P4-acceptance.md](P4-acceptance.md)。
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -582,8 +583,9 @@ P4-S7 超过 8 文件指引：A/E/S 公式、置信度/中性值、独立快照�
 - 迁移 `0008` / `review_item`：每篇一条，保存开放/已处理、原因、payload、处理人/
   时间/方式/备注；只追加历史由状态与时间保留。
 - `pipeline/process.py`：enrichment → R → summary → classification → special →
-  static；补齐缺失主题桶（`ensure_topic_buckets`），同版本静态快照复用，
-  汇总 needs_review 并打开审核项；事务由调用方控制。
+  static；补齐缺失主题桶（`ensure_topic_buckets`），同版本静态快照复用；
+  已有 enrichment 直接复用，缺摘要时 summary 置空并转 review；A/E 的
+  author/citation/repro/rigor 为可选输入；汇总 needs_review 并打开审核项。
 - `pipeline/review.py` + `storage/repositories.py`：
   - 列出/批准/重新打开；批准后 `needs_review → classified`；
   - relabel 用已确认分类法校验主/副标签，替换 `paper_tag` 与唯一 FILING 桶；
@@ -627,7 +629,27 @@ P4-S7 超过 8 文件指引：A/E/S 公式、置信度/中性值、独立快照�
 P4-S8 超过 8 文件指引：审核表/仓储/服务/API/CLI、process 编排、桶补齐、真实 Uvicorn
 e2e、操作文档共同构成本次竖切；未提前实现 P5 动态分或 P6 推送。
 
+## P4 验收返工（F1–F5）
+
+独立验收报告见 [P4-acceptance.md](P4-acceptance.md)，返工记录见
+[P4-acceptance-rework.md](P4-acceptance-rework.md)。
+
+- **F1**：process 不再无条件写中性 enrichment；已有行原样复用，仅缺失时创建。
+- **F2**：缺摘要/摘要无法生成不再抛整批；summary 置空、记录原因、继续其余分项并打开
+  review item。
+- **F3**：process CLI 捕获 `LLMError`（可操作提示、无 traceback）；`--live` 在
+  provider=fake 时明确拒绝。
+- **F4**：A/E 输入边界明确；已有 enrichment 的 venue/code/data/OA 被使用，
+  author/citation/repro/rigor 通过 `process_paper` 可选参数提供；CLI 人读输出含 R/A/E/S。
+- **F5**：单一 `--llm-fixture` 只允许 `--paper`，批量逐篇或 `--live`。
+- 返工门：`make check` **833 passed / 4 e2e excluded**；integration **254 passed**；
+  e2e **4 passed**；migrate 0008；demo 8065；Docker 本地重建 healthy（UID 10001，
+  head 0008）；CI 待 push 后重跑。
+- 结论：**返工完成，待独立复验；P5 不开始**。
+
 ## 与 P5 的边界
 
 - P4 只产出可审阅条目、摘要/分类/静态分；P5 才计算动态分、排序与解释；
-- 任何真实 LLM 调用都必须显式授权；备注默认外发仍需 P6/P8 的单独授权流程。
+- 任何真实 LLM 调用都必须显式授权；备注默认外发仍需 P6/P8 的单独授权流程；
+- **P4 当前未通过独立验收（F1/F2 阻断）；P5 不得在 process 返工复验前开始。**
+  详见 [P4 验收报告](P4-acceptance.md)。
