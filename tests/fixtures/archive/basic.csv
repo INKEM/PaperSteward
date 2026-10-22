@@ -1,0 +1,2 @@
+paper_id,title,authors,venue,year,doi,url,pdf_url,code_url,primary_tag,secondary_tags,score,note,initial_score,initial_note,revision_history
+p,Frozen {Paper},A Author; B Author,ACL,2026,10.0000/fixture,https://example.org/paper,https://example.org/p.pdf,,T01,检索,5,新备注,4,原备注,"[{""score"": 4, ""note"": ""原备注""}, {""score"": 5, ""note"": ""新备注""}]"

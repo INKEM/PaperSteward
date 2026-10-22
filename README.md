@@ -2,26 +2,31 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P5 优先级排序、动态分与解释（S1–S6 实现完成，本地阶段门验证）**。
-P0–P4 已提供初始化G1–G4、采集/去重/过滤、富化、摘要/分类/静态分与人工审核；
-P5 新增 F/H/D、周度偏好U、综合P、EMA稳定排序、不可变日快照、队列与分项解释。
-迁移head仍为0008，无新增依赖。实现按六张卡顺序保存在本地stacked分支，尚未合并/推送/tag；
-本轮Docker/CI与独立验收尚未运行，不代表已发布Alpha。
+当前处于 **P6 日报推送、阅读反馈与归档（S1–S7本地实现，验证记录见阶段文档）**。
+P0–P5已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列。
+P6新增容量/多样性日报、文件/SMTP幂等投递、阅读反馈、不可变归档/导出、本地HTMX页面
+和周度U任务。迁移head为0010，无新增Python依赖；HTMX固定本地分发。
+独立验收、远程PR/CI与阶段tag另行执行；尚未发布Alpha，不自动调用真实模型或邮件。
 
 ```bash
-.venv/bin/papersteward scores snapshot --date 2026-10-22 --json
-.venv/bin/papersteward queue --date 2026-10-22 --json
-.venv/bin/papersteward score explain p001 --date 2026-10-22 --json
+.venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
+.venv/bin/papersteward done p001 --mode deep --score 4 --note "阅读反馈" --request-id read-p001
+.venv/bin/papersteward archive export --format bibtex --out out/archive.bib
+.venv/bin/papersteward jobs preference-weekly --json
 ```
 
 先完成初始化、process与审核。特殊归属桶排除P/rank，主队列只包含合格主题候选；
-暂无日报/推送/阅读写操作/归档（P6）。
-操作、公式舍入边界与数据限制见[优先级队列指南](docs/priority-queue.md)和
-[P5阶段交接](docs/phases/P5-ranking.md)。P4复验记录仍见
+页面从 `/ui/today` 开始，提供今日/队列/详情/归档。SMTP必须G4明确选择且CLI显式发送；
+阅读备注默认仅本地保存。操作见[日报与归档指南](docs/delivery-cli.md)、
+[P6阶段交接](docs/phases/P6-delivery.md)和[P6本地验证记录](docs/phases/P6-acceptance.md)。
+公式边界见[优先级队列指南](docs/priority-queue.md)；上阶段独立验收证据见
+[P5独立验收](docs/phases/P5-acceptance.md)。P4复验记录仍见
 [P4返工复验](docs/phases/P4-acceptance-rework.md)。
 
 ## 当前能力
 
+- `GET/POST /digests`、阅读操作 `/papers/{id}/actions`、`GET /archive`及导出；
+- `/ui/today|queue|papers/{id}|archive`：本地HTMX阅读闭环，`POST /jobs/preference/weekly`：显式周任务；
 - `GET /queue`、`GET /scores/{id}/explain`、`POST /scores/snapshot`：日队列、分项解释与快照；
 - `GET /health`：返回版本、运行环境与数据库连通性；
 - `GET /papers`：从正式 `paper` 表返回文献列表（只读）；
@@ -66,7 +71,7 @@ P5 新增 F/H/D、周度偏好U、综合P、EMA稳定排序、不可变日快照
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
-  （head `0008`）；部分唯一索引/CHECK/FK、事件/评分快照/审核项追加写；G4 前拒绝入队/推送/归档；
+  （head `0010`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、相关度、摘要、特殊桶提名、评分快照、事件（正反例校验）；

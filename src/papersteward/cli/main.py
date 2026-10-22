@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from papersteward import __version__
+from papersteward.cli.archive import add_commands as add_archive_commands
+from papersteward.cli.archive import run as run_archive_command
 from papersteward.cli.config import (
     run_config_import,
     run_config_validate,
@@ -18,6 +20,8 @@ from papersteward.cli.config import (
     run_schema_validate,
     schema_names,
 )
+from papersteward.cli.delivery import add_commands as add_delivery_commands
+from papersteward.cli.delivery import run as run_delivery
 from papersteward.cli.demo import seed_demo_data
 from papersteward.cli.doctor import DoctorReport, run_doctor
 from papersteward.cli.documents import (
@@ -30,6 +34,8 @@ from papersteward.cli.documents import (
 )
 from papersteward.cli.ingestion import add_commands as add_ingestion_commands
 from papersteward.cli.ingestion import run as run_ingestion
+from papersteward.cli.jobs import add_commands as add_jobs_commands
+from papersteward.cli.jobs import run as run_jobs
 from papersteward.cli.llm import run_llm_ping
 from papersteward.cli.onboarding import add_commands as add_onboarding_commands
 from papersteward.cli.onboarding import run as run_onboarding
@@ -37,6 +43,8 @@ from papersteward.cli.processing import add_commands as add_processing_commands
 from papersteward.cli.processing import run as run_processing
 from papersteward.cli.ranking import add_commands as add_ranking_commands
 from papersteward.cli.ranking import run as run_ranking
+from papersteward.cli.reading import add_commands as add_reading_commands
+from papersteward.cli.reading import run as run_reading
 from papersteward.config import format_settings_error
 
 
@@ -68,6 +76,10 @@ def _build_parser() -> argparse.ArgumentParser:
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
     add_ranking_commands(subparsers)
+    add_delivery_commands(subparsers)
+    add_reading_commands(subparsers)
+    add_archive_commands(subparsers)
+    add_jobs_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -175,6 +187,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "digest":
+            return run_delivery(args)
+        if args.command == "archive":
+            return run_archive_command(args)
+        if args.command == "jobs":
+            return run_jobs(args)
+        if args.command in {"done", "reading"}:
+            return run_reading(args)
         if args.command in {"ingest", "runs"}:
             return run_ingestion(args)
         if args.command == "onboarding":

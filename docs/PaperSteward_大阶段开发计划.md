@@ -725,8 +725,8 @@ papersteward scores snapshot --date 2026-10-21
 **风险/回滚**：公式漂移。以设计文档 §10 为准；所有公式参数进配置；加 golden；变更走 ADR + 配置版本。
 
 本地执行：2026-10-22，S1–S6按顺序完成；完整证据见
-[P5阶段交接](phases/P5-ranking.md)。设计示例组件75.1与P4冻结静态分后分层75.2的
-中间舍入差异见ADR0015。当前是本地stacked提交；合并/推送/tag、独立验收、Docker/CI待后续流程。
+[P5阶段交接](phases/P5-ranking.md)与[P5独立验收](phases/P5-acceptance.md)。设计示例组件75.1与P4冻结静态分后分层75.2的
+中间舍入差异见ADR0015。PR #7已合并到main且CI通过；Docker/CI与独立验收证据已记录，P5 tag待发布流程。
 
 **交接给 P6**：`QueueItem`、`ScoreExplanation`、`RankConfig`、队列 API、golden 分数。
 
@@ -776,13 +776,17 @@ papersteward archive export --format bibtex --out out/archive.bib
 
 **工作包（后续拆小阶段）**：
 
-1. `P6-S1` 日报编排规则；
-2. `P6-S2` Markdown/HTML 渲染；
-3. `P6-S3` 推送渠道 + 幂等；
-4. `P6-S4` 用户操作 API + event log + 评分写入；
-5. `P6-S5` 归档快照 + 导出；
-6. `P6-S6` 最小 UI + 阅读闭环 e2e；
-7. `P6-S7` 周度 U 任务触发 + 评分数据检查。
+1. `P6-S1` 日报编排规则（本地完成）；
+2. `P6-S2` Markdown/HTML 渲染（本地完成）；
+3. `P6-S3` 推送渠道 + 幂等（本地完成，SMTP仅替身验证）；
+4. `P6-S4` 用户操作 API + event log + 评分写入（本地完成）；
+5. `P6-S5` 归档快照 + 导出（本地完成）；
+6. `P6-S6` 最小 UI + 阅读闭环 e2e（本地完成）；
+7. `P6-S7` 周度 U 任务触发 + 评分数据检查（本地完成）。
+
+> 2026-10-22：S1→S7按顺序实现/逐卡验证与本地提交；完整证据、范围限制与回滚见
+> [P6执行/handoff](phases/P6-delivery.md)与[P6本地验证记录](phases/P6-acceptance.md)。
+> 本地Docker权限受限；远程PR/CI、独立验收、用户首日报审阅与发布/tag待执行，不代表Alpha已发布。
 
 **验收标准**：
 

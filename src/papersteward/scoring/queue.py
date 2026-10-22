@@ -39,7 +39,7 @@ from papersteward.scoring.preference import Feedback, compute_preference, weekly
 from papersteward.scoring.priority import compute_priority, rank_key
 from papersteward.scoring.service import read_scoring_config
 from papersteward.storage.mappers import as_utc
-from papersteward.storage.models import EventRow, RatingRow
+from papersteward.storage.models import ArchiveSnapshotRow, EventRow, RatingRow
 from papersteward.storage.repositories import (
     BucketRepository,
     ConfigRepository,
@@ -145,6 +145,7 @@ def _history(
     done: dict[str, EventRow] = {}
     for event in session.scalars(
         select(EventRow)
+        .options(load_only(EventRow.id, EventRow.paper_id, EventRow.created_at))
         .where(EventRow.event_type == EventType.PAPER_DONE.value)
         .order_by(EventRow.created_at, EventRow.id)
     ):
@@ -183,7 +184,20 @@ def _history(
         )
         tags = PaperTagRepository(session).list_for_paper(paper_id)
         primary = next((t.tag_code for t in tags if t.role is TagRole.PRIMARY), None)
+        # 只投影阅读时元数据与标签，绝不加载归档正文中的备注或Rating.note。
+        archived = session.execute(
+            select(
+                ArchiveSnapshotRow.primary_tag,
+                ArchiveSnapshotRow.secondary_tags_json,
+                ArchiveSnapshotRow.content_json["metadata"].label("metadata_at_read"),
+            ).where(ArchiveSnapshotRow.paper_id == paper_id)
+        ).one_or_none()
+        metadata = {} if archived is None else (archived.metadata_at_read or {})
+        if archived is not None:
+            primary = archived.primary_tag
         saved_tags = tuple(rating.tags_at_read_json) if rating is not None else ()
+        if not saved_tags and archived is not None:
+            saved_tags = (archived.primary_tag, *(archived.secondary_tags_json or []))
         primary = next((t for t in saved_tags if t in ctx["shares"]), primary)
         if primary is not None and primary in ctx["shares"]:
             completions.append(Completion(primary, completed_on))
@@ -193,8 +207,8 @@ def _history(
                 completed_on,
                 None if rating is None else rating.score,
                 saved_tags or tuple(t.tag_code for t in tags),
-                paper.authors,
-                paper.venue,
+                tuple(metadata.get("authors", paper.authors)),
+                metadata.get("venue", paper.venue),
             )
         )
     return completions, feedback

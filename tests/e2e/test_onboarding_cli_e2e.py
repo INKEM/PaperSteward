@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -288,3 +289,51 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
     with session_scope(create_session_factory(engine)) as session:
         assert session.scalar(select(func.count()).select_from(ScoreSnapshotRow)) == 1
         assert session.scalar(select(func.count()).select_from(ArchiveSnapshotRow)) == 0
+
+    # P6：真实HTMX表单协议→日报→完成/评分/备注→冻结归档→CLI导出。
+    headers = {"HX-Request": "true", "X-PaperSteward-UI": "1"}
+    assert "生成今日日报" in client.get("/ui/today").text
+    generated = client.post("/ui/digests", headers=headers)
+    assert generated.status_code == 200 and generated.headers["HX-Redirect"] == "/ui/today"
+    today = client.get("/ui/today")
+    assert "Synthetic Retrieval Study" in today.text and 'hx-post="/ui/actions/' in today.text
+    assert "default-src 'self'" in today.headers["Content-Security-Policy"]
+    assert client.get("/ui/static/htmx.js").status_code == 200
+    assert "评分解释" in client.get(f"/ui/papers/{paper['id']}").text
+    request_id = re.search(r'name="request_id" value="([a-f0-9]+)"', today.text)[1]
+    form = {
+        "kind": "done",
+        "mode": "deep",
+        "score": "4",
+        "note": "闭环备注",
+        "request_id": request_id,
+    }
+    done = client.post(f"/ui/actions/{paper['id']}", data=form, headers=headers)
+    assert done.status_code == 200 and "archived" in done.text
+    assert client.post(f"/ui/actions/{paper['id']}", data=form, headers=headers).text == done.text
+    record = client.get(f"/archive/{paper['id']}").json()
+    assert record["score"] == 4 and record["note"] == "闭环备注"
+    assert record["content"]["score"]["score_date"] == "2026-11-01"
+    assert record["content"]["metadata"]["title"] == "Synthetic Retrieval Study"
+    assert "闭环备注" in client.get("/ui/archive").text
+    exported = tmp_path / "archive.bib"
+    export = subprocess.run(
+        [
+            str(BIN / "papersteward"),
+            "archive",
+            "export",
+            "--format",
+            "bibtex",
+            "--out",
+            str(exported),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert export.returncode == 0, export.stderr
+    assert "闭环备注" in exported.read_text()
+    with session_scope(create_session_factory(engine)) as session:
+        assert session.scalar(select(func.count()).select_from(ArchiveSnapshotRow)) == 1

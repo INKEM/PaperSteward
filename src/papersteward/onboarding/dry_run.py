@@ -26,7 +26,7 @@ class RuntimeParameters(InputModel):
     quiet_end: ClockTime | None
     paused: bool = Field(strict=True)
     target_shares: dict[str, Share] = Field(min_length=1, max_length=8)
-    channel: Literal["local_markdown"]
+    channel: Literal["local_markdown", "smtp"]
     external_model_data: Literal["disabled", "metadata_abstract"]
     share_notes: Literal[False]
 
