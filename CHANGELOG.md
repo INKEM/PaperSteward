@@ -11,7 +11,7 @@
   不再伪造 SMTP `uncertain`，SMTP 修正后同一预约可重试；同日快照不重写语义、日期
   生成表单、`paper.pushed` 的 `trigger=user_read` 命名和 URL userinfo 拒绝一并修复。
   返工新增 5 项回归，`make check` 944 passed / 4 deselected、integration 302 passed；
-  独立复验待执行。
+  独立复验通过，P6 可以关闭。
 
 - **P4 验收返工（F1–F5）**：process 复用已有 enrichment，不再用中性值覆盖来源数据；
   缺摘要/无法摘要转为 `needs_review` 并打开 review item，不使批次回滚；process CLI

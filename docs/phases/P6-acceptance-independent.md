@@ -5,6 +5,8 @@
 > **验收日期**：2026-10-22  
 > **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、Docker、CI 查询、真实 headless Chrome/HTMX 闭环，并做周任务与投递状态机专项探针  
 > **结论**：**未通过（Not Accepted）**。阶段门、全新 clone、Docker、CI 与浏览器闭环均通过，但 **P6-S7 周任务漏掉已投递未读文献（F1）**，且 **投递第二次 preflight 失败会被错误记录为 SMTP `uncertain`（F2）**。两项均为 P6 契约内的必修缺陷；P6 不能关闭，P7 暂不开始，P6 tag 不创建。
+>
+> **后续状态**：F1/F2 与 N1–N4 已返工；独立复验通过（`cabd0af` / main `3026696`），见 [P6 返工验证记录](P6-acceptance-rework.md) §9。本报告保留 `57e6db8` 时点的历史结论。
 
 ---
 

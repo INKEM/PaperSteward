@@ -3,8 +3,8 @@
 > **对象**：P6 独立验收 F1/F2 阻断缺陷与 N1–N4 非阻断问题
 > **基线**：独立验收 commit `57e6db8`；返工起点 `5684be0`（已合并 `4650e25` + 验收文档）
 > **日期**：2026-10-22
-> **性质**：实现方返工与自检记录，**不是独立验收结论**。独立复验仍须由未参与实现的
-> 验收者执行；在复验通过前 P6 不关闭、P7 不开始、P6 tag 不创建。
+> **性质**：实现方返工与自检记录，附独立复验结论（§9）。独立复验已通过；
+> P6 可以关闭，P7 可以开始；P6 tag 仍待发布流程。
 
 ## 1. 结论摘要
 
@@ -119,3 +119,68 @@ clone 之后仅有本文档的补充提交，不改变代码或测试。**正式
 返工不新增迁移、依赖或状态值。回退代码即可恢复旧行为；已产生的 PUSHED 状态、日报、
 评级、归档与投递记录不回滚。F2 只改变失败预约的状态记录；若已产生 `failed` 预约，
 回旧代码前先核对是否实际发送过，SMTP `uncertain` 仍必须人工核对。
+
+## 9. 独立复验结论（2026-10-22）
+
+> 复验 commit：`cabd0af`；远程 `main` 合并提交 `3026696`，与本 commit 树一致。
+> 独立执行，不修改实现代码；临时探针在复验后删除。
+
+**结论：通过（Accepted）。** F1、F2 两项阻断缺陷已闭环；N1–N4 已处理或澄清；未发现新的阻断缺陷。P6 可以关闭，P7 可以开始；P6 tag 尚未创建。
+
+### 9.1 阶段门与发布证据
+
+```text
+make check            → 944 passed, 4 deselected；ruff 243 文件；strict mypy 120 源文件
+make test-integration → 302 passed
+make migrate-check    → base → 0010 → base → 0010
+make e2e              → 4 passed
+make demo DEMO_PORT=8791（临时库）→ /health、/papers 正常
+make secret-scan / git diff --check → OK
+全新 clone（Python 3.14.7）→ bootstrap/check/integration/migrate/e2e/demo/secret 全通过，git status 空
+Docker build/run → UID 10001；head 0010；/health 200；doctor OK；/ui/today CSP；HTMX 200；G4 前 digest 409
+```
+
+- PR #9：`cabd0af`，[run 39782896364](https://github.com/INKEM/PaperSteward/actions/runs/39782896364)
+  `quality (py3.11)`、`quality (py3.12)`、`docker compose smoke` 全绿；
+- main：`3026696`，[run 39783913436](https://github.com/INKEM/PaperSteward/actions/runs/39783913436)
+  三个 job 全绿；
+- PR #9 已于 2026-10-22T13:06:05Z 合并；`origin/main = 3026696`；无 P6 tag。
+
+### 9.2 F1 复验：已投递未读进入周任务
+
+复现真实顺序：生成日报 → 本地投递（候选变 `PUSHED`）→ 阅读归档其中一篇 → `refresh_weekly`：
+
+- 未读 `PUSHED` 出现在 `stats.scores`，`U > 50`；
+- 候选仍保持 `PUSHED`，没有新增 `paper.queued` 事件（未重新入队）；
+- 获得周日快照；已归档文献不进入报告，既有快照逐条不变；
+- 到期 snooze 恢复为 `QUEUED`，`resumed` 计数；官方回归
+  `test_weekly_includes_delivered_unread_candidates` 与
+  `test_weekly_resumes_due_snoozed_candidate` 通过。
+
+### 9.3 F2 复验：复核失败不再伪造 uncertain
+
+Monkeypatch 第一次 preflight 通过、第二次（I/O 前）抛 `InvariantViolation`：
+
+- `send_smtp` 从未调用（`sends == []`）；
+- `DeliveryRow.status == "failed"`，不是 `uncertain`；
+- `row.error` 包含“未尝试投递”，`finished_at is None`；
+- 恢复真实 preflight 后，同一预约重试成功且只发送一次；
+- 官方回归 `test_second_preflight_failure_is_not_uncertain_and_never_sends` 通过。
+
+### 9.4 N1–N4 复验
+
+- **N1**：日报已生成同日快照后运行周任务，`created=0`、`existing>=1`，历史快照逐条不变，报告复用该快照；文档明确 20:00/投递后调度与下一自然日语义。
+- **N2**：真实 Chrome 访问 `/ui/today?day=2026-10-21`，页面隐藏 `day=2026-10-21`，点击“生成该日日报”后 URL 保持 `?day=2026-10-21`；今日页面仍可完成 HTMX 阅读闭环并归档。官方回归通过。
+- **N3**：文档统一为 `queued→pushed` 时写 `paper.pushed` + `payload.trigger=user_read`；已 pushed 不重复写，无独立 `user_read` 事件，与代码一致。
+- **N4**：`safe_url` 拒绝 `https://u:pw@host`、`https://:pw@host`、`https://user:@host`，普通 http(s) URL 不受影响；新增测试覆盖空用户名/空密码。
+
+### 9.5 非阻断限制
+
+- 周任务会为全部历史 `PUSHED` 未读追加当日快照；长期积压时快照量随未读存量增长，窗口化留给 P7/P8。
+- 真实 SMTP 厂商 TLS/送达质量、真实用户首日报内容审阅仍未验收；SMTP I/O 失败仍按设计记 `uncertain`。
+- P1 F5/F3 债务、P2–P5 tag 与 P6 tag 仍待发布/维护流程；P6 未发布 Alpha。
+- 返工 diff 18 文件/521 行（含文档），超单卡指引；原因为 F1/F2 跨模块修复、N1–N4、回归与文档同交，未夹带 P7。
+
+### 9.6 最终判定
+
+**F1/F2 返工与 N1–N4 处理通过独立复验；P6 可以关闭，P7 可以开始，P6 tag 仍待发布流程。**
