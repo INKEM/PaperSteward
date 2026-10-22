@@ -2,7 +2,7 @@
 
 > **对象**：P7 独立验收 F1/F2/F3 阻断缺陷与 N1–N4 非阻断问题
 > **基线**：独立验收 `docs/phases/P7-acceptance-independent.md`（对象 `6a877e9`，
-> 文档提交 `f70e0a0`）；返工分支 `fix/p7-acceptance-rework`
+> 文档提交 `f70e0a0`）；返工分支 `fix/p7-acceptance-rework`，提交 `91d9255`
 > **日期**：2026-10-22（Asia/Shanghai）
 > **性质**：实现方返工与自检记录。**独立复验尚未执行**，P7 仍为 Not Accepted；
 > P7 tag/Beta/P8 继续阻塞。
@@ -94,8 +94,17 @@
 | `make demo` | 临时库 migration/seed/API health/papers 通过 |
 | `make secret-scan` / `git diff --check` | 通过 |
 
-本记录生成时点尚未执行：全新 clone、Docker build/run、远程 CI、独立复验。它们必须在
+本记录生成时点尚未完成：全新 clone、Docker build/run、远程 CI、独立复验。它们必须在
 独立复验/发布前补做，不能用本轮本地门替代。
+
+环境尝试记录（不计为通过）：
+
+- 全新 clone 到 `/dev/shm/p7-rework-clone` 后 `make bootstrap` 在安装 build 依赖时
+  遇到 PyPI SSL `UNEXPECTED_EOF_WHILE_READING`，未能创建新 venv；这是外部网络限制，
+  不是代码失败，仍不能替代 fresh-clone 复验。
+- `docker compose -p p7rework build` 被当前文件沙箱拒绝（buildx activity 目录只读），
+  未执行镜像构建；Docker smoke 仍未验收。
+- 未推送分支，远程 CI 未运行。
 
 ## 7. 文件与规模
 
