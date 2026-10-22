@@ -25,7 +25,26 @@ NOW = datetime(2026, 10, 21, 8, tzinfo=UTC)
 
 
 @pytest.fixture
-def server(tmp_path: Path) -> Iterator[tuple[httpx.Client, Engine]]:
+def server(tmp_path: Path, monkeypatch) -> Iterator[tuple[httpx.Client, Engine]]:
+    # 子进程统一固定时钟，仅测试目录提供sitecustomize，应用无测试时钟配置入口。
+    clock_dir = tmp_path / "clock"
+    clock_dir.mkdir()
+    (clock_dir / "sitecustomize.py").write_text(
+        "from datetime import UTC, datetime, timedelta\n"
+        "import fcntl\n"
+        "import papersteward.core.entities as entities\n"
+        "def fixed_now():\n"
+        f"    with open({str(clock_dir / 'counter')!r}, 'a+') as stream:\n"
+        "        fcntl.flock(stream, fcntl.LOCK_EX)\n"
+        "        stream.seek(0)\n"
+        "        count = int(stream.read() or '0') + 1\n"
+        "        stream.seek(0)\n"
+        "        stream.truncate()\n"
+        "        stream.write(str(count))\n"
+        "    return datetime(2026, 11, 1, 8, tzinfo=UTC) + timedelta(microseconds=count)\n"
+        "entities.utc_now = fixed_now\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(clock_dir) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     database = tmp_path / "onboarding.db"
     env = {
         **os.environ,

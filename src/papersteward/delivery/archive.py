@@ -10,8 +10,8 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from papersteward.core.entities import ArchiveSnapshot
-from papersteward.core.enums import BucketRole, PaperStatus, TagRole
+from papersteward.core.entities import ArchiveSnapshot, Event
+from papersteward.core.enums import BucketRole, EventType, PaperStatus, TagRole
 from papersteward.core.errors import InvariantViolation
 from papersteward.delivery.contracts import ArchiveRecord
 from papersteward.errors import NotFoundError
@@ -25,6 +25,7 @@ from papersteward.storage.repositories import (
     BucketRepository,
     ConfigRepository,
     EnrichmentRepository,
+    EventRepository,
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
@@ -125,6 +126,19 @@ def archive_done(session: Session, paper_id: str, *, now: datetime) -> None:
             priority=score.scores["P"],
         )
     )
+    if suggestion is not None and suggestion.read_mode != rating.read_mode:
+        EventRepository(session).append(
+            Event(
+                uuid4().hex,
+                EventType.PAPER_READ_MODE_OVERRIDDEN,
+                now,
+                paper_id,
+                {
+                    "suggested": suggestion.read_mode.value,
+                    "actual": rating.read_mode.value if rating.read_mode else None,
+                },
+            )
+        )
     PaperRepository(session).transition(
         paper_id,
         PaperStatus.ARCHIVED,

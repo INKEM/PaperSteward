@@ -68,3 +68,10 @@ GET /archive 支持limit/offset、tag、min_score、query、bucket；GET /archiv
 content_available=false，不从当前Paper伪造历史内容。hash不匹配则拒绝读取，保留数据待查。
 CSV文本防公式执行；BibTeX与Markdown对不可信字段转义。导出0600、不覆盖不同内容。
 删除归档不在P6范围；修订note/score仅追加Rating/事件，不改初始归档和旧优先级。
+
+## 本地页面（S6）
+
+启动原有API后打开 `/ui/today`，可生成今日日报、展开卡片完成阅读并填写实际方式/可选评分/
+备注；`/ui/queue`看队列，`/ui/papers/{id}`看完整解释或冻结归档并修订反馈，`/ui/archive`
+搜索和导出。阅读方式覆盖建议会追加独立审计事件。发送仍通过显式CLI，不会因开页面发邮件。
+HTMX 2.0.11及样式在包内本地分发，运行无需外网；界面不支持删除归档或P7权重治理。

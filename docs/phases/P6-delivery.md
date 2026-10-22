@@ -81,3 +81,16 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
   migrate-check base↔0010、secret-scan/diff通过。新增4unit+4integration；无真实外部调用。
 - 能完成API/CLI阅读归档闭环；不能做网页/周任务/归档删除。超8文件/400行：归档内容
   迁移/映射、事务接入、查询/多格式导出/API/CLI与golden共同构成S5。回滚见ADR0016。
+
+### S6（2026-10-22）
+
+- 今日/队列/详情/归档薄HTML页面与本地HTMX2.0.11完成（官方SRI核对、0BSD许可证随包），
+  无Python新依赖/CDN。CSP、同源表单、转义、错误内联、可选反馈、修订入口均通过。
+- make check：926 passed / 4 deselected，ruff/mypy117源文件；3项页面集成通过；
+  make e2e：4 passed，真实Uvicorn/CLI全链路已扩展到日报→HTML表单→归档→导出。
+  子进程使用测试目录sitecustomize固定基准+单调微秒，应用无测试时钟入口；secret/diff通过。
+- 浏览器实测使用独立E2E库副本：展开卡片→4分+备注→完成→归档列表可见；本地HTMX实际
+  替换卡片成功。截图保存于本次工作区可视化目录p6-ui-archive.png；临时服务/标签已关闭。
+- 验收补齐阅读方式覆盖事件（归档原有overridden字段保留）；无schema变更。
+  超8文件/400行：四页/样式/vendor/许可证/package data、API集成/e2e和必要审计衔接。
+  无常驻调度、特殊桶完整规则或P7治理；回滚撤销页面不撤销归档。S7尚未开始。
