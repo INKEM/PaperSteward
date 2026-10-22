@@ -38,7 +38,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        resolved_engine = engine or create_db_engine()
+        resolved_engine = engine or create_db_engine(resolved_settings.db_url)
         app.state.engine = resolved_engine
         app.state.session_factory = create_session_factory(resolved_engine)
         try:

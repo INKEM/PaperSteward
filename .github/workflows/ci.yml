@@ -35,6 +35,11 @@ jobs:
       - name: Static checks and tests
         run: make check
 
+      - name: Build and inspect distributions
+        run: |
+          .venv/bin/python -m build
+          .venv/bin/python scripts/check_distribution.py dist/*.whl dist/*.tar.gz
+
       - name: Migration up/down/up
         run: make migrate-check
 

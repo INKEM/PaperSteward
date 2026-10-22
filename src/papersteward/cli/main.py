@@ -52,6 +52,8 @@ from papersteward.cli.reading import add_commands as add_reading_commands
 from papersteward.cli.reading import run as run_reading
 from papersteward.cli.shelf import add_commands as add_shelf_commands
 from papersteward.cli.shelf import run as run_shelf
+from papersteward.cli.start import add_command as add_start_command
+from papersteward.cli.start import run as run_start
 from papersteward.cli.views import add_commands as add_view_commands
 from papersteward.cli.views import run as run_views
 from papersteward.config import format_settings_error
@@ -81,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="插入 p001 演示文献（幂等）",
     )
 
+    add_start_command(subparsers)
     add_onboarding_commands(subparsers)
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
@@ -222,6 +225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "start":
+            return run_start(args)
         if args.command == "digest":
             return run_delivery(args)
         if args.command == "archive":

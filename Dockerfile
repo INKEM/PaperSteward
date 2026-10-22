@@ -6,12 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml setup.py MANIFEST.in alembic.ini LICENSE ./
 COPY src ./src
+COPY migrations ./migrations
 RUN pip install --no-cache-dir .
 
-COPY alembic.ini ./
-COPY migrations ./migrations
 COPY docker-entrypoint.sh ./
 
 # 运行 Alembic 需要 useradd/groupadd；显式安装以免 slim 镜像缺少。
