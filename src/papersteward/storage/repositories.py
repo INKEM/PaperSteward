@@ -288,6 +288,18 @@ class PaperBucketRepository(_Repository):
         )
         return [paper_bucket_from_row(row) for row in self._session.scalars(statement).all()]
 
+    def list_filings(self, bucket_id: str) -> list[PaperBucket]:
+        """某个桶的归属文献；读取特殊桶视图用。"""
+        statement = (
+            select(PaperBucketRow)
+            .where(
+                PaperBucketRow.bucket_id == bucket_id,
+                PaperBucketRow.role == BucketRole.FILING.value,
+            )
+            .order_by(PaperBucketRow.paper_id)
+        )
+        return [paper_bucket_from_row(row) for row in self._session.scalars(statement).all()]
+
 
 class SummaryRepository(_Repository):
     """每篇文献一条概括；重新生成时覆盖同一条记录。"""

@@ -1,6 +1,6 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S2 实现（2026-10-22）；S3–S6 待开始。**
+> 状态：**P7-S3 实现（2026-10-22）；S4–S6 待开始。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -110,10 +110,47 @@
 - 已知限制：维度分是确定性代理而非语义质量判断，缺失信号按中性 50；周已用量由调用方
   传入，S2 不新增推送记录；低档默认不进入计划；V 仅内部审计，不作为展示优先级。
 
+## S3 契约（2026-10-22）
+
+- 只读 API：`GET /shelves` 概览、`GET /shelves/{kind}` 分页列表、`GET
+  /shelves/{kind}/{paper_id}` 详情；列表使用 `items/total/limit/offset` 信封。
+  `tier=high|medium|low|unrated` 过滤；非法 kind 404、非法 tier 422。
+- 只读 CLI：`shelf list [--kind ...]`、`shelf distant`、`shelf classic`、`shelf show
+  <paper>`；`shelf review` 仍是 S1 提名队列，查看综述桶用 `shelf list --kind review`。
+- 只读页面：`/ui/shelves`（主导航“特殊桶”），按 review→distant→classic 分区展示
+  配额、档位分布、标题、档位、理由、证据与专属解释；空桶显示“暂无内容（不占位）”。
+  特殊桶详情页改走档位视图，不再把 `special_bucket` 当成 P 解释。
+- 展示字段：档位、主/副标签、提名理由、逐字证据、档位说明、review layers、classic
+  basis、四段 bridge memo、评估来源/时间与改档备注。**不返回/展示 V、P、rank_score**；
+  `excluded_from_priority=true`。未评估的已归属文献显示 `tier=null` 并提示 `shelf assess`。
+- 只展示 `shelved/pushed/reading/done` 的特殊桶文献；`archived` 走归档页，`rejected`
+  不展示。空桶返回空列表，不生成占位文献。读取不写库、不自动补评估、不调用 LLM。
+- 本卡无迁移/新依赖；不做特殊桶推送、日报特殊槽位、档位/配额编辑或自定义视图。
+
+## S3 执行记录（2026-10-22）
+
+- 已完成：`delivery/shelf_view.py` 只读服务、`/shelves` API、`shelf list|distant|classic|show`
+  CLI、`/ui/shelves` 页面与特殊桶详情分支、导航入口和档位徽章样式。
+- 新增 8 项集成测试：概览/过滤/分页/详情、无 P/V/rank、未知 kind 404、非法 tier 422、
+  只读不写档位、未建桶空视图、页面转义与 bridge/classic 展示、CLI 列表/详情/错误路径。
+- 完整本地门：`make check` **992 passed / 4 deselected**，ruff 256 文件、strict mypy
+  **126** 源文件通过；`make test-integration` **322 passed**；`make migrate-check`
+  head 0012 upgrade/downgrade/upgrade 通过；`make e2e` **4 passed**；`make demo`
+  health/papers 通过；`make secret-scan` OK。测试仅用 FakeLLM/临时 SQLite，无新依赖。
+- 能做：按三个特殊桶查看档位/理由/证据与专属解释，CLI/API/页面均只读；不能做：
+  特殊桶推送、日报实际槽位、档位/配额编辑、周用量、低档清理建议或自定义视图。
+- 规模说明：本卡超过 8 文件/400 行指引，原因是只读服务、API、CLI、页面/导航、
+  样式与安全/空桶/未评估回归共同构成完整竖切；未提前实现 S4–S6。
+- 阶段门稳定性：CLI ingest 集成测试固定关闭安静时段、队列待审提名测试固定时钟，
+  避免 22:00 后安静时段导致既有测试误报；生产时间/调度逻辑未改。
+- 回滚：删除 API/CLI/页面代码即可；无迁移、无数据写入，已保存的档位/配额/Filing 不变。
+- 已知限制：页面每桶最多 50 条并提供“查看更多”；API 支持 limit/offset；页面只提供
+  kind 过滤，tier 过滤走 API/CLI。已归档特殊桶走归档页，不在 shelf 视图重复展示。
+
 ## P7 Handoff（后续卡）
 
-- S2 已提供 `special_tier_snapshot` 最新档位、`shelf plan` 与周配额；S3 可直接消费，
-  但不得把 V 当展示优先级或改写 `paper_bucket` 的历史 Filing。
-- S3 读取特殊桶必须显示档位/理由/证据，且不得返回 P/rank；S4/S5 不得写全局配置或
-  复用特殊桶 Filing 绕过 `excluded_from_priority`。
+- S3 的 `shelf_view`/API 只读契约已冻结；S4 自定义视图不得复用特殊桶 Filing 绕过
+  `excluded_from_priority`，也不得把 V 当 P 或改写档位历史。
+- S4/S5 不得写全局配置或特殊桶 Filing；自定义视图只影响当前排序，权重变更仍需
+  预览/确认/版本。S6 e2e 消费 S3 的 `/shelves` 与 `/ui/shelves`。
 - S6 完成后再更新 Beta 验收与 CHANGELOG；P7 tag 待发布流程，不提前宣称 Beta。

@@ -224,8 +224,9 @@ def _pending_nomination(paper_id: str) -> SpecialNominationRecord:
     )
 
 
-def test_pending_special_nomination_is_excluded_from_priority(client, migrated_engine):
+def test_pending_special_nomination_is_excluded_from_priority(client, migrated_engine, monkeypatch):
     activate(client)
+    monkeypatch.setattr("papersteward.api.queue.utc_now", lambda: NOW)
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
         seed(session, "pending-special")

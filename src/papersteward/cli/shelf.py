@@ -14,13 +14,22 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward.core.entities import Paper, SpecialNominationRecord, SpecialTierSnapshot
 from papersteward.core.enums import ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainError
+from papersteward.delivery.shelf_view import (
+    ShelfItem,
+    ShelfPage,
+    ShelfSummary,
+    list_shelf,
+    parse_tier_filter,
+    shelf_item_for_paper,
+    shelf_summaries,
+)
 from papersteward.delivery.special import (
     SpecialRotationPlan,
     load_special_candidates,
     load_special_quotas,
     plan_special_rotation,
 )
-from papersteward.errors import AppError
+from papersteward.errors import AppError, InvalidRequestError, NotFoundError
 from papersteward.pipeline.shelf import (
     ShelfDecision,
     accept_nomination,
@@ -76,6 +85,28 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
     plan.add_argument("--used-distant", type=int, default=0, help="本周 distant 已用配额")
     plan.add_argument("--used-classic", type=int, default=0, help="本周 classic 已用配额")
     plan.add_argument("--json", action="store_true")
+
+    listing = commands.add_parser("list", help="查看三个特殊桶或指定桶")
+    listing.add_argument("--kind", choices=KINDS)
+    _add_view_args(listing)
+
+    distant = commands.add_parser("distant", help="查看远邻领域特殊桶")
+    _add_view_args(distant)
+
+    classic = commands.add_parser("classic", help="查看经典/奠基特殊桶")
+    _add_view_args(classic)
+
+    show = commands.add_parser("show", help="查看特殊桶文献详情")
+    show.add_argument("paper_id")
+    show.add_argument("--json", action="store_true")
+
+
+def _add_view_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tier", choices=("high", "medium", "low", "unrated"))
+    parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--explain", action="store_true", help="显示档位说明与 kind 专属证据")
+    parser.add_argument("--json", action="store_true")
 
 
 def _record_json(record: SpecialNominationRecord, paper: Paper) -> dict[str, Any]:
@@ -192,6 +223,59 @@ def _print_decision(decision: ShelfDecision) -> None:
         print(f"  已作废其他待审提名：{kinds}")
 
 
+def _print_summary(summary: ShelfSummary) -> None:
+    print(
+        f"{summary.kind.value} {summary.name}：共 {summary.total} 篇，"
+        f"high {summary.high} / medium {summary.medium} / low {summary.low} / "
+        f"未评估 {summary.unrated}，周上限 {summary.quota}"
+    )
+
+
+def _print_item(item: ShelfItem, *, explain: bool) -> None:
+    tier = item.tier.tier.value if item.tier is not None else "未评估"
+    print(f"  {item.paper.id} [{tier}] {item.paper.title}")
+    print(
+        f"    主标签 {item.primary_tag or '—'} · 状态 {item.paper.status.value}"
+        f" · 归属 {item.kind.value}"
+    )
+    if item.nomination is not None:
+        print(f"    理由：{item.nomination.reason}")
+    if item.needs_assessment:
+        print("    尚未评估：运行 papersteward shelf assess <paper_id>")
+    for evidence in item.evidence:
+        marker = "有效" if evidence.valid else "未核对"
+        print(f"    证据（{marker}）：{evidence.quote}")
+    if not explain:
+        return
+    for line in item.tier.explanation if item.tier is not None else ():
+        print(f"    档位：{line}")
+    if item.nomination is not None and item.nomination.review_layers:
+        print(f"    覆盖层级：{', '.join(item.nomination.review_layers)}")
+    if item.nomination is not None and item.nomination.classic_basis:
+        print(f"    经典依据：{', '.join(item.nomination.classic_basis)}")
+    if item.nomination is not None and item.nomination.bridge_memo is not None:
+        print("    桥接假设：")
+        for key, label in (
+            ("source_mechanism", "源机制"),
+            ("shared_structure", "共享结构"),
+            ("transfer_experiment", "迁移实验"),
+            ("falsification_signal", "证伪信号"),
+        ):
+            value = item.nomination.bridge_memo.get(key)
+            if isinstance(value, str) and value.strip():
+                print(f"      {label}：{value}")
+    if item.tier is not None and item.tier.note:
+        print(f"    改档备注：{item.tier.note}")
+
+
+def _print_page(page: ShelfPage, *, explain: bool = False) -> None:
+    _print_summary(page.summary)
+    for item in page.items:
+        _print_item(item, explain=explain)
+    if not page.items:
+        print("  暂无内容（不占位）")
+
+
 def _kind(value: str | None) -> SpecialBucketKind | None:
     return SpecialBucketKind(value) if value is not None else None
 
@@ -283,6 +367,67 @@ def _run(args: argparse.Namespace) -> int:
                     print(json.dumps(_plan_json(plan), ensure_ascii=False, indent=2))
                 else:
                     _print_plan(plan)
+                return 0
+            if args.shelf_command == "list":
+                if args.kind is None:
+                    if args.tier is not None or args.explain:
+                        raise InvalidRequestError("--tier/--explain 需要同时指定 --kind")
+                    summaries = shelf_summaries(session)
+                    if args.json:
+                        print(
+                            json.dumps(
+                                {
+                                    "items": [summary.as_json() for summary in summaries],
+                                    "total": len(summaries),
+                                    "limit": len(summaries),
+                                    "offset": 0,
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                        )
+                    else:
+                        for summary in summaries:
+                            _print_summary(summary)
+                    return 0
+                page = list_shelf(
+                    session,
+                    SpecialBucketKind(args.kind),
+                    tier=parse_tier_filter(args.tier),
+                    limit=args.limit,
+                    offset=args.offset,
+                )
+                if args.json:
+                    print(json.dumps(page.as_json(), ensure_ascii=False, indent=2))
+                else:
+                    _print_page(page, explain=args.explain)
+                return 0
+            if args.shelf_command in {"distant", "classic"}:
+                kind = (
+                    SpecialBucketKind.DISTANT
+                    if args.shelf_command == "distant"
+                    else SpecialBucketKind.CLASSIC
+                )
+                page = list_shelf(
+                    session,
+                    kind,
+                    tier=parse_tier_filter(args.tier),
+                    limit=args.limit,
+                    offset=args.offset,
+                )
+                if args.json:
+                    print(json.dumps(page.as_json(), ensure_ascii=False, indent=2))
+                else:
+                    _print_page(page, explain=args.explain)
+                return 0
+            if args.shelf_command == "show":
+                item = shelf_item_for_paper(session, args.paper_id)
+                if item is None:
+                    raise NotFoundError("文献不在特殊桶")
+                if args.json:
+                    print(json.dumps(item.as_json(), ensure_ascii=False, indent=2))
+                else:
+                    _print_item(item, explain=True)
                 return 0
             raise DomainError("shelf.command", f"未知命令：{args.shelf_command}")
     finally:

@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7-S3**：特殊桶只读视图。新增 `/shelves`、`/shelves/{kind}`、
+  `/shelves/{kind}/{paper_id}` API，`shelf list|distant|classic|show` CLI 与
+  `/ui/shelves` 页面；展示档位、理由、逐字证据、review 覆盖层级、classic 依据、
+  四段 bridge memo 与未评估提示，空桶不占位。响应/页面不含 V/P/rank_score，
+  `excluded_from_priority=true`；读取不写库、不自动补评估。无迁移/新依赖；
+  `make check` 992 passed、integration 322 passed、mypy 126 源文件。
+
 - **P7-S2**：特殊桶五维档位 rubric（review/distant/classic 权重冻结）、V 阈值
   high≥75/medium 50–74/low<50、确定性代理分档与人工覆盖历史；迁移 `0012` 新增
   `special_tier_snapshot`。三个特殊桶默认周配额 3/2/1，新增每日最多两槽、

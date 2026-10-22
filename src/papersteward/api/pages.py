@@ -22,6 +22,15 @@ from papersteward.delivery.archive import list_archives, read_archive
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
 from papersteward.delivery.service import create_digest
+from papersteward.delivery.shelf_view import (
+    ShelfItem,
+    ShelfPage,
+    ShelfSummary,
+    list_shelf,
+    parse_kind,
+    shelf_item_for_paper,
+    shelf_summaries,
+)
 from papersteward.errors import AppError, NotFoundError
 from papersteward.scoring.contracts import QueueItem
 from papersteward.scoring.queue import _context, explain_score, read_queue
@@ -59,7 +68,8 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<script src="/ui/static/htmx.js" defer></script></head><body>'
         '<header><a class="brand" href="/ui/today">PaperSteward</a>'
         '<nav aria-label="主导航"><a href="/ui/today">今日</a>'
-        '<a href="/ui/queue">阅读队列</a><a href="/ui/archive">归档</a></nav></header>'
+        '<a href="/ui/queue">阅读队列</a><a href="/ui/shelves">特殊桶</a>'
+        '<a href="/ui/archive">归档</a></nav></header>'
         f"<main><h1>{escape(title)}</h1>{body}</main>"
         "<footer>阅读反馈保存在本地。备注不会发送到外部模型。</footer></body></html>",
         headers=HEADERS,
@@ -166,6 +176,74 @@ def _card(session: SessionDep, item: QueueItem) -> str:
     return body + "</article>"
 
 
+def _shelf_inner(item: ShelfItem) -> str:
+    tier_value = item.tier.tier.value if item.tier is not None else "unrated"
+    tier_label = item.tier.tier.value if item.tier is not None else "未评估"
+    body = (
+        f'<p><span class="tag tier-{tier_value}">{escape(tier_label)}</span> '
+        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(item.paper.status.value)}</p>"
+    )
+    meta = []
+    if item.paper.authors:
+        meta.append(", ".join(item.paper.authors[:3]))
+    if item.paper.venue:
+        meta.append(item.paper.venue)
+    if meta:
+        body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
+    if url := safe_url(item.paper.url):
+        body += f'<p><a class="source" rel="noreferrer" href="{escape(url)}">原文</a></p>'
+    if item.nomination is not None:
+        body += f"<p>{escape(item.nomination.reason)}</p>"
+    if item.needs_assessment:
+        body += '<p class="muted">尚未评估档位，请运行 papersteward shelf assess。</p>'
+    for evidence in item.evidence:
+        label = "有效证据" if evidence.valid else "未核对证据"
+        body += (
+            f'<blockquote><span class="muted">{label}</span> {escape(evidence.quote)}</blockquote>'
+        )
+    for line in item.tier.explanation if item.tier is not None else ():
+        body += f"<p>{escape(line)}</p>"
+    if item.nomination is not None and item.nomination.review_layers:
+        body += f"<p>覆盖层级：{escape(', '.join(item.nomination.review_layers))}</p>"
+    if item.nomination is not None and item.nomination.classic_basis:
+        body += f"<p>经典依据：{escape(', '.join(item.nomination.classic_basis))}</p>"
+    if item.nomination is not None and item.nomination.bridge_memo is not None:
+        body += "<details open><summary>桥接假设</summary>"
+        for key, label in (
+            ("source_mechanism", "源机制"),
+            ("shared_structure", "共享结构"),
+            ("transfer_experiment", "迁移实验"),
+            ("falsification_signal", "证伪信号"),
+        ):
+            value = item.nomination.bridge_memo.get(key)
+            if isinstance(value, str) and value.strip():
+                body += f"<p><strong>{label}</strong>：{escape(value)}</p>"
+        body += "</details>"
+    if item.tier is not None and item.tier.note:
+        body += f'<p class="muted">改档备注：{escape(item.tier.note)}</p>'
+    return body
+
+
+def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | None) -> str:
+    body = (
+        f"<section><h2>{escape(summary.name)} "
+        f'<span class="tag">{escape(summary.kind.value)}</span></h2>'
+        f'<p class="muted">周上限 {summary.quota} · 共 {summary.total} 篇 · '
+        f"high {summary.high} / medium {summary.medium} / low {summary.low} / "
+        f"未评估 {summary.unrated}</p>"
+    )
+    for item in page.items:
+        body += (
+            f'<article><h2><a href="/ui/papers/{quote(item.paper.id, safe="")}">'
+            f"{escape(item.paper.title)}</a></h2>{_shelf_inner(item)}</article>"
+        )
+    if not page.items:
+        body += '<p class="muted">暂无内容（不占位）。</p>'
+    if next_url is not None:
+        body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
+    return body + "</section>"
+
+
 @router.get("/static/htmx.js")
 def htmx() -> FileResponse:
     return FileResponse(STATIC / "htmx-2.0.11.min.js", media_type="application/javascript")
@@ -221,10 +299,40 @@ def queue(session: SessionDep, offset: int = 0) -> HTMLResponse:
         return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
 
 
+@router.get("/shelves")
+def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HTMLResponse:
+    try:
+        all_summaries = list(shelf_summaries(session))
+        summaries = all_summaries
+        if kind is not None:
+            parsed = parse_kind(kind)
+            summaries = [summary for summary in summaries if summary.kind is parsed]
+        links = '<p><a href="/ui/shelves">全部</a>'
+        for summary in all_summaries:
+            links += (
+                f' · <a href="/ui/shelves?kind={quote(summary.kind.value)}">'
+                f"{escape(summary.name)}（{summary.total}）</a>"
+            )
+        body = links + "</p>"
+        for summary in summaries:
+            page = list_shelf(
+                session,
+                summary.kind,
+                limit=50,
+                offset=offset if kind is not None else 0,
+            )
+            next_url = None
+            if kind is not None and offset + 50 < page.total:
+                next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
+            body += _shelf_section(summary, page, next_url=next_url)
+        return _page("特殊桶", body)
+    except (DomainError, AppError) as exc:
+        return _page("特殊桶", f'<p role="alert">{escape(exc.message)}</p>')
+
+
 @router.get("/papers/{paper_id}")
 def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
     try:
-        _day(session)
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
             raise NotFoundError("文献不存在")
@@ -240,6 +348,16 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
                 str(record.content.get("metadata", {}).get("title", paper_id)),
                 "<article>" + body + "</article>",
             )
+        shelf_item = shelf_item_for_paper(session, paper_id)
+        if shelf_item is not None:
+            summary = SummaryRepository(session).get(paper_id)
+            body = "<article><blockquote>"
+            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+            body += _shelf_inner(shelf_item)
+            if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
+                body += _form(paper_id, "done")
+            return _page(paper.title, body + "</article>")
+        _day(session)
         score = explain_score(session, paper_id, now=utc_now())
         summary = SummaryRepository(session).get(paper_id)
         body = "<article><blockquote>"

@@ -2,10 +2,11 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P7 特殊桶、自定义排序与权重治理（S1 提名审核、S2 档位/配额/轮换完成；S3–S6 待开始）**。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1 提名审核、S2 档位/配额/轮换、S3 特殊桶只读视图完成；S4–S6 待开始）**。
 P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
 日报/投递/阅读反馈/归档。P7新增特殊桶提名持久化/人工决策、五维档位 rubric 与人工覆盖、
-周配额与每日两槽轮换计划，迁移head为0012，无新增Python依赖；特殊桶视图和权重治理尚未实现。
+周配额与每日两槽轮换计划，以及特殊桶只读 API/CLI/页面；迁移head为0012，无新增Python依赖。
+自定义视图/预设与全局权重治理尚未实现。
 P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
 
 ```bash
@@ -14,6 +15,8 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 .venv/bin/papersteward shelf assess p001 --json
 .venv/bin/papersteward shelf tier p001 --tier high --by local-user --note "人工确认"
 .venv/bin/papersteward shelf plan --date 2026-10-22 --json
+.venv/bin/papersteward shelf list --kind distant --explain
+.venv/bin/papersteward shelf show p001 --json
 .venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
 .venv/bin/papersteward done p001 --mode deep --score 4 --note "阅读反馈" --request-id read-p001
 .venv/bin/papersteward archive export --format bibtex --out out/archive.bib
@@ -21,9 +24,10 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 ```
 
 先完成初始化、process与审核。特殊归属桶排除P/rank，待审提名同样不会进入P快照；
-主队列只包含合格主题候选。页面从 `/ui/today` 开始，提供今日/队列/详情/归档。
+主队列只包含合格主题候选。页面从 `/ui/today` 开始，提供今日/队列/特殊桶/详情/归档。
 SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存。
-操作见[日报与归档指南](docs/delivery-cli.md)、[P7阶段卡片](docs/phases/P7-shelves.md)、
+操作见[日报与归档指南](docs/delivery-cli.md)、[特殊桶视图指南](docs/shelves.md)、
+[P7阶段卡片](docs/phases/P7-shelves.md)、
 [P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
 [P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
 [P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
@@ -38,6 +42,9 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 - `papersteward shelf assess|tier|plan`：五维 rubric 生成 high/medium/low 档位、
   人工覆盖并保留历史；按 review 3 / distant 2 / classic 1 的周上限和每日两槽轮换
   生成计划，低档/空桶/配额用尽不凑数；
+- `GET /shelves`、`GET /shelves/{kind}`、`GET /shelves/{kind}/{paper_id}` 与
+  `/ui/shelves`：只读展示三桶档位/理由/证据/桥接假设/覆盖层级/经典依据；
+  不返回 V/P/rank，空桶不占位，未评估项提示 `shelf assess`；
 - `GET/POST /digests`、阅读操作 `/papers/{id}/actions`、`GET /archive`及导出；
 - `/ui/today|queue|papers/{id}|archive`：本地HTMX阅读闭环，`POST /jobs/preference/weekly`：显式周任务；
 - `GET /queue`、`GET /scores/{id}/explain`、`POST /scores/snapshot`：日队列、分项解释与快照；
