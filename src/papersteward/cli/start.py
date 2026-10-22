@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from papersteward.api.app import create_app
 from papersteward.config import Settings, format_settings_error
+from papersteward.observability.logging import configure_logging
 from papersteward.storage import create_db_engine
 from papersteward.storage.migrations import find_alembic_ini
 
@@ -74,6 +75,7 @@ def run(args: argparse.Namespace) -> int:
     except ValidationError as exc:
         print(format_settings_error(exc), file=sys.stderr)
         return 1
+    configure_logging(settings)
     try:
         settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with TemporaryFile(dir=settings.data_dir):
@@ -110,7 +112,12 @@ def run(args: argparse.Namespace) -> int:
             opener.start()
         try:
             server = uvicorn.Server(
-                uvicorn.Config(create_app(settings), host=settings.api_host, port=settings.api_port)
+                uvicorn.Config(
+                    create_app(settings),
+                    host=settings.api_host,
+                    port=settings.api_port,
+                    log_config=None,
+                )
             )
             server.run(sockets=[listener])
         finally:
