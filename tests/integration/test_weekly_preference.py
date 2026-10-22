@@ -8,18 +8,22 @@ from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
 from papersteward.cli.main import main
-from papersteward.config import get_settings
-from papersteward.core.enums import EventType, RunStatus
+from papersteward.config import Settings, get_settings
+from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
 from papersteward.delivery.actions import apply_action
 from papersteward.delivery.archive import read_archive
 from papersteward.delivery.contracts import Action
-from papersteward.delivery.service import create_digest
+from papersteward.delivery.service import create_digest, deliver
 from papersteward.jobs.preference import refresh_weekly
 from papersteward.scoring.queue import _context, _history
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.models import PaperRow, RatingRow, RunRow, ScoreSnapshotRow
-from papersteward.storage.repositories import EventRepository, ScoreSnapshotRepository
+from papersteward.storage.repositories import (
+    EventRepository,
+    PaperRepository,
+    ScoreSnapshotRepository,
+)
 
 SUNDAY = NOW + timedelta(days=3)
 
@@ -79,6 +83,78 @@ def test_weekly_u_uses_final_rating_before_cutoff_and_does_not_change_archive(
             next(s for s in next_week.stats_json["scores"] if s["paper_id"] == "unread")["U"] < 50
         )
         assert ScoreSnapshotRepository(session).history("read-0") == initial_scores
+
+
+def delivered_factory(client, engine, tmp_path):
+    """先投递日报再阅读归档，复现真实的 pushed 状态。"""
+    activate(client)
+    factory = create_session_factory(engine)
+    with session_scope(factory) as session:
+        seed(session, "read-0")
+        session.get(PaperRow, "read-0").authors_json = ["Original Author"]
+        session.get(PaperRow, "read-0").venue = "Original Venue"
+        seed(session, "unread")
+        create_digest(session, DAY, now=NOW)
+    deliver(
+        factory,
+        DAY,
+        now=NOW,
+        settings=Settings(_env_file=None),
+        out=tmp_path / "delivered.md",
+    )
+    return factory
+
+
+def test_weekly_includes_delivered_unread_candidates(client, migrated_engine, tmp_path):
+    """F1：日报投递后候选为PUSHED，周任务仍须生成并报告当日U。"""
+    factory = delivered_factory(client, migrated_engine, tmp_path)
+    with session_scope(factory) as session:
+        apply_action(
+            session,
+            "read-0",
+            Action(request_id="done-0", kind="done", mode="skim", score=5),
+            now=NOW,
+        )
+        assert PaperRepository(session).get("read-0").status is PaperStatus.ARCHIVED
+        assert PaperRepository(session).get("unread").status is PaperStatus.PUSHED
+        archived_scores = deepcopy(ScoreSnapshotRepository(session).history("read-0"))
+        result = refresh_weekly(session, now=SUNDAY)
+        assert result.status is RunStatus.SUCCEEDED
+        scores = {score["paper_id"]: score for score in result.stats_json["scores"]}
+        assert "unread" in scores and scores["unread"]["U"] > 50
+        assert "read-0" not in scores
+        latest = ScoreSnapshotRepository(session).history("unread")[-1]
+        assert latest.score_date == SUNDAY.date()
+        assert PaperRepository(session).get("unread").status is PaperStatus.PUSHED
+        assert ScoreSnapshotRepository(session).history("read-0") == archived_scores
+
+
+def test_weekly_resumes_due_snoozed_candidate(client, migrated_engine, tmp_path):
+    factory = delivered_factory(client, migrated_engine, tmp_path)
+    with session_scope(factory) as session:
+        apply_action(
+            session,
+            "unread",
+            Action(request_id="later", kind="snooze", days=3),
+            now=NOW,
+        )
+        assert PaperRepository(session).get("unread").status is PaperStatus.SNOOZED
+        result = refresh_weekly(session, now=SUNDAY)
+        assert result.stats_json["resumed"] == 1
+        assert PaperRepository(session).get("unread").status is PaperStatus.QUEUED
+        assert any(score["paper_id"] == "unread" for score in result.stats_json["scores"])
+
+
+def test_weekly_same_day_snapshot_is_not_rewritten(client, migrated_engine):
+    """N1：周任务不重写日报已生成的同日快照，报告复用该快照。"""
+    factory = feedback_ready(client, migrated_engine)
+    with session_scope(factory) as session:
+        before = deepcopy(ScoreSnapshotRepository(session).history("unread"))
+        result = refresh_weekly(session, now=NOW)
+        assert result.stats_json["created"] == 0
+        assert result.stats_json["existing"] >= 1
+        assert ScoreSnapshotRepository(session).history("unread") == before
+        assert any(score["paper_id"] == "unread" for score in result.stats_json["scores"])
 
 
 def test_low_coverage_is_weak_and_notes_never_selected(client, migrated_engine):
