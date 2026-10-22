@@ -26,3 +26,6 @@ out/
 .DS_Store
 .idea/
 .vscode/
+
+# 本地开发、计划与验收资料
+dev-docs/
