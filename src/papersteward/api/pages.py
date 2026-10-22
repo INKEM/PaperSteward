@@ -77,7 +77,8 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<script src="/ui/static/setup.js" defer></script></head><body>'
         '<header><a class="brand" href="/ui/today">PaperSteward</a>'
         '<nav aria-label="主导航"><a href="/ui/setup">设置</a><a href="/ui/today">今日</a>'
-        '<a href="/ui/queue">阅读队列</a><a href="/ui/shelves">特殊桶</a>'
+        '<a href="/ui/review">审核</a><a href="/ui/queue">阅读队列</a>'
+        '<a href="/ui/shelves">特殊桶</a>'
         '<a href="/ui/views">视图</a><a href="/ui/archive">归档</a></nav></header>'
         f"<main><h1>{escape(title)}</h1>{body}</main>"
         "<footer>阅读反馈保存在本地。备注不会发送到外部模型。</footer></body></html>",
@@ -345,25 +346,28 @@ def style() -> FileResponse:
 
 
 @router.get("/today")
-def today(session: SessionDep, day: date | None = None) -> Response:
+def today(request: Request, session: SessionDep, day: date | None = None) -> Response:
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
     try:
         selected = _day(session, day)
         current = _day(session)
+        from papersteward.api.workflow_pages import dashboard
+
+        intro = dashboard(session, request.app.state.settings, selected)
         try:
             digest = read_digest(session, selected)
         except NotFoundError:
             label = "今日" if selected == current else "该日"
             return _page(
                 "今日阅读",
-                f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'
+                intro + f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'
                 '<form action="/ui/digests" method="post" hx-post="/ui/digests" '
                 'hx-target="main" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
                 f'<input type="hidden" name="day" value="{selected.isoformat()}">'
                 f"<button>生成{label}日报</button></form>",
             )
-        body = f'<p class="muted">{selected} · 队列 {digest.queue_total} 篇 · '
+        body = intro + f'<p class="muted">{selected} · 队列 {digest.queue_total} 篇 · '
         body += f"待确认 {digest.pending_review} 篇</p>"
         body += (
             "".join(_card(session, item) for item in digest.items)
