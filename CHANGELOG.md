@@ -15,6 +15,9 @@
 
 ### Added
 
+- **P6-S4**：done/score/note/snooze/skip/reject API与CLI，严格字段/状态校验、请求ID幂等、
+  Rating和事件原子追加；3/7/14天延期到期恢复，skip冷却7天，备注不进入任何模型。
+
 - **P6-S3**：不可变日报、文件/SMTP渠道和持久化幂等预约（迁移0009）；digest API/CLI，
   暂停/安静/本地日期/推送时间/明确SMTP渠道门禁；文件0600不覆盖，SMTP未知结果不自动重试。
 

@@ -198,6 +198,7 @@ class EventType(StrEnum):
     DELIVERY_RESERVED = "delivery.reserved"
     DELIVERY_SENT = "delivery.sent"
     DELIVERY_FAILED = "delivery.failed"
+    ACTION_RECORDED = "reading.action"
     ONBOARDING_STARTED = "onboarding.started"
     ONBOARDING_G1_CONFIRMED = "onboarding.g1.confirmed"
     ONBOARDING_G2_CONFIRMED = "onboarding.g2.confirmed"

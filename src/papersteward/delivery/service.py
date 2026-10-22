@@ -161,6 +161,17 @@ def _preflight(session: Session, digest: Digest, channel: str, now: datetime) ->
     ctx = _context(session, now, execution=True)
     if digest.binding != ctx["binding"]:
         raise InvariantViolation("digest.binding", "日报依据已变化")
+    history = delivery_history(session)
+    for card in digest.items:
+        paper = PaperRepository(session).get(card.paper_id)
+        old = history.get(card.paper_id, DeliveryHistory())
+        if (
+            paper is None
+            or paper.status not in {PaperStatus.QUEUED, PaperStatus.PUSHED}
+            or (old.skip_until and digest.digest_date < old.skip_until)
+            or (old.snooze_until and digest.digest_date < old.snooze_until)
+        ):
+            raise InvariantViolation("delivery.items", "日报生成后条目已完成/拒绝/冷却；请审阅队列")
     if channel not in {"local_markdown", "smtp"}:
         raise InvariantViolation("delivery.channel", "不支持的投递渠道")
     if channel == "smtp" and ctx["runtime"].value_json["channel"] != "smtp":
@@ -194,7 +205,7 @@ def deliver(
     try:
         with session_scope(factory) as session:
             digest = read_digest(session, day)
-            _preflight(session, digest, channel, now)
+            _context(session, now)  # 已送达回执只读；完成/暂停后重试仍返回原结果。
             row = session.get(DeliveryRow, (day, channel))
             if row is not None:
                 if row.destination_hash != destination_hash:
@@ -227,6 +238,7 @@ def deliver(
                     now,
                     {"date": str(day), "channel": channel},
                 )
+            _preflight(session, digest, channel, now)
     except IntegrityError as exc:
         raise InvariantViolation("delivery.status", "投递已被其他进程预约") from exc
     try:
