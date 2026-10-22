@@ -561,6 +561,43 @@ class SpecialNominationRow(Base):
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class SpecialTierSnapshotRow(Base):
+    """特殊桶档位评估/人工覆盖；追加写，最新一条为当前档位。"""
+
+    __tablename__ = "special_tier_snapshot"
+    __table_args__ = (
+        CheckConstraint("kind IN ('review', 'distant', 'classic')", name="kind_values"),
+        CheckConstraint("tier IN ('high', 'medium', 'low')", name="tier_values"),
+        CheckConstraint("assigned_by IN ('agent', 'user', 'system')", name="assigned_by_values"),
+        CheckConstraint("value >= 0.0 AND value <= 100.0", name="value_range"),
+        Index("ix_special_tier_paper_created", "paper_id", "created_at"),
+        Index("ix_special_tier_kind_tier", "kind", "tier"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    nomination_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("special_nomination.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    dimensions_json: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    weights_json: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    explanation_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    breakdown_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    rubric_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    assigned_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EventRow(Base):
     """追加写事件日志；仓储层不提供 update/delete。"""
 

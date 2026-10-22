@@ -221,7 +221,7 @@ class Tag:
 
 @dataclass(frozen=True, slots=True)
 class Bucket:
-    """主题桶或特殊桶；主题桶由主标签驱动，特殊桶由特殊归属规则驱动。"""
+    """主题桶或特殊桶；特殊桶的 ``quota`` 是每周上限，不是 KPI。"""
 
     id: str
     name: str
@@ -832,6 +832,94 @@ class SpecialNominationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SpecialTierSnapshot:
+    """特殊桶档位评估/人工覆盖的追加写历史；最新一条为当前档位。
+
+    ``value`` 是内部 V，只用于分档与审计，不是 P；展示层不得把它当优先级。
+    """
+
+    id: str
+    paper_id: str
+    kind: SpecialBucketKind
+    value: float
+    tier: ScoreTier
+    dimensions: Mapping[str, float]
+    weights: Mapping[str, float]
+    reasons: tuple[str, ...]
+    explanation: tuple[str, ...]
+    evidence: tuple[NominationEvidence, ...]
+    breakdown_json: Mapping[str, Any]
+    rubric_version: str
+    assigned_by: AssignedBy
+    created_at: datetime
+    nomination_id: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "special_tier.id"))
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "special_tier.paper_id"))
+        if not isinstance(self.kind, SpecialBucketKind):
+            raise DomainValidationError("special_tier.kind", "必须是 SpecialBucketKind")
+        object.__setattr__(self, "value", _require_score(self.value, "special_tier.value"))
+        if not isinstance(self.tier, ScoreTier):
+            raise DomainValidationError("special_tier.tier", "必须是 ScoreTier")
+        if not isinstance(self.dimensions, Mapping) or not self.dimensions:
+            raise DomainValidationError("special_tier.dimensions", "必须是非空 JSON 对象")
+        if not isinstance(self.weights, Mapping) or not self.weights:
+            raise DomainValidationError("special_tier.weights", "必须是非空 JSON 对象")
+        dimensions = dict(self.dimensions)
+        weights = dict(self.weights)
+        if set(dimensions) != set(weights):
+            raise DomainValidationError("special_tier.dimensions", "维度与权重键必须一致")
+        for name, value in dimensions.items():
+            if not isinstance(name, str) or not name.strip():
+                raise DomainValidationError("special_tier.dimensions", "维度名不能为空")
+            dimensions[name] = _require_score(value, f"special_tier.dimensions.{name}")
+        for name, value in weights.items():
+            weights[name] = _require_ratio(value, f"special_tier.weights.{name}")
+        if not math.isclose(math.fsum(weights.values()), 1.0, abs_tol=1e-6):
+            raise DomainValidationError("special_tier.weights", "权重之和必须为 1")
+        object.__setattr__(self, "dimensions", dimensions)
+        object.__setattr__(self, "weights", weights)
+        for name in ("reasons", "explanation"):
+            values = _require_text_tuple(getattr(self, name), f"special_tier.{name}")
+            if not values:
+                raise DomainValidationError(f"special_tier.{name}", "至少需要一条")
+            object.__setattr__(self, name, values)
+        if not isinstance(self.evidence, tuple | list) or not self.evidence:
+            raise DomainValidationError("special_tier.evidence", "至少需要一条证据")
+        evidence = tuple(self.evidence)
+        for item in evidence:
+            if not isinstance(item, NominationEvidence):
+                raise DomainValidationError("special_tier.evidence[]", "必须是 NominationEvidence")
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(
+            self,
+            "breakdown_json",
+            _require_mapping(self.breakdown_json, "special_tier.breakdown_json"),
+        )
+        object.__setattr__(
+            self,
+            "rubric_version",
+            _require_text(self.rubric_version, "special_tier.rubric_version"),
+        )
+        if not isinstance(self.assigned_by, AssignedBy):
+            raise DomainValidationError("special_tier.assigned_by", "必须是 AssignedBy")
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "special_tier.created_at")
+        )
+        object.__setattr__(
+            self,
+            "nomination_id",
+            _optional_text(self.nomination_id, "special_tier.nomination_id"),
+        )
+        note = _optional_text(self.note, "special_tier.note")
+        if self.assigned_by is AssignedBy.USER and note is None:
+            raise DomainValidationError("special_tier.note", "人工改档必须记录备注")
+        object.__setattr__(self, "note", note)
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """追加写事件；``paper_id`` 为空表示文档/配置级事件。"""
 
@@ -1030,6 +1118,7 @@ __all__ = [
     "Run",
     "ScoreSnapshot",
     "SpecialNominationRecord",
+    "SpecialTierSnapshot",
     "StaticScoreSnapshot",
     "Summary",
     "Tag",

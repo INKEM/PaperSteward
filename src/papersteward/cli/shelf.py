@@ -1,18 +1,25 @@
-"""P7 `shelf` CLI：待审特殊桶提名、接受与拒绝。"""
+"""P7 `shelf` CLI：待审提名、接受/拒绝、档位评估/覆盖与轮换计划。"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from datetime import date
 from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from papersteward.core.entities import Paper, SpecialNominationRecord
-from papersteward.core.enums import SpecialBucketKind
+from papersteward.core.entities import Paper, SpecialNominationRecord, SpecialTierSnapshot
+from papersteward.core.enums import ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainError
+from papersteward.delivery.special import (
+    SpecialRotationPlan,
+    load_special_candidates,
+    load_special_quotas,
+    plan_special_rotation,
+)
 from papersteward.errors import AppError
 from papersteward.pipeline.shelf import (
     ShelfDecision,
@@ -20,13 +27,14 @@ from papersteward.pipeline.shelf import (
     list_pending_nominations,
     reject_nomination,
 )
+from papersteward.scoring.special import assess_special, override_special_tier
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
 
 KINDS = tuple(kind.value for kind in SpecialBucketKind)
 
 
 def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    shelf = subparsers.add_parser("shelf", help="特殊桶提名审核")
+    shelf = subparsers.add_parser("shelf", help="特殊桶提名、档位与轮换")
     commands = shelf.add_subparsers(dest="shelf_command", required=True)
 
     review = commands.add_parser("review", help="列出待审特殊桶提名")
@@ -50,6 +58,24 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
     reject.add_argument("--by", required=True, help="审核人")
     reject.add_argument("--note")
     reject.add_argument("--json", action="store_true")
+
+    assess = commands.add_parser("assess", help="重新评估特殊桶档位并追加快照")
+    assess.add_argument("paper_id")
+    assess.add_argument("--json", action="store_true")
+
+    tier = commands.add_parser("tier", help="人工覆盖特殊桶档位")
+    tier.add_argument("paper_id")
+    tier.add_argument("--tier", required=True, choices=("high", "medium", "low"))
+    tier.add_argument("--by", required=True, help="审核人")
+    tier.add_argument("--note", required=True, help="改档理由")
+    tier.add_argument("--json", action="store_true")
+
+    plan = commands.add_parser("plan", help="生成某日特殊桶轮换计划")
+    plan.add_argument("--date", required=True, type=date.fromisoformat, help="YYYY-MM-DD")
+    plan.add_argument("--used-review", type=int, default=0, help="本周 review 已用配额")
+    plan.add_argument("--used-distant", type=int, default=0, help="本周 distant 已用配额")
+    plan.add_argument("--used-classic", type=int, default=0, help="本周 classic 已用配额")
+    plan.add_argument("--json", action="store_true")
 
 
 def _record_json(record: SpecialNominationRecord, paper: Paper) -> dict[str, Any]:
@@ -97,9 +123,56 @@ def _print_review(pairs: list[tuple[SpecialNominationRecord, Paper]]) -> None:
         print("特殊桶提名队列为空")
 
 
+def _tier_json(snapshot: SpecialTierSnapshot) -> dict[str, Any]:
+    return {
+        "paper_id": snapshot.paper_id,
+        "nomination_id": snapshot.nomination_id,
+        "kind": snapshot.kind.value,
+        "value": snapshot.value,
+        "tier": snapshot.tier.value,
+        "dimensions": dict(snapshot.dimensions),
+        "weights": dict(snapshot.weights),
+        "reasons": list(snapshot.reasons),
+        "explanation": list(snapshot.explanation),
+        "evidence": [{"quote": item.quote, "valid": item.valid} for item in snapshot.evidence],
+        "breakdown": dict(snapshot.breakdown_json),
+        "rubric_version": snapshot.rubric_version,
+        "assigned_by": snapshot.assigned_by.value,
+        "note": snapshot.note,
+        "created_at": snapshot.created_at.isoformat(),
+    }
+
+
+def _print_tier(snapshot: SpecialTierSnapshot) -> None:
+    print(
+        f"{snapshot.paper_id}: {snapshot.kind.value} → {snapshot.tier.value} "
+        f"({snapshot.assigned_by.value})"
+    )
+    for line in snapshot.explanation:
+        print(f"  {line}")
+
+
+def _plan_json(plan: SpecialRotationPlan) -> dict[str, Any]:
+    return plan.as_json()
+
+
+def _print_plan(plan: SpecialRotationPlan) -> None:
+    print(f"{plan.day.isoformat()} 特殊桶计划（上限 {plan.max_slots}）：")
+    for slot in plan.slots:
+        print(f"  [{slot.kind.value}/{slot.tier.value}] {slot.paper_id} {slot.title}")
+    if not plan.slots:
+        print("  今日无合格特殊桶内容（不凑数）")
+    for reason in plan.skipped:
+        print(f"  跳过：{reason}")
+    used = ", ".join(f"{kind.value}={plan.used[kind]}/{plan.quotas[kind]}" for kind in plan.quotas)
+    print(f"  当周用量：{used}")
+
+
 def _decision_json(decision: ShelfDecision) -> dict[str, Any]:
     payload = _record_json(decision.nomination, decision.paper)
     payload["bucket_id"] = decision.bucket.id if decision.bucket is not None else None
+    payload["tier"] = decision.tier.tier.value if decision.tier is not None else None
+    payload["tier_value"] = decision.tier.value if decision.tier is not None else None
     payload["superseded"] = [
         {"paper_id": item.paper_id, "kind": item.kind.value} for item in decision.superseded
     ]
@@ -109,9 +182,10 @@ def _decision_json(decision: ShelfDecision) -> dict[str, Any]:
 def _print_decision(decision: ShelfDecision) -> None:
     record = decision.nomination
     suffix = f" → {decision.bucket.id}" if decision.bucket is not None else ""
+    tier = f"；档位 {decision.tier.tier.value}" if decision.tier is not None else ""
     print(
         f"{record.paper_id}: {record.kind.value} {record.status.value}"
-        f"（{decision.paper.status.value}）{suffix}"
+        f"（{decision.paper.status.value}）{suffix}{tier}"
     )
     if decision.superseded:
         kinds = ", ".join(item.kind.value for item in decision.superseded)
@@ -159,7 +233,12 @@ def _run(args: argparse.Namespace) -> int:
                     note=args.note,
                     force=args.force,
                 )
-            else:
+                if args.json:
+                    print(json.dumps(_decision_json(decision), ensure_ascii=False, indent=2))
+                else:
+                    _print_decision(decision)
+                return 0
+            if args.shelf_command == "reject":
                 decision = reject_nomination(
                     session,
                     args.paper_id,
@@ -167,11 +246,45 @@ def _run(args: argparse.Namespace) -> int:
                     reviewed_by=args.by,
                     note=args.note,
                 )
-            if args.json:
-                print(json.dumps(_decision_json(decision), ensure_ascii=False, indent=2))
-            else:
-                _print_decision(decision)
-            return 0
+                if args.json:
+                    print(json.dumps(_decision_json(decision), ensure_ascii=False, indent=2))
+                else:
+                    _print_decision(decision)
+                return 0
+            if args.shelf_command == "assess":
+                snapshot = assess_special(session, args.paper_id)
+                if args.json:
+                    print(json.dumps(_tier_json(snapshot), ensure_ascii=False, indent=2))
+                else:
+                    _print_tier(snapshot)
+                return 0
+            if args.shelf_command == "tier":
+                snapshot = override_special_tier(
+                    session,
+                    args.paper_id,
+                    tier=ScoreTier(args.tier),
+                    reviewed_by=args.by,
+                    note=args.note,
+                )
+                if args.json:
+                    print(json.dumps(_tier_json(snapshot), ensure_ascii=False, indent=2))
+                else:
+                    _print_tier(snapshot)
+                return 0
+            if args.shelf_command == "plan":
+                used = {kind: getattr(args, f"used_{kind.value}") for kind in SpecialBucketKind}
+                plan = plan_special_rotation(
+                    load_special_candidates(session, as_of=args.date),
+                    day=args.date,
+                    quotas=load_special_quotas(session),
+                    used=used,
+                )
+                if args.json:
+                    print(json.dumps(_plan_json(plan), ensure_ascii=False, indent=2))
+                else:
+                    _print_plan(plan)
+                return 0
+            raise DomainError("shelf.command", f"未知命令：{args.shelf_command}")
     finally:
         engine.dispose()
 

@@ -1,6 +1,6 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S1 实现（2026-10-22）；S2–S6 待开始。**
+> 状态：**P7-S2 实现（2026-10-22）；S3–S6 待开始。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -61,10 +61,59 @@
 - 已知限制：普通 review 不再包含特殊提名，旧库中已打开的 review item 仍按旧原因
   处理；同一文献只允许一个特殊 Filing，特殊桶间移动/提升留到后续卡。
 
+## S2 契约（2026-10-22）
+
+- 新增迁移 `0012` 的 `special_tier_snapshot`：追加写档位评估历史，保存 V、档位、五维分、
+  权重、证据、机器原因、人类可读理由、rubric 版本与输入摘要；最新一条为当前档位。
+  用户改档追加新行（`assigned_by=user`、必填备注），不覆盖旧评估，也不改变 V 的含义。
+- rubric 严格按设计 §8.2–8.4 的五维权重：review 跨层深度 .30/覆盖 .25/权威 .20/
+  清晰 .15/时效 .10；distant 迁移潜力 .35/桥接清晰 .20/可信度 .20/新颖性 .15/可及性 .10；
+  classic 奠基性 .35/长期影响 .25/权威 .20/当前相关 .20。五维均为 0–100，V 为加权和
+  保留一位小数；V≥75 为 high，50≤V<75 为 medium，V<50 为 low。
+- 维度分由确定性代理信号推导（不新增 LLM 调用）：提名证据有效率/置信度/门禁原因、
+  review 层级覆盖、bridge memo 完整度、classic basis、venue/引用、OA/代码数据链接、
+  发表年龄与当前 R。缺失信号保持中性 50 并记录 `missing_*` 原因；代理不把缺失解释为负面。
+  该启发式只用于 Beta 分档，用户可覆盖，真实质量评估留给 P8。
+- 三个特殊桶的周配额写入 `bucket.quota`：review 3、distant 2、classic 1（设计区间下界，
+  可按桶调整）；配额是上限，不是每日/每周 KPI。每日最多 2 个特殊槽位，三桶按
+  review→classic→distant 循环轮换，起始桶由日期序号决定；空桶/低档/配额用尽时跳过，
+  不跨桶比 V、不凑数。
+- rotation 计划只消费 `shelved`、当前归属特殊桶、已有档位快照的文献；high/medium 才进入
+  推送计划，low 仅在特殊桶视图展示。每周已用量由调用方传入（S2 不新增推送记录表）；
+  同一桶每日最多占一个槽位。S2 只提供纯计划与 CLI，不改 P6 日报。
+- CLI：`shelf assess <paper>` 重新评估并追加快照；`shelf tier <paper> --tier ... --by ...
+  --note ...` 人工改档；`shelf plan --date ... [--used-review/…]` 输出轮换计划。
+  V 只在 `shelf assess --json`/breakdown 中供审计，不进入特殊桶视图、日报或日常文本。
+  `shelf accept` 在同一事务内自动评估新归入的特殊桶，失败整体回滚。
+- 范围外：特殊桶视图/API、日报实际特殊槽位、推送/已读状态、周回顾清理建议、LLM 质量
+  评分、跨桶排名、特殊↔主题移动、全局权重治理。
+
+## S2 执行记录（2026-10-22）
+
+- 已完成：迁移 `0012` 的 `special_tier_snapshot` 追加写历史、五维 rubric/V/阈值、
+  确定性代理评估、人工改档、三个特殊桶默认周配额、每日两槽轮换纯计划、
+  `shelf assess|tier|plan` CLI；`shelf accept` 在同一事务内自动分档并回滚失败。
+- 新增 34 项测试：21 项 rubric/阈值/缺失信号/三类推导单元测试；7 项轮换/配额/跳过/
+  并列/非法输入测试；6 项集成测试（accept 分档、覆盖历史、默认配额、候选加载、
+  CLI assess/tier/plan、分档失败整体回滚）。
+- 完整本地门：`make check` **984 passed / 4 deselected**，ruff 253 文件、strict mypy
+  **124** 源文件通过；`make test-integration` **314 passed**；`make migrate-check`
+  0011↔0012 upgrade/downgrade/upgrade 通过；`make e2e` **4 passed**；`make demo`
+  health/papers 通过；`make secret-scan` OK。测试仅用 FakeLLM/临时 SQLite，无新依赖。
+- 能做：为已接受特殊桶文献生成/覆盖档位，按周配额和日期轮换生成每日最多两篇的
+  候选计划；不能做：特殊桶页面/API、日报实际特殊槽位、推送状态/周用量持久化、
+  周回顾清理建议、LLM 质量评分或跨桶排名。
+- 规模说明：本卡超过 8 文件/400 行指引，原因是迁移、实体/映射/仓储、rubric/代理、
+  配额/轮换、accept/CLI 接入与表驱动回归共同构成完整竖切；未提前实现 S3–S6。
+- 回滚：停止应用并备份后回退代码；`alembic downgrade 0011` 删除档位历史。已写入桶的
+  周配额与已接受 Filing/`shelved` 状态不会自动回退；需要时人工恢复配额或在备份中重放。
+- 已知限制：维度分是确定性代理而非语义质量判断，缺失信号按中性 50；周已用量由调用方
+  传入，S2 不新增推送记录；低档默认不进入计划；V 仅内部审计，不作为展示优先级。
+
 ## P7 Handoff（后续卡）
 
-- S2 只能消费 `pending/accepted` 提名与三个特殊桶，不得为视图或日报改写 `paper_bucket`
-  的历史 Filing；档位失效时保留最后一次人工覆盖记录。
+- S2 已提供 `special_tier_snapshot` 最新档位、`shelf plan` 与周配额；S3 可直接消费，
+  但不得把 V 当展示优先级或改写 `paper_bucket` 的历史 Filing。
 - S3 读取特殊桶必须显示档位/理由/证据，且不得返回 P/rank；S4/S5 不得写全局配置或
   复用特殊桶 Filing 绕过 `excluded_from_priority`。
 - S6 完成后再更新 Beta 验收与 CHANGELOG；P7 tag 待发布流程，不提前宣称 Beta。

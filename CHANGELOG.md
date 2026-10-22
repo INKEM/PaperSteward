@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7-S2**：特殊桶五维档位 rubric（review/distant/classic 权重冻结）、V 阈值
+  high≥75/medium 50–74/low<50、确定性代理分档与人工覆盖历史；迁移 `0012` 新增
+  `special_tier_snapshot`。三个特殊桶默认周配额 3/2/1，新增每日最多两槽、
+  review→classic→distant 轮换、低档/空桶/配额用尽跳过的纯计划；`shelf accept`
+  同事务自动分档，新增 `shelf assess|tier|plan`。无新依赖；`make check` 984 passed、
+  integration 314 passed、mypy 124 源文件。
+
 - **P7-S1**：特殊桶提名持久化与人工审核。迁移 `0011` 新增 `special_nomination`
   （逐字证据、review layers、classic basis、bridge memo、LLM 溯源与决策记录），
   每篇每个特殊类型一行；`process` 落库提名但不再混入普通 `review_item`，新增

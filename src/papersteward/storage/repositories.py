@@ -32,6 +32,7 @@ from papersteward.core.entities import (
     Run,
     ScoreSnapshot,
     SpecialNominationRecord,
+    SpecialTierSnapshot,
     StaticScoreSnapshot,
     Summary,
     Taxonomy,
@@ -92,6 +93,8 @@ from papersteward.storage.mappers import (
     score_snapshot_to_row,
     special_nomination_from_row,
     special_nomination_to_row,
+    special_tier_from_row,
+    special_tier_to_row,
     static_score_snapshot_from_row,
     static_score_snapshot_to_row,
     summary_from_row,
@@ -114,6 +117,7 @@ from papersteward.storage.models import (
     RunRow,
     ScoreSnapshotRow,
     SpecialNominationRow,
+    SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
@@ -649,6 +653,65 @@ class SpecialNominationRepository(_Repository):
         return special_nomination_from_row(row)
 
 
+class SpecialTierRepository(_Repository):
+    """特殊桶档位追加写历史；读取最新/历史，不提供 update/delete。"""
+
+    def append(self, snapshot: SpecialTierSnapshot) -> SpecialTierSnapshot:
+        self._session.add(special_tier_to_row(snapshot))
+        self._flush()
+        return snapshot
+
+    def latest(
+        self,
+        paper_id: str,
+        *,
+        kind: SpecialBucketKind | None = None,
+        as_of: datetime | None = None,
+    ) -> SpecialTierSnapshot | None:
+        statement = select(SpecialTierSnapshotRow).where(
+            SpecialTierSnapshotRow.paper_id == paper_id
+        )
+        if kind is not None:
+            statement = statement.where(SpecialTierSnapshotRow.kind == kind.value)
+        if as_of is not None:
+            statement = statement.where(SpecialTierSnapshotRow.created_at <= as_of)
+        statement = statement.order_by(
+            SpecialTierSnapshotRow.created_at.desc(), SpecialTierSnapshotRow.id.desc()
+        ).limit(1)
+        row = self._session.scalar(statement)
+        return None if row is None else special_tier_from_row(row)
+
+    def history(self, paper_id: str) -> list[SpecialTierSnapshot]:
+        statement = (
+            select(SpecialTierSnapshotRow)
+            .where(SpecialTierSnapshotRow.paper_id == paper_id)
+            .order_by(
+                SpecialTierSnapshotRow.created_at,
+                SpecialTierSnapshotRow.id,
+            )
+        )
+        return [special_tier_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def latest_all(self, *, as_of: datetime | None = None) -> list[SpecialTierSnapshot]:
+        """每篇文献最新一条；用于轮换计划，避免跨桶比较。"""
+        statement = select(SpecialTierSnapshotRow)
+        if as_of is not None:
+            statement = statement.where(SpecialTierSnapshotRow.created_at <= as_of)
+        statement = statement.order_by(
+            SpecialTierSnapshotRow.paper_id,
+            SpecialTierSnapshotRow.created_at.desc(),
+            SpecialTierSnapshotRow.id.desc(),
+        )
+        seen: set[str] = set()
+        result: list[SpecialTierSnapshot] = []
+        for row in self._session.scalars(statement).all():
+            if row.paper_id in seen:
+                continue
+            seen.add(row.paper_id)
+            result.append(special_tier_from_row(row))
+        return result
+
+
 class EventRepository(_Repository):
     """只追加的事件日志。"""
 
@@ -878,6 +941,19 @@ class BucketRepository(_Repository):
         if active_only:
             statement = statement.where(BucketRow.active.is_(True))
         return [bucket_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def set_quota(self, bucket_id: str, quota: int | None) -> Bucket:
+        """设置桶配额；``None`` 表示未配置，负数/非整数拒绝。"""
+        if quota is not None and (
+            isinstance(quota, bool) or not isinstance(quota, int) or quota < 0
+        ):
+            raise InvariantViolation("bucket.quota", "必须是非负整数或 null")
+        row = self._session.get(BucketRow, bucket_id)
+        if row is None:
+            raise InvariantViolation("bucket.id", f"桶 {bucket_id} 不存在")
+        row.quota = quota
+        self._flush()
+        return bucket_from_row(row)
 
 
 class ArchiveSnapshotRepository(_Repository):

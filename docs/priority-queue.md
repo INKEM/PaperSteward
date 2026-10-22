@@ -14,6 +14,8 @@
 - `GET /scores/{paper_id}/explain?date=2026-10-22` 返回当日分项/权重/贡献/置信度/证据/
   版本；省略日期读取最近日快照。特殊FILING桶只返回excluded_from_priority与原因，无P/rank；
   待审特殊桶提名返回 `pending_special_nomination` 且 `excluded_from_priority=false`。
+  已归入特殊桶的档位/配额/轮换见 `papersteward shelf assess|tier|plan`；档位 V 存于
+  `special_tier_snapshot`，只用于特殊桶内 high/medium/low，不是 P/rank。
 - 尚无快照时队列为空，explain返回404；先执行snapshot。G4未完成返回409；非法日期/分页422。
 - CLI默认也输出可读缩进JSON，`--json`可用于脚本；失败返回非0且给出初始化/迁移提示。
 

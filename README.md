@@ -2,15 +2,18 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P7 特殊桶、自定义排序与权重治理（S1 特殊桶数据模型/提名审核完成；S2–S6 待开始）**。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1 提名审核、S2 档位/配额/轮换完成；S3–S6 待开始）**。
 P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
-日报/投递/阅读反馈/归档。P7-S1新增特殊桶提名持久化与人工接受/拒绝，迁移head为0011，
-无新增Python依赖；档位、配额、特殊桶视图和权重治理尚未实现。
+日报/投递/阅读反馈/归档。P7新增特殊桶提名持久化/人工决策、五维档位 rubric 与人工覆盖、
+周配额与每日两槽轮换计划，迁移head为0012，无新增Python依赖；特殊桶视图和权重治理尚未实现。
 P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
 
 ```bash
 .venv/bin/papersteward shelf review
 .venv/bin/papersteward shelf accept p001 --by local-user --note "确认值得读"
+.venv/bin/papersteward shelf assess p001 --json
+.venv/bin/papersteward shelf tier p001 --tier high --by local-user --note "人工确认"
+.venv/bin/papersteward shelf plan --date 2026-10-22 --json
 .venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
 .venv/bin/papersteward done p001 --mode deep --score 4 --note "阅读反馈" --request-id read-p001
 .venv/bin/papersteward archive export --format bibtex --out out/archive.bib
@@ -32,6 +35,9 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 
 - `papersteward shelf review|accept|reject`：列出待审特殊桶提名，按人工决策归入
   跨层综述/远邻领域/经典奠基或保留主题归属；待审提名不进入P快照；
+- `papersteward shelf assess|tier|plan`：五维 rubric 生成 high/medium/low 档位、
+  人工覆盖并保留历史；按 review 3 / distant 2 / classic 1 的周上限和每日两槽轮换
+  生成计划，低档/空桶/配额用尽不凑数；
 - `GET/POST /digests`、阅读操作 `/papers/{id}/actions`、`GET /archive`及导出；
 - `/ui/today|queue|papers/{id}|archive`：本地HTMX阅读闭环，`POST /jobs/preference/weekly`：显式周任务；
 - `GET /queue`、`GET /scores/{id}/explain`、`POST /scores/snapshot`：日队列、分项解释与快照；
@@ -78,7 +84,7 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
-  （head `0011`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
+  （head `0012`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、相关度、摘要、特殊桶提名、评分快照、事件（正反例校验）；

@@ -20,6 +20,7 @@ from papersteward.core.entities import (
     Paper,
     PaperBucket,
     SpecialNominationRecord,
+    SpecialTierSnapshot,
     utc_now,
 )
 from papersteward.core.enums import (
@@ -36,6 +37,7 @@ from papersteward.core.enums import (
 from papersteward.core.invariants import choose_special_filing_kind, ensure_shelvable
 from papersteward.errors import ConflictError, NotFoundError
 from papersteward.pipeline.special import SpecialNominationResult
+from papersteward.scoring.special import DEFAULT_SPECIAL_QUOTAS, assess_special
 from papersteward.storage.repositories import (
     BucketRepository,
     EventRepository,
@@ -60,6 +62,7 @@ class ShelfDecision:
     paper: Paper
     nomination: SpecialNominationRecord
     bucket: Bucket | None
+    tier: SpecialTierSnapshot | None = None
     superseded: tuple[SpecialNominationRecord, ...] = ()
 
 
@@ -77,6 +80,8 @@ def ensure_special_buckets(session: Session) -> dict[SpecialBucketKind, Bucket]:
         if bucket is not None:
             if not bucket.active:
                 raise ConflictError(f"特殊桶 {kind.value} 已存在但未激活")
+            if bucket.quota is None:
+                bucket = repository.set_quota(bucket.id, DEFAULT_SPECIAL_QUOTAS[kind])
             result[kind] = bucket
             continue
         collision = repository.get(bucket_id)
@@ -87,6 +92,7 @@ def ensure_special_buckets(session: Session) -> dict[SpecialBucketKind, Bucket]:
             name=name,
             bucket_type=BucketType.SPECIAL,
             special_kind=kind,
+            quota=DEFAULT_SPECIAL_QUOTAS[kind],
         )
         repository.add(created)
         result[kind] = created
@@ -274,6 +280,13 @@ def accept_nomination(
         note=note,
         now=timestamp,
     )
+    tier = assess_special(
+        session,
+        paper_id,
+        nomination=decided,
+        as_of=timestamp.date(),
+        now=timestamp,
+    )
     superseded = tuple(
         SpecialNominationRepository(session).decide(
             other.id,
@@ -289,6 +302,7 @@ def accept_nomination(
         paper=updated,
         nomination=decided,
         bucket=bucket,
+        tier=tier,
         superseded=superseded,
     )
 

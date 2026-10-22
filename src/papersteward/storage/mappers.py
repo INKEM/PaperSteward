@@ -27,6 +27,7 @@ from papersteward.core.entities import (
     Run,
     ScoreSnapshot,
     SpecialNominationRecord,
+    SpecialTierSnapshot,
     StaticScoreSnapshot,
     Summary,
     Tag,
@@ -66,6 +67,7 @@ from papersteward.storage.models import (
     RunRow,
     ScoreSnapshotRow,
     SpecialNominationRow,
+    SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
     SummaryRow,
     TagRow,
@@ -452,6 +454,51 @@ def special_nomination_from_row(row: SpecialNominationRow) -> SpecialNominationR
     )
 
 
+def special_tier_to_row(item: SpecialTierSnapshot) -> SpecialTierSnapshotRow:
+    return SpecialTierSnapshotRow(
+        id=item.id,
+        paper_id=item.paper_id,
+        nomination_id=item.nomination_id,
+        kind=item.kind.value,
+        value=item.value,
+        tier=item.tier.value,
+        dimensions_json=dict(item.dimensions),
+        weights_json=dict(item.weights),
+        reasons_json=list(item.reasons),
+        explanation_json=list(item.explanation),
+        evidence_json=[{"quote": entry.quote, "valid": entry.valid} for entry in item.evidence],
+        breakdown_json=dict(item.breakdown_json),
+        rubric_version=item.rubric_version,
+        assigned_by=item.assigned_by.value,
+        note=item.note,
+        created_at=item.created_at,
+    )
+
+
+def special_tier_from_row(row: SpecialTierSnapshotRow) -> SpecialTierSnapshot:
+    return SpecialTierSnapshot(
+        id=row.id,
+        paper_id=row.paper_id,
+        nomination_id=row.nomination_id,
+        kind=SpecialBucketKind(row.kind),
+        value=row.value,
+        tier=ScoreTier(row.tier),
+        dimensions={str(key): float(value) for key, value in (row.dimensions_json or {}).items()},
+        weights={str(key): float(value) for key, value in (row.weights_json or {}).items()},
+        reasons=tuple(row.reasons_json or ()),
+        explanation=tuple(row.explanation_json or ()),
+        evidence=tuple(
+            NominationEvidence(quote=str(entry["quote"]), valid=bool(entry["valid"]))
+            for entry in (row.evidence_json or ())
+        ),
+        breakdown_json=dict(row.breakdown_json or {}),
+        rubric_version=row.rubric_version,
+        assigned_by=AssignedBy(row.assigned_by),
+        note=row.note,
+        created_at=as_utc(row.created_at),
+    )
+
+
 def event_to_row(event: Event) -> EventRow:
     return EventRow(
         id=event.id,
@@ -735,6 +782,8 @@ __all__ = [
     "score_snapshot_to_row",
     "special_nomination_from_row",
     "special_nomination_to_row",
+    "special_tier_from_row",
+    "special_tier_to_row",
     "summary_from_row",
     "summary_to_row",
     "tag_from_row",
