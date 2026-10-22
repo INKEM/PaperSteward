@@ -429,3 +429,62 @@ G1/G2 仍按 A1/A2 的步骤提交，只是文件换成 `var/first-digest/profil
 - [ ] 把发现写给下一次迭代，而不是立刻加功能
 
 > 首份日报的目标不是“发出去”，而是回答：**这套系统是否值得我明天再打开一次。**
+
+## 6. 2026-10-23 首份日报测试记录
+
+> 结论：**流程通过，内容召回暂不通过。** 用户接受本次日报。
+
+### 环境与范围
+
+- 独立测试库 `var/first-digest/night.db`，API `127.0.0.1:8811`；原
+  `/dev/shm/papersteward-first-digest.db` 与 8810 服务未改动。
+- G4 测试参数：`quiet_start=null`、`quiet_end=null`、`push_time=00:00`、
+  `local_markdown`。仅用于夜间测试，不代表正式配置。
+- LLM：`deepseek-chat`（`.env` 原为 `deepseek-flash`，在 JSON schema 字段类型
+  与摘要长度上不稳定）。
+- G1–G4 全部显式确认，最终状态 `active`。
+
+### 结果
+
+| 项目 | 数值 |
+|---|---|
+| 采集查询 | `long-horizon manipulation`、`embodied task planning`、`robot failure detection`、`LLM task planning` |
+| 采集候选 | 16 |
+| process 完成 | 16 |
+| 进入队列 | 1 |
+| 日报条目 | 1（GAVEL，T01，R=71.2，P=64.6，精读） |
+| 待审 review | 13 |
+| 特殊桶待审提名 | 16 |
+
+- 日报：`var/first-digest/real-2026-10-23.md`；`/ui/today` 可打开，arXiv 链接返回 200。
+- GAVEL 的摘要、主标签与证据一致；用户接受本次日报。
+
+### 通过 / 未通过
+
+- **流程通过**：G1–G4 显式确认；至少 1 篇真实论文完成 process 并进入队列；日报与
+  UI 可读；特殊桶未混入主队列。
+- **内容召回未通过**：16 篇采集只有 1 篇入队；多数 R 在 25–51；CycleVLA 相关度
+  55.4，但摘要含未支撑数字被 `summary_not_passed` 挡住；GraphThink R=49.4 低于
+  55 门槛。
+- 主要原因：`hashing-v1` 语义相似度未校准；查询词偏 VLA/操作；摘要与分类门禁较严。
+
+### 发现的问题
+
+1. **Prompt 未内联 JSON schema**：`relevance/v1`、`summary/v2` 等只写“符合某某
+   JSON schema”，真实模型会输出嵌套结构（如 `problem: {score, evidence}`）或超长
+   摘要，触发 `schema.relevance.problem` / `schema.summary.summary_100` 校验失败。
+2. **模型选择**：`deepseek-flash` 在 schema 上不稳定；本次改用 `deepseek-chat`
+   才跑通。
+3. **摘要长度**：`summary_100` 的 100 个非空白字符限制只写在 prompt 正文里，
+   模型常输出 110–130 字；需要把约束放进 schema 并加强 repair 提示。
+4. **相关度校准**：`hashing-v1` 未校准，R 普遍偏低，在 55 门槛下召回不足。
+5. **临时绕行**：本次用 `var/first-digest/process_with_schema.py` 在运行时补
+   schema 并截断摘要，**不是产品代码**；修复后应删除。
+
+### 后续
+
+- 代码：prompt 新版本内联 schema、repair 提示带 schema 与长度约束；补回归测试
+  （本次已在 `fix/llm-prompt-schema` 修复）。
+- 配置：`.env` 使用 `deepseek-chat`。
+- 评估：P8-S1 固定样本评估相关度与摘要，再决定 embedding 和门槛。
+- Pilot：按 P8 五问跑两周；查询改为主题轮换或 profile 生成查询。
