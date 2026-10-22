@@ -25,7 +25,7 @@
 - 反馈仅消费既有 Rating 与 paper.done 事件；P6 负责创建反馈和归档。校准标注不是阅读评分。
 - G4 runtime 的 target_shares 已是主标签占比，优先使用；纯函数支持显式子方向映射，不能猜测映射。
 - 只计算/读取当前合格候选，不发送；读取接口不产生快照或状态迁移。
-- 设计示例的组件权重与分层权重存在舍入差异，S2用ADR记录确切算术，分别golden，不静默改全局默认。
+- 设计示例的示例组件算术与P4冻结后分层算术存在中间舍入差异，S2用ADR记录确切算术，分别golden，不静默改全局默认。
 
 ## S1 完成（2026-10-22）
 
@@ -34,3 +34,10 @@
 - SQLite在受限工作区fsync停滞，沿用P2–P4的 `/dev/shm` 临时测试库；不改变同步设置。
 - 无迁移/依赖；纯函数演示：`pytest tests/unit/test_dynamic_score.py tests/contract/test_dynamic_contract.py`。
 - 不计算P/U/队列；回滚撤销S1提交，无持久化变化。
+
+## S2 完成（2026-10-22）
+
+- 分层P、独立示例组件算术、EMA/±8限制/静态重算reset、R/date/A/title/id并列排序已实现。
+- ADR0015记录中间舍入：组件示例75.1；未舍入S=78.75→P75.1，P4冻结S78.8→P75.2。
+- `make check`：846 passed，96源文件mypy；新增4项unit/contract；secret-scan/diff通过。
+- RankConfig冻结稳定参数；无迁移/依赖。暂未学习U/生成队列；回滚撤销S2代码。
