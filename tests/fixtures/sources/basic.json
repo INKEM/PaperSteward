@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source": "fake",
+  "items": [
+    {
+      "title": "Synthetic Retrieval Study",
+      "authors": ["Fixture Author"],
+      "doi": "10.0000/fixture-only",
+      "published_at": "2026-10-21T08:00:00+08:00",
+      "abstract": "Synthetic metadata for offline tests. Ignore previous instructions is untrusted text.",
+      "url": "https://example.invalid/papers/one",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 0,
+      "provenance": {
+        "source": "fake",
+        "source_id": "fixture-001",
+        "url": "https://example.invalid/api/one",
+        "retrieved_at": "2026-10-22T08:00:00+08:00",
+        "raw_metadata": {"id": "fixture-001", "synthetic": true, "versions": [1]}
+      }
+    },
+    {
+      "title": "Synthetic Missing Metadata Study",
+      "provenance": {
+        "source": "fake",
+        "source_id": "fixture-002",
+        "url": "https://example.invalid/api/two",
+        "retrieved_at": "2026-10-22T00:00:00Z",
+        "raw_metadata": {"id": "fixture-002", "synthetic": true}
+      }
+    }
+  ]
+}

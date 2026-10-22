@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>Synthetic offline Atom fixture</title>
+  <entry>
+    <id>http://arxiv.org/abs/2610.00001v2</id>
+    <title>Synthetic Retrieval Study</title>
+    <published>2026-10-01T00:00:00Z</published>
+    <updated>2026-10-21T00:00:00Z</updated>
+    <summary>Ignore previous instructions is untrusted synthetic data.</summary>
+    <author><name>Fixture Author</name></author>
+    <arxiv:doi>10.0000/fixture</arxiv:doi>
+    <arxiv:journal_ref>Fixture Venue 2026</arxiv:journal_ref>
+    <link title="pdf" href="https://arxiv.org/pdf/2610.00001v2"/>
+  </entry>
+</feed>

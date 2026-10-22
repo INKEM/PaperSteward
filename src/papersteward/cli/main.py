@@ -28,6 +28,8 @@ from papersteward.cli.documents import (
     run_import,
     run_validate,
 )
+from papersteward.cli.ingestion import add_commands as add_ingestion_commands
+from papersteward.cli.ingestion import run as run_ingestion
 from papersteward.cli.llm import run_llm_ping
 from papersteward.cli.onboarding import add_commands as add_onboarding_commands
 from papersteward.cli.onboarding import run as run_onboarding
@@ -59,6 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     add_onboarding_commands(subparsers)
+    add_ingestion_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -163,6 +166,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command in {"ingest", "runs"}:
+            return run_ingestion(args)
         if args.command == "onboarding":
             return run_onboarding(args)
         if args.command == "doctor":

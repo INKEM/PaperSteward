@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_PREFIX = "PAPERSTEWARD_"
@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8000, ge=1, le=65535)
     timezone: str = "Asia/Shanghai"
+    semantic_scholar_api_key: SecretStr | None = None
+
+    @field_validator("semantic_scholar_api_key", mode="before")
+    @classmethod
+    def _empty_source_key(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("log_level", mode="before")
     @classmethod
