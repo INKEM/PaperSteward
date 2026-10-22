@@ -78,7 +78,7 @@ class SpecialBucketKind(StrEnum):
 
 
 class SpecialNominationStatus(StrEnum):
-    """特殊桶提名生命周期；决策一经写入不再回到 pending。"""
+    """特殊桶提名生命周期；rejected 可经受控 reopen 回到 pending 并留审计事件。"""
 
     PENDING = "pending"
     ACCEPTED = "accepted"
@@ -214,6 +214,7 @@ class EventType(StrEnum):
     TAXONOMY_ARCHIVED = "taxonomy.archived"
     CONFIG_UPDATED = "config.updated"
     CONFIG_ACTIVATED = "config.activated"
+    SPECIAL_NOMINATION_REOPENED = "special_nomination.reopened"
     DIGEST_CREATED = "digest.created"
     DELIVERY_RESERVED = "delivery.reserved"
     DELIVERY_SENT = "delivery.sent"

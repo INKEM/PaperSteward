@@ -2,11 +2,13 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S6 本地实现完成）**。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S6 + 两轮返工完成；二次独立复验 Accepted（功能层面））**。
 P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
 日报/投递/阅读反馈/归档。P7新增特殊桶提名/档位/配额/轮换、特殊桶只读视图、组件级
 自定义排序预设、全局权重影响预览/版本/确认/按日激活，以及特殊桶提升回主题桶；
-迁移head为0014，无新增Python依赖。P7独立验收/tag与Beta发布尚未完成。
+迁移head为0015，无新增Python依赖。**2026-10-22 P7 二次独立复验为 Accepted
+（功能层面）**：F1–F3、N1–N4 均已闭环，N4 preview 数值与生效日队列对齐，N3 preview
+本地日修复。P7 tag/Beta、merge、CI 与 Docker 发布门仍待完成；P8 在返工合并 main 后开始。
 P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
 
 ```bash
@@ -17,6 +19,7 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 .venv/bin/papersteward shelf plan --date 2026-10-22 --json
 .venv/bin/papersteward shelf list --kind distant --explain
 .venv/bin/papersteward shelf show p001 --json
+.venv/bin/papersteward shelf reopen p001 --kind review --by local-user --note "重新考虑"
 .venv/bin/papersteward shelf promote p001 --by local-user --note "回到主队列"
 .venv/bin/papersteward view preview --preset reproducible --date 2026-10-22
 .venv/bin/papersteward view save --name "my-repro" --weights R:35,E:40,F:15,A:10
@@ -33,7 +36,10 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存。
 操作见[日报与归档指南](docs/delivery-cli.md)、[特殊桶视图指南](docs/shelves.md)、
 [自定义排序视图指南](docs/views.md)、[权重治理指南](docs/config-governance.md)、
-[P7本地验收](docs/phases/P7-acceptance.md)、[P7阶段卡片](docs/phases/P7-shelves.md)、
+[P7本地验收](docs/phases/P7-acceptance.md)、
+[P7独立验收报告（Not Accepted）](docs/phases/P7-acceptance-independent.md)、
+[P7返工验证记录](docs/phases/P7-acceptance-rework.md)、
+[P7阶段卡片](docs/phases/P7-shelves.md)、
 [P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
 [P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
 [P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
@@ -48,6 +54,7 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 - `papersteward shelf assess|tier|plan`：五维 rubric 生成 high/medium/low 档位、
   人工覆盖并保留历史；按 review 3 / distant 2 / classic 1 的周上限和每日两槽轮换
   生成计划，低档/空桶/配额用尽不凑数；
+- `papersteward shelf reopen`：把 rejected 特殊桶提名受控回到 pending，追加审计事件；
 - `papersteward shelf promote`：把 shelved 特殊桶文献提升回主标签主题桶；校验
   主队列 R 门槛，复用/重算静态快照，下一次日快照回到 P 排序，历史特殊档位不改；
 - `GET /shelves`、`GET /shelves/{kind}`、`GET /shelves/{kind}/{paper_id}` 与

@@ -153,6 +153,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "rubric_version",
             "assigned_by",
             "note",
+            "reviewed_by",
             "created_at",
         }
         assert {column["name"] for column in inspector.get_columns("scoring_change")} == {
@@ -206,7 +207,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0014"
+        assert current == "0015"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:

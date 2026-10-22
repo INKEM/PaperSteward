@@ -507,8 +507,8 @@ def read_queue(
 def explain_score(
     session: Session, paper_id: str, *, now: datetime, day: date | None = None
 ) -> ScoreExplanation | Exclusion:
-    target_day = day or now.date()
-    ctx = _context(session, now, day=target_day)
+    ctx = _context(session, now, day=day)
+    target_day = day or now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
     paper = PaperRepository(session).get(paper_id)
     if paper is None:
         raise NotFoundError("文献不存在")

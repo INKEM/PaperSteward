@@ -99,6 +99,7 @@ def test_manual_tier_override_appends_history_and_requires_note(migrated_engine)
         )
         assert overridden.tier is ScoreTier.HIGH
         assert overridden.assigned_by is AssignedBy.USER
+        assert overridden.reviewed_by == "fixture-user"
         assert overridden.note == "人工确认跨层价值"
         assert overridden.value == original.value
         assert "user_override" in overridden.reasons
@@ -214,6 +215,7 @@ def test_shelf_cli_assess_tier_and_plan(migrated_engine, monkeypatch, capsys):
         overridden = json.loads(capsys.readouterr().out)
         assert overridden["tier"] == "high"
         assert overridden["assigned_by"] == "user"
+        assert overridden["reviewed_by"] == "fixture-user"
 
         assert main(["shelf", "plan", "--date", str(NOW.date()), "--json"]) == 0
         plan = json.loads(capsys.readouterr().out)

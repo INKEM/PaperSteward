@@ -105,3 +105,12 @@ def bound_context(
         }
     except (KeyError, TypeError) as exc:
         raise InvariantViolation("onboarding.binding", "确认事件缺少完整绑定") from exc
+
+
+def runtime_local_day(session: Session, now: datetime, binding: dict[str, Any]) -> date:
+    """按已绑定 runtime timezone 取本地日期；不把动态日期放进 binding hash。"""
+    runtime_config = ConfigRepository(session).get("onboarding_runtime", binding["runtime_version"])
+    if runtime_config is None:
+        raise InvariantViolation("onboarding.binding", "绑定运行参数不存在")
+    runtime = RuntimeParameters.model_validate(runtime_config.value_json)
+    return now.astimezone(ZoneInfo(runtime.timezone)).date()

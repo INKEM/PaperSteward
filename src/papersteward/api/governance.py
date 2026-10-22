@@ -12,9 +12,11 @@ from papersteward.api.deps import SessionDep
 from papersteward.api.review import _review_errors
 from papersteward.core.entities import ScoringChange, utc_now
 from papersteward.errors import InvalidRequestError
+from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.governance import (
     confirm_weight_change,
+    count_changes,
     get_change,
     list_changes,
     preview_from_config,
@@ -94,7 +96,7 @@ def changes(
     items = list_changes(session, limit=limit, offset=offset)
     return ScoringChangeListResponse(
         items=[_read(item) for item in items],
-        total=len(items),
+        total=count_changes(session),
         limit=limit,
         offset=offset,
     )
@@ -114,9 +116,19 @@ def detail(change_id: str, session: SessionDep) -> ScoringChangeRead:
 def preview(body: ScoringPreviewRequest, session: SessionDep) -> ScoringChangeRead:
     if (body.overrides is None) == (body.config is None):
         raise InvalidRequestError("overrides 与 config 必须二选一")
-    day = body.score_date or utc_now().date()
-    effective = body.effective_on or day + timedelta(days=1)
     with _review_errors(), session.begin():
+        timestamp = utc_now()
+        if body.score_date is not None:
+            day = body.score_date
+        else:
+            _, binding = bound_context(
+                session,
+                timestamp,
+                action="config.preview",
+                enforce_schedule=False,
+            )
+            day = runtime_local_day(session, timestamp, binding)
+        effective = body.effective_on or day + timedelta(days=1)
         if body.config is not None:
             try:
                 proposed = ScoringConfig.model_validate(body.config)

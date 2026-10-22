@@ -22,12 +22,33 @@
 
 ### Added
 
+- **P7 N4/N3 二次返工**：修正权重预览把层权重重复相乘（static/dynamic 改用未展开
+  子权重，再 compute_priority），新增 preview 与生效日队列 priority/rank_score 数值
+  对照；API/CLI config preview 缺省日期改用 runtime local day；API 暴露
+  `tier_reviewed_by`。`make check` 1017 passed、integration 338、e2e 4。
+  2026-10-22 二次独立复验 Accepted（功能层面）；P7 tag/Beta 与 merge/CI/Docker 发布门
+  仍待完成，P8 在合并后开始。
+
+- **P7 独立验收返工**：F1 治理 allowlist（仅 8 个线性权重，非权重字段 400）；
+  F2 确认后处理/提升的文献补写生效日静态快照；F3 `shelf reopen` 受控重开 rejected
+  提名并审计。N1 changes 全量 total；N2 迁移 `0015` 持久化档位 `reviewed_by`；
+  N3 runtime 本地日且不污染 binding hash；N4 预览改按 rank_score。二次返工修正 N4
+  层权重重复计算、N3 config preview 本地日和 N2 API reviewer 展示；`make check` 1017
+  passed、integration 338、e2e 4、migrate 0014↔0015 通过；fresh clone 同数通过。
+  2026-10-22 二次独立复验 Accepted（功能层面）；P7 tag/Beta 与 merge/CI/Docker 发布门
+  仍待完成，P8 在合并后开始。
+
 - **P7-S6**：P7 最终 e2e 与特殊桶提升。真实 Uvicorn/CLI 链路新增 5 篇合成论文，
   覆盖特殊桶 review/distant/classic、档位/桥接/经典依据、视图重排、权重预览/确认与
   生效日队列；新增 `shelf promote`（特殊桶回主标签主题桶、R 门槛、静态复用/重算、
   下一次日快照回到 P），并创建 `docs/phases/P7-acceptance.md` 本地验收记录。
   无新迁移/依赖；`make check` 1010 passed、integration 331 passed、e2e 4 passed。
-  未独立验收、未打 P7 tag、不宣称 Beta。
+  未打 P7 tag、不宣称 Beta。
+- **P7 独立验收（2026-10-22）Not Accepted**：本地门、fresh clone、Docker smoke/CI 通过，
+  但独立验收发现 F1 权重治理可激活非权重字段并绕过预览边界、F2 确认后至生效日处理/
+  提升的文献在生效日被旧静态快照排除、F3 拒绝提名后无法重新提名；另有 N1–N4
+  （changes total、tier reviewer、UTC 日期、preview rank）。返工复验前 P7 tag/Beta
+  不发布，P8 不得开始；证据见 `docs/phases/P7-acceptance-independent.md`。
 
 - **P7-S5**：全局权重治理。新增迁移 `0014` 的 `scoring_change`、Top-N 影响预览、
   preview hash、版本自动提升、显式确认、按生效日激活与已有静态分重算；

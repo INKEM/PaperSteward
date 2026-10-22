@@ -61,6 +61,17 @@ curl -s localhost:8000/shelves/review/p001
 标题、档位、理由、证据与专属解释；空桶显示“暂无内容（不占位）”。点击标题进入
 文献详情；特殊桶详情不再调用 P 解释，而是显示档位与证据。
 
+## 重新打开被拒绝的提名
+
+```bash
+.venv/bin/papersteward shelf reopen p001 --kind review --by local-user --note "重新考虑"
+```
+
+- 只允许 `classified` 文献的 `rejected` 提名；把该提名受控回到 `pending`，清空本次
+  拒绝对话字段并追加 `special_nomination.reopened` 审计事件；不重跑 LLM、不改主标签/
+  Filing/状态。其他 kind 的待审提名可继续存在。
+- 重新打开后可按正常 `shelf accept` 流程接受；若产品决定拒绝不可逆，不应使用该命令。
+
 ## 提升回主题桶
 
 ```bash
@@ -72,9 +83,12 @@ curl -s localhost:8000/shelves/review/p001
 - 把 filing 从特殊桶替换为主标签主题桶，状态 `shelved → classified`，写
   `paper.classified` 与 `paper.bucket_moved` 事件；特殊桶档位/历史保留。
 - 若最近静态快照已匹配当前配置/档案/分类法版本，直接复用；否则用最近 R/A/E
-  按当前静态权重追加一条新日期快照。下一次日快照即可把文献纳入 P 排序。
+  按当前静态权重追加一条新日期快照。若存在已确认但未生效的权重变更，还会为每个
+  pending activation 补写生效日新版本快照。下一次日快照即可把文献纳入 P 排序。
 - 提升不会改写历史 P 快照；主题桶→特殊桶的手动降级尚未提供独立命令，当前仍通过
   `shelf accept`（仅 classified 阶段）完成。
+- 人工 `shelf tier` 现在持久化 `reviewed_by`；`shelf show --json`、`GET /shelves/*`
+  的 `tier_reviewed_by` 与 `shelf tier --json` 的 `reviewed_by` 可用于审计。
 
 ## 边界与回滚
 

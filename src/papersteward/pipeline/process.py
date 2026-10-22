@@ -43,6 +43,7 @@ from papersteward.pipeline.summarize import (
     generate_summary,
     persist_summary,
 )
+from papersteward.scoring.activation import append_future_activation_snapshots
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.static import (
     AuthorityInputs,
@@ -331,6 +332,20 @@ def process_paper(
         citation_percentile=citation_percentile,
         reproducibility=reproducibility,
         rigor=rigor,
+    )
+    append_future_activation_snapshots(
+        session,
+        paper_id=paper.id,
+        relevance=static.relevance,
+        authority=static.authority,
+        extra_value=static.extra_value,
+        confidence=static.confidence,
+        profile_version=static.profile_version,
+        taxonomy_version=static.taxonomy_version,
+        base_input_hash=static.input_hash,
+        breakdown=static.breakdown_json,
+        after_day=static.score_date,
+        now=now,
     )
     reasons = _review_reasons(relevance, summary, summary_reason, classification)
     needs_review = bool(reasons)

@@ -18,6 +18,7 @@ from papersteward.config import format_settings_error
 from papersteward.core.entities import ScoringChange, utc_now
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError
+from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.schemas import (
     SCHEMA_MODELS,
     SchemaError,
@@ -32,6 +33,7 @@ from papersteward.scoring import (
 )
 from papersteward.scoring.governance import (
     confirm_weight_change,
+    count_changes,
     get_change,
     list_changes,
     preview_from_config,
@@ -184,9 +186,19 @@ def run_config_preview(
 ) -> int:
     try:
         parsed = dict(_parse_override(item) for item in overrides)
-        preview_day = at or utc_now().date()
-        effective = effective_on or preview_day + timedelta(days=1)
         with _session() as session:
+            timestamp = utc_now()
+            if at is not None:
+                preview_day = at
+            else:
+                _, binding = bound_context(
+                    session,
+                    timestamp,
+                    action="config.preview",
+                    enforce_schedule=False,
+                )
+                preview_day = runtime_local_day(session, timestamp, binding)
+            effective = effective_on or preview_day + timedelta(days=1)
             if path is not None:
                 proposed = load_scoring_config_file(path)
                 if version is not None:
@@ -255,6 +267,7 @@ def run_config_changes(*, limit: int, json_output: bool) -> int:
     try:
         with _session() as session:
             changes = list_changes(session, limit=limit)
+            total = count_changes(session)
     except SQLAlchemyError:
         _print_error(ValueError(_MIGRATION_HINT))
         return 1
@@ -263,7 +276,7 @@ def run_config_changes(*, limit: int, json_output: bool) -> int:
             json.dumps(
                 {
                     "items": [_change_json(item) for item in changes],
-                    "total": len(changes),
+                    "total": total,
                     "limit": limit,
                     "offset": 0,
                 },

@@ -476,6 +476,7 @@ def special_tier_to_row(item: SpecialTierSnapshot) -> SpecialTierSnapshotRow:
         rubric_version=item.rubric_version,
         assigned_by=item.assigned_by.value,
         note=item.note,
+        reviewed_by=item.reviewed_by,
         created_at=item.created_at,
     )
 
@@ -500,6 +501,7 @@ def special_tier_from_row(row: SpecialTierSnapshotRow) -> SpecialTierSnapshot:
         rubric_version=row.rubric_version,
         assigned_by=AssignedBy(row.assigned_by),
         note=row.note,
+        reviewed_by=row.reviewed_by,
         created_at=as_utc(row.created_at),
     )
 

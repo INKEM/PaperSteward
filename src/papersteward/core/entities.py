@@ -856,6 +856,7 @@ class SpecialTierSnapshot:
     created_at: datetime
     nomination_id: str | None = None
     note: str | None = None
+    reviewed_by: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _require_text(self.id, "special_tier.id"))
@@ -919,6 +920,11 @@ class SpecialTierSnapshot:
         if self.assigned_by is AssignedBy.USER and note is None:
             raise DomainValidationError("special_tier.note", "人工改档必须记录备注")
         object.__setattr__(self, "note", note)
+        object.__setattr__(
+            self,
+            "reviewed_by",
+            _optional_text(self.reviewed_by, "special_tier.reviewed_by"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
