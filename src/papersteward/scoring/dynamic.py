@@ -12,7 +12,12 @@ from papersteward.scoring.config import ScoringConfig, validate_scoring_config
 
 
 def number(value: float, field: str, low: float, high: float) -> float:
-    if isinstance(value, bool) or not math.isfinite(value) or not low <= value <= high:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or not low <= value <= high
+    ):
         raise DomainValidationError(field, f"必须是 {low}–{high} 的有限数")
     return float(value)
 
@@ -90,7 +95,7 @@ def compute_dynamic(
     config: ScoringConfig,
     backlog: int = 0,
     weekly_capacity: int = 10,
-    backlog_dampener: bool = True,
+    backlog_dampener: bool | None = None,
     half_life: int | None = None,
 ) -> DynamicScore:
     validate_scoring_config(config)
@@ -111,10 +116,17 @@ def compute_dynamic(
     share = target if total == 0 else (count + alpha * target) / (total + alpha)
     gap = max(-1.0, min(1.0, (target - share) / max(target, 0.05)))
     h = 50 + 50 * gap
-    dampened = backlog_dampener and backlog > 2 * weekly_capacity and h > 50
+    enabled = config.dynamic.backlog_dampener if backlog_dampener is None else backlog_dampener
+    dampened = enabled and backlog > 2 * weekly_capacity and h > 50
     if dampened:
         h = 50 + (h - 50) / 2
-    f = freshness(published_on, as_of, half_life or config.dynamic.half_life_days.default)
+    f = freshness(
+        published_on,
+        as_of,
+        half_life
+        if half_life is not None
+        else config.dynamic.by_primary_tag.get(primary_tag, config.dynamic.half_life_days.default),
+    )
     reasons = () if published_on else ("missing_publication_date",)
     return DynamicScore(
         f,

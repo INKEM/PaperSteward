@@ -24,3 +24,7 @@ EMA=.7P+.3previous；新论文/静态快照input_hash变化时重置。单次日
 已收缩先验，作者/venue无数据中性。覆盖率<30%时conf再乘coverage/.3，明确弱信号。
 不读备注，不把校准标注当阅读；偏好结果随日快照保存周截止、样本数/覆盖率/分项，
 无后台调度或新偏好表。回滚不改变原始Rating或已读快照。
+
+配置兼容：P5扩展dynamic.by_primary_tag（显式天数）和backlog_dampener。
+默认值序列化时省略，确保P2已确认的JSON/hash不因升级漂移；非默认值进入版本内容。
+所有保存/计算边界重新字段校验，拒绝NaN/Infinity和model_copy绕过，保持层权重护栏。

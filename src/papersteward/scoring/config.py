@@ -8,10 +8,18 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_validator,
+    model_serializer,
+)
 
 from papersteward.core.errors import DomainValidationError
 
@@ -41,7 +49,7 @@ class ConfigError(DomainValidationError):
 
 
 class _ConfigModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
 
 class HalfLifeDays(_ConfigModel):
@@ -64,6 +72,20 @@ class DynamicWeights(_ConfigModel):
     half_life_days: HalfLifeDays
     hunger_window_days: int = Field(gt=0)
     prior_strength: float = Field(ge=0.0)
+    by_primary_tag: dict[str, Annotated[int, Field(gt=0, strict=True)]] = Field(
+        default_factory=dict
+    )
+    backlog_dampener: bool = True
+
+    @model_serializer(mode="wrap")
+    def _compatible_dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result: dict[str, Any] = handler(self)
+        # 默认扩展不改变已审阅G4报告/hash或既有配置JSON。
+        if not self.by_primary_tag:
+            result.pop("by_primary_tag", None)
+        if self.backlog_dampener:
+            result.pop("backlog_dampener", None)
+        return result
 
 
 class QuasiDynamicWeights(_ConfigModel):
@@ -262,7 +284,11 @@ def _validate_cross(config: ScoringConfig, *, source: str, text: str) -> None:
 
 
 def validate_scoring_config(config: ScoringConfig, *, source: str = "<memory>") -> ScoringConfig:
-    """对已构造的配置执行跨字段校验。"""
+    """重新验证字段与跨字段；防止model_copy/model_construct绕过保存护栏。"""
+    try:
+        config = ScoringConfig.model_validate(config.model_dump(mode="python"))
+    except ValidationError as exc:
+        raise _validation_error(exc, source=source, text="") from exc
     _validate_cross(config, source=source, text="")
     return config
 
