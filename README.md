@@ -2,20 +2,14 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P2 初始化协商与确认门（S1–S6 实现与本地验收完成）**：P0 的配置、API、CLI 与演示链路
-已跑通；P1-S1 提供不可变领域实体、状态机与不变量，P1-S2 接入正式领域表、仓储与
-事件日志，P1-S3 完成 profile/taxonomy 解析、版本确认/归档与 diff，P1-S4 完成
-评分配置校验、JSON schema 与配置版本事件，P1-S5 完成 LLM 网关、FakeLLM、prompt
-registry 与修复重试；P1-S6 完成契约冻结、端到端验收与阶段门。P1 整体验收已通过：
-Docker 容器 build/run 与 CI 均闭环；F5（httpx 弃用警告）保留为非阻断依赖债务，
-P2-S1 已提供持久化初始化状态、G1–G4 顺序确认接口与统一执行门禁。
-P2-S2 已接入档案草案/版本编辑/审阅与 G1 显式确认，确认后进入分类法阶段。
-P2-S3 已接入分类法草案、覆盖率/均衡/边界校验、影响预览和 G2 确认。
-P2-S4 已接入 G2 种子幂等导入、双方独立校准、指标报告和 G3 确认，进入 dry_run。
-P2-S5 已接入参数、版本化试运行日报、反馈和 G4 显式确认，确认后进入 ACTIVE。
-P2-S6 已提供最小初始化 CLI 与完整链路验收；当前没有真实发送器或调度器。
-P2 本地阶段门与 Docker 已通过；CI 仍未触发，阶段 tag 待 CI；下一阶段为 P3。
-详细契约见 [P2 阶段文档](docs/phases/P2-onboarding.md)。
+当前处于 **P4 富化、摘要、分类与静态评分（S1 完成）**：P0/P1 的配置、API、
+CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与确认门已通过；P3
+已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与可审计运行报告；
+P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权、脱敏 provider
+与富化输入契约。P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
+非阻断债务。下一阶段为 P4-S2 富化信号持久化与中性值。
+详细契约见 [P4 阶段记录](docs/phases/P4-enrichment.md)、[P3 阶段记录](docs/phases/P3-ingestion.md)
+与 [P3 验收报告](docs/phases/P3-acceptance.md)。
 
 ## 当前能力
 
@@ -48,18 +42,25 @@ P2 本地阶段门与 Docker 已通过；CI 仍未触发，阶段 tag 待 CI；�
   原子保存选定配置/审计并通过 G4，预览和负面反馈不会激活流程；
 - `papersteward onboarding`：start/status、Markdown/JSON 提交、全文/版本差异审阅、
   分角色标注、日报反馈与显式确认；`--out` 保存私有审阅快照，确认不会刷新依据；
+- `papersteward ingest`：在 ACTIVE/G4 后从 arXiv/OpenAlex/Semantic Scholar fixture
+  或显式 `--live` 采集，去重、硬过滤并幂等写入 screened/rejected 文献与来源版本；
+  `papersteward runs show` 查看可审计运行报告（partial/失败/过滤原因）；
 - `papersteward doctor`：检查配置、数据库连接与 Alembic current/head；
 - `papersteward demo seed`：幂等写入演示文献 `p001`；
 - SQLite + SQLAlchemy 2.x + Alembic；
 - 结构化日志、`X-Request-ID`、统一错误响应；
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
-- 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration 表（head `0004`）；
-  部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
+- 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source 表
+  （head `0005`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
-- LLM 网关：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
+- LLM：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
+  P4-S1 新增 OpenAI-compatible 真实 provider（显式 `--live`、HTTPS/超时/脱敏）；
+- P3：确定性查询生成、三来源离线适配器、带预算/限流/大小上限的 HTTP 边界、
+  canonicalization/五类保守去重、硬过滤、来源版本与 Run 报告；
+- P4-S1：中性富化信号、`EnrichmentProvider` 协议与确定性降级；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 初始化链路演示
@@ -150,8 +151,17 @@ curl "http://127.0.0.1:8000/papers?limit=10"
 | `PAPERSTEWARD_API_HOST` | `127.0.0.1` | 默认只绑定本机 |
 | `PAPERSTEWARD_API_PORT` | `8000` | 1–65535 |
 | `PAPERSTEWARD_TIMEZONE` | `Asia/Shanghai` | IANA 时区名 |
+| `PAPERSTEWARD_LLM_PROVIDER` | `fake` | `fake` / `openai_compatible` |
+| `PAPERSTEWARD_LLM_BASE_URL` | `https://api.openai.com/v1` | API 根地址；非本机必须 HTTPS |
+| `PAPERSTEWARD_LLM_API_KEY` | 空 | 只从环境/.env 读取，不打印 |
+| `PAPERSTEWARD_LLM_MODEL` | 空 | `openai_compatible` 时必填 |
+| `PAPERSTEWARD_LLM_TIMEOUT_S` | `30` | 单请求硬超时（1–600 秒） |
+| `PAPERSTEWARD_LLM_MAX_ATTEMPTS` | `3` | provider 重试上限（1–5） |
+| `PAPERSTEWARD_LLM_PROMPT_COST_PER_1K_USD` | `0` | 成本估算单价 |
+| `PAPERSTEWARD_LLM_COMPLETION_COST_PER_1K_USD` | `0` | 成本估算单价 |
 
-`.env` 已被 `.gitignore` 忽略，**不要提交真实密钥**。
+`.env` 已被 `.gitignore` 忽略，**不要提交真实密钥**。真实 LLM 配置、端点示例与
+故障排查见 [LLM provider 配置指南](docs/llm-provider.md)。
 
 ## CLI
 
@@ -176,6 +186,8 @@ papersteward schema validate classification /tmp/classification.json
 
 papersteward llm ping --fake
 papersteward llm ping --fake --json
+# 配置真实 provider 后，显式允许一次网络调用（可能产生少量费用）
+papersteward llm ping --live
 ```
 
 - `doctor` 全部通过退出 0，否则退出 1；只诊断，不自动迁移；
@@ -185,7 +197,8 @@ papersteward llm ping --fake --json
 - `doc diff` 支持两个文件，或 `--id` + 两个数据库版本；`--json` 输出机器可读结果；
 - `config validate` 不写库；`config import` 追加版本并写 `config.updated` 事件；
 - `schema show/validate` 输出或校验分类/摘要/评分/事件 JSON schema；
-- `llm ping --fake` 使用确定性 FakeLLM；P1 不发起真实网络/LLM 调用；
+- `llm ping --fake` 使用确定性 FakeLLM，离线；`--live` 必须显式指定并读取
+  `PAPERSTEWARD_LLM_*`，不会隐式联网；配置见 [LLM provider 指南](docs/llm-provider.md)；
 - P1 contract freeze 覆盖枚举/表/迁移/schema/prompt/CLI；端到端测试覆盖
   profile/taxonomy/config + FakeLLM 分类/摘要落库；
 - 安装后可直接使用 `papersteward`；在仓库内也可用 `.venv/bin/papersteward`。
@@ -315,7 +328,7 @@ docs/             # 设计与阶段文档
 
 - 单用户、本地优先；无鉴权、无 CORS、无 Postgres；
 - P1 完成领域/文档/LLM 网关；P2-S1–S6 完成初始化 API/CLI 至 G4，并通过本地阶段门；
-- P1 Docker/CI 已验收；P2 Docker 已独立验证，CI 未触发，未打 p2-done tag；
+- P1/P2/P3 Docker 与 CI 均已验证；P2/P3 阶段 tag 仍待发布流程；
 - 不采集真实文献、不调用真实 LLM、不执行真实摘要/评分或正式日报发送；试运行展示固定 fixture；
 - `/papers` 只读；导入通过 onboarding API；`status` 使用正式枚举（如 `discovered`）；
 - `doctor` 只检查，不修复；`demo seed` 只支持一个演示文献；
@@ -338,12 +351,20 @@ docs/             # 设计与阶段文档
 - [P1 阶段记录与交接](docs/phases/P1-domain-documents-llm.md)
 - [P2 阶段记录与 P3 交接](docs/phases/P2-onboarding.md)
 - [P2 本地验收报告](docs/phases/P2-acceptance.md)
+- [P2 独立验收报告](docs/phases/P2-independent-acceptance.md)
+- [P3 阶段记录与 P4 交接](docs/phases/P3-ingestion.md)
+- [P3 独立验收报告](docs/phases/P3-acceptance.md)
+- [P4 阶段记录与 P4-S2 交接](docs/phases/P4-enrichment.md)
+- [LLM provider 配置指南](docs/llm-provider.md)
 - [初始化 CLI 操作指南](docs/onboarding-cli.md)
+- [采集 CLI 操作指南](docs/ingestion-cli.md)
 - [ADR 0001：YAML front matter 解析](docs/adr/0001-yaml-front-matter.md)
+- [ADR 0013：真实 LLM provider 与显式授权](docs/adr/0013-llm-provider.md)
 
 ## 安全
 
 - `.env` 不入库；`make secret-scan` 扫描常见密钥模式；
 - 默认只绑定 `127.0.0.1`；不要直接暴露到公网；
+- LLM key 只通过 `PAPERSTEWARD_LLM_API_KEY`/环境变量；真实调用需显式 `--live`；
 - 日志脱敏 token/secret/password/api_key 等字段；
 - 错误响应不回显异常堆栈或用户输入值。

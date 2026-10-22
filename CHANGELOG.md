@@ -6,9 +6,19 @@
 
 ### Added
 
+- **P4-S1**：真实 LLM 入口：`PAPERSTEWARD_LLM_*` 配置、OpenAI-compatible
+  `chat/completions` provider、显式 `llm ping --live` 授权、`SecretStr` 密钥、
+  HTTPS/超时/响应上限/脱敏错误与网关按 `retryable` 重试；新增中性
+  `EnrichmentSignals`/`EnrichmentProvider` 契约。无迁移、无新依赖，测试离线。
 - **P3-S7**：G4 约束下的采集、去重/硬过滤、幂等入库与运行报告 CLI；来源失败隔离，
   暂停/安静时段及精确配置证据复核。迁移 `0005` 保存来源原始元数据版本；保护归档/
   已评分及校准数据，支持只读 dry-run、事务回滚与脱敏失败报告，真实 CLI 离线 e2e。
+- **P3 验收**：独立复核本地阶段门、全新 clone、Docker 与 CI 均通过；P3-S1–S7
+  可以关闭，阶段 tag 待发布流程。
+- **P3 验收后优化**：跟进四项非阻断观察：早期 discovered/deduped 存量状态重跑收敛到
+  screened/rejected；HTTP 缓存增加 32 MiB 总字节上限与 FIFO 淘汰；OpenAlex 身份消歧
+  改为最多 3 页保守分页并拒绝歧义/未完整扫描；CLI fixture 支持按请求顺序回放多页
+  `responses` 信封且耗尽不重复。无迁移、无新依赖，新增回归/契约测试。
 
 - **P3-S6**：规范化 DOI/arXiv/文献类型，五类保守去重、强标识冲突保护和跨源版本合并；
   保留全部来源与最早公开日。摘要近似使用离线词法策略，未调用 embedding。
@@ -32,8 +42,8 @@
   G1–G4 显式确认。保存带校验和的私有审阅快照，确认只使用已审 hash/revision，
   拒绝文件覆盖、跨服务器或意外编辑；本地 HTTP 禁用代理/重定向，不自动重试变更。
   新增 CLI 真实子进程 e2e、操作指南与 P2 本地验收/P3 交接；无依赖/迁移。
-- **P2 验收**：独立复核本地阶段门与 Docker build/run 通过；CI 尚未触发，
-  `p2-done` tag 待补 CI 证据。
+- **P2 验收**：独立复核本地阶段门、Docker 与后续 CI（run 39643102708）通过；
+  P2 通过，`p2-done` tag 留待发布流程。
 - **P2-S5**：版本化试运行日报与运行参数 API，展示固定合成条目/Markdown，不发送；
   支持“太多/太少/不准/分类不对”的追加反馈。G4 要求最新日报、最新认可反馈、
   审阅双 hash 与显式确认，绑定 G3 及前序文档；原子保存所选配置、审计并进入 ACTIVE。

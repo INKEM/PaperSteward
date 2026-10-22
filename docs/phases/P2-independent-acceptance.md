@@ -4,7 +4,7 @@
 > **验收 commit**：`f3b4a1b`（`feat(p2-s6): add onboarding CLI and close local phase acceptance`）  
 > **验收日期**：2026-10-22  
 > **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、Docker build/run、G1–G4 边界与门禁复核、GitHub Actions 查询  
-> **结论**：**有条件通过（Conditional Pass）**。本地阶段门、全新 clone 与当前代码 Docker 运行均通过；CI 尚无可归属于 P2 的运行证据，因此 P2 发布门未完全闭合，不打 `p2-done` tag。
+> **结论**：**通过（Accepted）**。本地阶段门、全新 clone、Docker 运行与后续 CI（run 39643102708，`16d9b59`）均通过；P2 可以关闭，`p2-done` tag 仍留待发布流程。
 
 ---
 
@@ -22,10 +22,10 @@
 | Docker build/run（当前代码） | **通过**：镜像构建成功；UID 10001；容器 healthy；`/health`、`/papers`、`/onboarding` 正常 |
 | G1–G4 顺序/陈旧/重复确认 | **通过**：集成与 e2e 覆盖 |
 | G4 前 enqueue/push/archive 门禁 | **通过**：仓储层统一门禁测试；G4 后放行 |
-| CI | **未取得 P2 证据**：验收时 Actions 仅有 P1 运行；P1 证据不能替代当前提交 |
-| P2 tag | **未创建**（与 CI 未闭合一致） |
+| CI | **通过**：后续 run [39643102708](https://github.com/INKEM/PaperSteward/actions/runs/39643102708)（`16d9b59`）3 个 job 全绿 |
+| P2 tag | **未创建**（留待发布流程） |
 
-**总体判定**：**P2 本地实现与可执行验收通过，Docker 已闭环；唯一未闭合的是 CI 发布门。** P3 可以按 P2 handoff 开始，但 P2 阶段 tag 必须等 CI 在 `f3b4a1b`（或其后继提交）上通过后再补。
+**总体判定**：**P2 本地实现、Docker 与 CI 发布门均已闭合，P2 通过。** P3 可以按 P2 handoff 开始；P2 阶段 tag 可在发布流程中补打。
 
 ---
 
@@ -126,7 +126,7 @@ docker compose -p p2accept down -v → 正常清理
 
 | ID | 级别 | 内容 | 处理 |
 |----|------|------|------|
-| F1 | **发布阻断（仅 CI）** | 验收时 GitHub Actions 无 P2 head 的运行；现有 3 个 run 均为 P1。P1 CI 不能替代 P2 当前提交 | 推送 P2 分支/PR 触发 CI，确认 quality 3.11/3.12 与 docker smoke 全绿后再打 `p2-done` |
+| F1 | **已关闭** | 后续 GitHub Actions run 39643102708（`16d9b59`）的 quality 3.11/3.12 与 docker smoke 全部 success；P1 CI 不再是唯一证据 | 发布流程补 `p2-done` tag |
 | F2 | 非阻断依赖债 | P1 的 `StarletteDeprecationWarning`（httpx → httpx2）仍存在 | 依赖升级窗口处理 |
 | F3 | 非阻断测试债 | P1 F3 的 provider 失败 usage 仍缺独立回归断言 | 下一维护窗口补断言；不影响 P2 功能 |
 | F4 | 环境说明 | 当前工作区 fsync 可能阻塞默认 pytest 临时目录，P2 文档要求 `/dev/shm` | 属环境问题；不改变产品配置，CI 使用常规临时目录 |
@@ -163,8 +163,8 @@ docker compose -p p2accept down -v → 正常清理
 
 ## 7. 最终判定
 
-**P2-S1–S6 本地验收与 Docker 验收通过；P2 阶段发布门因 CI 未验证而保持开放。**  
-建议在 P3 启动的同时触发 P2 CI；CI 全绿后补 `p2-done` tag，即可把 P2 标记为完全关闭。
+**P2-S1–S6 本地、Docker 与 CI 验收均通过；P2 可以关闭。**
+阶段 tag 仍留待发布流程。
 
 ---
 

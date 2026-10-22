@@ -94,7 +94,10 @@ def _build_parser() -> argparse.ArgumentParser:
     llm = subparsers.add_parser("llm", help="LLM 网关检查")
     llm_subparsers = llm.add_subparsers(dest="llm_command", required=True)
     ping = llm_subparsers.add_parser("ping", help="检查 LLM provider 连通性")
-    ping.add_argument("--fake", action="store_true", help="使用 FakeLLM（P1 唯一实现）")
+    ping.add_argument("--fake", action="store_true", help="使用 FakeLLM（离线）")
+    ping.add_argument(
+        "--live", action="store_true", help="显式允许真实 OpenAI-compatible HTTP 调用"
+    )
     ping.add_argument("--json", action="store_true", help="输出 JSON")
     return parser
 
@@ -204,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.schema_command == "validate":
                 return run_schema_validate(args.name, args.path)
         if args.command == "llm" and args.llm_command == "ping":
-            return run_llm_ping(fake=args.fake, json_output=args.json)
+            return run_llm_ping(fake=args.fake, live=args.live, json_output=args.json)
     except KeyboardInterrupt:
         print("已取消", file=sys.stderr)
         return 130

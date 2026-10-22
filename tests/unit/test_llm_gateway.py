@@ -8,6 +8,7 @@ import pytest
 from papersteward.llm import (
     FakeLLM,
     LLMGateway,
+    LLMProviderError,
     LLMTimeoutError,
     LLMValidationError,
     PromptRenderError,
@@ -170,3 +171,22 @@ def test_fake_llm_repeats_last_response_and_validates_constructor() -> None:
         FakeLLM([])
     with pytest.raises(ValueError):
         FakeLLM(["x"], cost_per_1k_tokens=-1)
+
+
+def test_non_retryable_provider_error_is_not_retried() -> None:
+    class UnauthorizedProvider:
+        model_id = "unauthorized"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, prompt: str, *, timeout_s: float) -> object:
+            self.calls += 1
+            raise LLMProviderError("LLM 认证失败", retryable=False)
+
+    provider = UnauthorizedProvider()
+    with pytest.raises(LLMProviderError, match="认证失败") as caught:
+        LLMGateway(provider, max_attempts=3).ping()  # type: ignore[arg-type]
+
+    assert provider.calls == 1
+    assert caught.value.usage.calls == 1

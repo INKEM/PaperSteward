@@ -5,10 +5,10 @@
 
 ## 1. 当前阶段
 
-- 当前：**P3 采集、去重与硬过滤（S1–S7 实现与本地阶段门完成；stacked 分支未合并，Docker/CI待验证；卡片见 P3-ingestion.md）**；
-- 下一阶段：**P4 富化、摘要、分类与静态评分（未开始；开工前先拆小阶段卡片）**；P2 Docker 已独立验证、CI 待触发，P1 F5 保留；
+- 当前：**P4 富化、摘要、分类与静态评分（S1 完成：OpenAI-compatible 真实 LLM 配置/provider 与富化输入契约；P4-S2 待开始；卡片见 P4-enrichment.md）**；
+- 下一阶段：**P4-S2 富化信号持久化与中性值**；P2/P3 CI 已验证、阶段 tag 待发布流程，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
-- 当前 head 为 `0005`（新增 paper_source 来源元数据版本表）；G4 前禁止入队/推送/归档。
+- 当前 head 为 `0005`（新增 paper_source 来源元数据版本表）；G4 前禁止入队/推送/归档；P4-S1 无 schema 变更。
 
 ## 2. 开工前必读
 
@@ -19,8 +19,9 @@
 3. `docs/phases/P0-baseline.md`（已完成契约与交接）；
 4. `docs/phases/P1-domain-documents-llm.md`（P1 契约与 P2 交接）；
 5. `docs/phases/P2-onboarding.md`（完整契约、阶段验收与 P3 handoff）；
-6. `docs/phases/P3-ingestion.md`（当前卡片、来源契约与 handoff）；
-7. 本文件。
+6. `docs/phases/P3-ingestion.md`（P3 契约、验收与 P4 handoff）；
+7. `docs/phases/P4-enrichment.md`（当前卡片、P4-S1 交接与后续小阶段）；
+8. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
 
@@ -37,7 +38,7 @@ src/papersteward/
   storage/         # db、*Row ORM、mappers、repositories、migrations 状态
   documents/       # profile/taxonomy 解析、diff、确认/归档服务
   scoring/ schemas/  # 评分配置/JSON schema（P1-S4）
-  llm/             # provider/FakeLLM/prompt/gateway/cost（P1-S5）
+  llm/             # provider/FakeLLM/openai-compatible/gateway/cost（P1-S5/P4-S1）
   core/ sources/ pipeline/ delivery/ jobs/
 migrations/        # Alembic env 与 versions
 tests/             # unit / contract / integration / e2e

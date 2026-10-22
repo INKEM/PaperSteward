@@ -9,12 +9,23 @@ class LLMError(Exception):
     """LLM 网关错误基类；CLI 只打印可操作信息，不输出堆栈。"""
 
 
-class LLMProviderError(LLMError):
-    """provider 失败；可由网关重试。最终失败时附 ``usage`` 供成本审计。"""
+class LLMConfigurationError(LLMError):
+    """provider 配置缺失或未显式授权；不包含密钥/请求内容。"""
 
-    def __init__(self, message: str = "provider 调用失败", *, usage: Any = None) -> None:
+
+class LLMProviderError(LLMError):
+    """provider 失败；``retryable`` 决定网关是否重试，最终失败时附 ``usage``。"""
+
+    def __init__(
+        self,
+        message: str = "provider 调用失败",
+        *,
+        usage: Any = None,
+        retryable: bool = True,
+    ) -> None:
         super().__init__(message)
         self.usage = usage
+        self.retryable = retryable
 
     def __str__(self) -> str:
         if self.usage is None:
@@ -61,6 +72,7 @@ class PromptRenderError(LLMError):
 
 
 __all__ = [
+    "LLMConfigurationError",
     "LLMError",
     "LLMProviderError",
     "LLMTimeoutError",
