@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from papersteward.core.entities import Bucket, Paper
-from papersteward.core.enums import BucketType, DocumentStatus, OaStatus, PaperStatus, TagRole
+from papersteward.core.entities import (
+    Bucket,
+    Enrichment,
+    EnrichmentSignals,
+    Paper,
+)
+from papersteward.core.enums import (
+    BucketType,
+    DocumentStatus,
+    OaStatus,
+    PaperStatus,
+    TagRole,
+)
 from papersteward.documents.profile import parse_profile
 from papersteward.documents.taxonomy import parse_taxonomy
 from papersteward.llm import FakeLLM, LLMGateway
@@ -15,6 +27,7 @@ from papersteward.pipeline.review import approve_review, list_open_reviews, rela
 from papersteward.scoring.config import load_scoring_config_file
 from papersteward.storage import (
     BucketRepository,
+    EnrichmentRepository,
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
@@ -93,18 +106,19 @@ def _setup(session):
         BucketRepository(session).add(bucket)
 
 
-def _process(session):
+def _process(session, paper: Paper = PAPER, gateway=None, **kwargs):
     return process_paper(
         session,
-        PAPER,
+        paper,
         profile=PROFILE,
         taxonomy=TAXONOMY,
         topic_buckets=_buckets(),
         config=CONFIG,
-        gateway=_gateway(),
+        gateway=gateway or _gateway(),
         embedding_provider=HashingEmbeddingProvider(),
         now=NOW,
         score_date=NOW.date(),
+        **kwargs,
     )
 
 
@@ -150,3 +164,102 @@ def test_process_then_relabel_replaces_tags_and_filing(migrated_engine):
         assert [bucket.bucket_id for bucket in buckets] == ["b-t03"]
         assert PaperRepository(session).get(PAPER.id).status is PaperStatus.CLASSIFIED
         assert ReviewRepository(session).get(PAPER.id).resolution.value == "relabeled"  # type: ignore[union-attr]
+
+
+def test_preseeded_enrichment_is_not_overwritten(migrated_engine):
+    paper = Paper(
+        id="proc-enrich-001",
+        title="Synthetic abstractless enrichment paper",
+        abstract="Existing enrichment must survive process.",
+        status=PaperStatus.SCREENED,
+        first_seen_at=NOW,
+    )
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        PaperRepository(session).add(paper)
+        for bucket in _buckets().values():
+            BucketRepository(session).add(bucket)
+        signals = EnrichmentSignals(
+            venue_level="a*",
+            citation_count=120,
+            code_url="https://example.com/code",
+            data_url="https://example.com/data",
+            oa_status=OaStatus.OPEN,
+            confidence=0.9,
+            source="real-fixture",
+        )
+        EnrichmentRepository(session).save(
+            Enrichment(
+                paper_id=paper.id,
+                signals=signals,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        outcome = _process(session, paper=paper)
+        stored = EnrichmentRepository(session).get(paper.id)
+        assert stored is not None
+        assert stored.signals == signals
+        assert stored.signals.source == "real-fixture"
+        assert outcome.static.authority == 70.0
+        assert outcome.static.extra_value == 80.0
+
+
+def test_missing_abstract_opens_review_without_summary(migrated_engine):
+    paper = Paper(
+        id="proc-no-abstract",
+        title="Synthetic abstractless paper",
+        abstract=None,
+        status=PaperStatus.SCREENED,
+        first_seen_at=NOW,
+    )
+    relevance = {
+        "problem": 5,
+        "method": 4,
+        "domain": 5,
+        "actionability": 4,
+        "evidence": [
+            {"dimension": "problem", "quote": "Synthetic abstractless paper"},
+            {"dimension": "method", "quote": "Synthetic abstractless paper"},
+            {"dimension": "domain", "quote": "Synthetic abstractless paper"},
+            {"dimension": "actionability", "quote": "Synthetic abstractless paper"},
+        ],
+        "confidence": 0.86,
+        "boundary_note": None,
+    }
+    classification = json.loads(
+        (ROOT / "tests/fixtures/classifications/low_confidence.json").read_text()
+    )
+    classification["evidence"] = [{"quote": "Synthetic abstractless paper"}]
+    special = {"nominations": []}
+    responses = [
+        json.dumps(item, ensure_ascii=False) for item in (relevance, classification, special)
+    ]
+    gateway = LLMGateway(FakeLLM(responses, model_id="fake-llm"), clock=lambda: NOW)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        PaperRepository(session).add(paper)
+        for bucket in _buckets().values():
+            BucketRepository(session).add(bucket)
+        outcome = _process(session, paper=paper, gateway=gateway)
+        assert outcome.summary is None
+        assert "summary:missing_abstract" in outcome.reasons
+        assert outcome.status is PaperStatus.NEEDS_REVIEW
+        review = ReviewRepository(session).get(paper.id)
+        assert review is not None and review.status.value == "open"
+        assert review.payload_json["summary"] is None
+
+
+def test_process_accepts_optional_author_and_rigor_inputs(migrated_engine):
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        _setup(session)
+        outcome = _process(
+            session,
+            author_scores=(1.0, 0.5),
+            citation_percentile=0.8,
+            reproducibility=1.0,
+            rigor=1.0,
+        )
+        assert outcome.static.authority == 72.0
+        assert outcome.static.extra_value == 75.0
