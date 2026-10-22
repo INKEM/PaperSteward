@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "source": "fake",
+  "items": [
+    {
+      "title": "P7 Topic High Relevance",
+      "authors": ["P7 Author"],
+      "doi": "10.0000/p7-topic-high-r",
+      "published_at": "2026-10-21T08:00:00Z",
+      "abstract": "P7 synthetic long-document QA. Sparse retrieval and cross-layer reranking improve grounding. We report EM gains of 2-4 points, but offline clustering adds latency.",
+      "url": "https://example.invalid/p7/topic-high-r",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 10,
+      "provenance": {
+        "source": "fake",
+        "source_id": "p7-topic-high-r",
+        "url": "https://example.invalid/api/p7-topic-high-r",
+        "retrieved_at": "2026-11-01T08:00:00Z",
+        "raw_metadata": {"id": "p7-topic-high-r", "synthetic": true}
+      }
+    },
+    {
+      "title": "P7 Topic High Extra",
+      "authors": ["P7 Author"],
+      "doi": "10.0000/p7-topic-high-e",
+      "published_at": "2026-10-21T08:00:00Z",
+      "abstract": "P7 synthetic long-document QA. Sparse retrieval and cross-layer reranking improve grounding. We report EM gains of 2-4 points, but offline clustering adds latency.",
+      "url": "https://example.invalid/p7/topic-high-e",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 10,
+      "provenance": {
+        "source": "fake",
+        "source_id": "p7-topic-high-e",
+        "url": "https://example.invalid/api/p7-topic-high-e",
+        "retrieved_at": "2026-11-01T08:00:00Z",
+        "raw_metadata": {"id": "p7-topic-high-e", "synthetic": true}
+      }
+    },
+    {
+      "title": "P7 Special Shelf One",
+      "authors": ["P7 Author"],
+      "doi": "10.0000/p7-special-1",
+      "published_at": "2026-10-21T08:00:00Z",
+      "abstract": "P7 synthetic survey. This survey compares retrieval and generation evaluation across problem, method, and evaluation layers. Graph gating may transfer to long-document reranking with a falsifiable experiment. Foundational benchmark work established the task.",
+      "url": "https://example.invalid/p7/special-1",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 10,
+      "provenance": {
+        "source": "fake",
+        "source_id": "p7-special-1",
+        "url": "https://example.invalid/api/p7-special-1",
+        "retrieved_at": "2026-11-01T08:00:00Z",
+        "raw_metadata": {"id": "p7-special-1", "synthetic": true}
+      }
+    },
+    {
+      "title": "P7 Special Shelf Two",
+      "authors": ["P7 Author"],
+      "doi": "10.0000/p7-special-2",
+      "published_at": "2026-10-21T08:00:00Z",
+      "abstract": "P7 synthetic survey. This survey compares retrieval and generation evaluation across problem, method, and evaluation layers. Graph gating may transfer to long-document reranking with a falsifiable experiment. Foundational benchmark work established the task.",
+      "url": "https://example.invalid/p7/special-2",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 10,
+      "provenance": {
+        "source": "fake",
+        "source_id": "p7-special-2",
+        "url": "https://example.invalid/api/p7-special-2",
+        "retrieved_at": "2026-11-01T08:00:00Z",
+        "raw_metadata": {"id": "p7-special-2", "synthetic": true}
+      }
+    },
+    {
+      "title": "P7 Special Shelf Three",
+      "authors": ["P7 Author"],
+      "doi": "10.0000/p7-special-3",
+      "published_at": "2026-10-21T08:00:00Z",
+      "abstract": "P7 synthetic survey. This survey compares retrieval and generation evaluation across problem, method, and evaluation layers. Graph gating may transfer to long-document reranking with a falsifiable experiment. Foundational benchmark work established the task.",
+      "url": "https://example.invalid/p7/special-3",
+      "oa_status": "open",
+      "language": "en",
+      "document_type": "article",
+      "citation_count": 10,
+      "provenance": {
+        "source": "fake",
+        "source_id": "p7-special-3",
+        "url": "https://example.invalid/api/p7-special-3",
+        "retrieved_at": "2026-11-01T08:00:00Z",
+        "raw_metadata": {"id": "p7-special-3", "synthetic": true}
+      }
+    }
+  ]
+}

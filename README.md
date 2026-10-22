@@ -2,23 +2,38 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P6 日报推送、阅读反馈与归档（S1–S7 本地实现、Docker/CI 通过；独立验收未通过，F1/F2 返工已实施并通过本地阶段门，独立复验待执行）**。
-P0–P5已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列。
-P6新增容量/多样性日报、文件/SMTP幂等投递、阅读反馈、不可变归档/导出、本地HTMX页面
-和周度U任务。迁移head为0010，无新增Python依赖；HTMX固定本地分发。
-PR #8 已合并到 main；独立验收发现周任务漏 PUSHED 与二次 preflight 假 uncertain，
-返工已修复并补充回归；独立复验通过前不创建 P6 tag、不宣称 Alpha 通过，也不开始 P7。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S6 本地实现完成）**。
+P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
+日报/投递/阅读反馈/归档。P7新增特殊桶提名/档位/配额/轮换、特殊桶只读视图、组件级
+自定义排序预设、全局权重影响预览/版本/确认/按日激活，以及特殊桶提升回主题桶；
+迁移head为0014，无新增Python依赖。P7独立验收/tag与Beta发布尚未完成。
+P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
 
 ```bash
+.venv/bin/papersteward shelf review
+.venv/bin/papersteward shelf accept p001 --by local-user --note "确认值得读"
+.venv/bin/papersteward shelf assess p001 --json
+.venv/bin/papersteward shelf tier p001 --tier high --by local-user --note "人工确认"
+.venv/bin/papersteward shelf plan --date 2026-10-22 --json
+.venv/bin/papersteward shelf list --kind distant --explain
+.venv/bin/papersteward shelf show p001 --json
+.venv/bin/papersteward shelf promote p001 --by local-user --note "回到主队列"
+.venv/bin/papersteward view preview --preset reproducible --date 2026-10-22
+.venv/bin/papersteward view save --name "my-repro" --weights R:35,E:40,F:15,A:10
+.venv/bin/papersteward config preview --set static.relevance=0.50 --set static.extra_value=0.30
+.venv/bin/papersteward config confirm <change_id> --by local-user --note "确认 Top-N 变化"
 .venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
 .venv/bin/papersteward done p001 --mode deep --score 4 --note "阅读反馈" --request-id read-p001
 .venv/bin/papersteward archive export --format bibtex --out out/archive.bib
 .venv/bin/papersteward jobs preference-weekly --json
 ```
 
-先完成初始化、process与审核。特殊归属桶排除P/rank，主队列只包含合格主题候选；
-页面从 `/ui/today` 开始，提供今日/队列/详情/归档。SMTP必须G4明确选择且CLI显式发送；
-阅读备注默认仅本地保存。操作见[日报与归档指南](docs/delivery-cli.md)、
+先完成初始化、process与审核。特殊归属桶排除P/rank，待审提名同样不会进入P快照；
+主队列只包含合格主题候选。页面从 `/ui/today` 开始，提供今日/队列/特殊桶/视图/详情/归档。
+SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存。
+操作见[日报与归档指南](docs/delivery-cli.md)、[特殊桶视图指南](docs/shelves.md)、
+[自定义排序视图指南](docs/views.md)、[权重治理指南](docs/config-governance.md)、
+[P7本地验收](docs/phases/P7-acceptance.md)、[P7阶段卡片](docs/phases/P7-shelves.md)、
 [P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
 [P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
 [P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
@@ -28,6 +43,22 @@ PR #8 已合并到 main；独立验收发现周任务漏 PUSHED 与二次 prefli
 
 ## 当前能力
 
+- `papersteward shelf review|accept|reject`：列出待审特殊桶提名，按人工决策归入
+  跨层综述/远邻领域/经典奠基或保留主题归属；待审提名不进入P快照；
+- `papersteward shelf assess|tier|plan`：五维 rubric 生成 high/medium/low 档位、
+  人工覆盖并保留历史；按 review 3 / distant 2 / classic 1 的周上限和每日两槽轮换
+  生成计划，低档/空桶/配额用尽不凑数；
+- `papersteward shelf promote`：把 shelved 特殊桶文献提升回主标签主题桶；校验
+  主队列 R 门槛，复用/重算静态快照，下一次日快照回到 P 排序，历史特殊档位不改；
+- `GET /shelves`、`GET /shelves/{kind}`、`GET /shelves/{kind}/{paper_id}` 与
+  `/ui/shelves`：只读展示三桶档位/理由/证据/桥接假设/覆盖层级/经典依据；
+  不返回 V/P/rank，空桶不占位，未评估项提示 `shelf assess`；
+- `papersteward view presets|preview|save|list|show|delete`、`GET/POST /views`、
+  `POST /views/preview` 与 `/ui/views`：R/A/E/F/H/U 组件权重自动归一化，内置
+  均衡/前沿/入门/复现预设；只重排当前合格队列，保存模板不改全局配置或 P 快照；
+- `papersteward config preview|confirm|changes|show` 与 `/config/scoring/*`：
+  全局权重 Top-N 影响预览、preview hash 复核、版本提升、显式确认、按生效日激活
+  与静态分重算；预览不写配置/快照，未确认不激活；
 - `GET/POST /digests`、阅读操作 `/papers/{id}/actions`、`GET /archive`及导出；
 - `/ui/today|queue|papers/{id}|archive`：本地HTMX阅读闭环，`POST /jobs/preference/weekly`：显式周任务；
 - `GET /queue`、`GET /scores/{id}/explain`、`POST /scores/snapshot`：日队列、分项解释与快照；
@@ -74,7 +105,7 @@ PR #8 已合并到 main；独立验收发现周任务漏 PUSHED 与二次 prefli
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
-  （head `0010`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
+  （head `0014`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、相关度、摘要、特殊桶提名、评分快照、事件（正反例校验）；

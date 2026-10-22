@@ -1,0 +1,102 @@
+{
+  "relevance": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4,
+    "evidence": [
+      {
+        "dimension": "problem",
+        "quote": "long-document QA"
+      },
+      {
+        "dimension": "method",
+        "quote": "cross-layer attention reranking"
+      },
+      {
+        "dimension": "domain",
+        "quote": "long-document QA"
+      },
+      {
+        "dimension": "actionability",
+        "quote": "improve grounding"
+      }
+    ],
+    "confidence": 0.86,
+    "boundary_note": "Synthetic offline rubric fixture."
+  },
+  "summary": {
+    "summary_100": "针对长文档问答提出层次化检索与跨段重排；先段落聚类召回，再用跨层注意力重排；三个基准 EM 提升 2–4 点，但离线聚类带来较高延迟。",
+    "what": "长文档问答的检索与重排",
+    "how": "段落聚类召回 + 跨层注意力重排",
+    "finding": "三个基准 EM 提升 2–4 点",
+    "limitation": "离线聚类带来较高延迟",
+    "evidence": [
+      {
+        "field": "what",
+        "quote": "hierarchical retrieval for long-document QA"
+      },
+      {
+        "field": "how",
+        "quote": "Paragraph clustering recall and cross-layer attention reranking"
+      },
+      {
+        "field": "finding",
+        "quote": "improves EM by 2–4 points"
+      },
+      {
+        "field": "limitation",
+        "quote": "offline clustering adds latency"
+      }
+    ]
+  },
+  "classification": {
+    "primary_tag": "T02",
+    "primary_confidence": 0.9,
+    "runner_up_tag": "T01",
+    "runner_up_confidence": 0.4,
+    "secondary_tags": [],
+    "special_candidates": [],
+    "evidence": [
+      {
+        "quote": "cross-layer attention reranking"
+      }
+    ],
+    "boundary_note": null
+  },
+  "special_nomination": {
+    "nominations": [
+      {
+        "bucket": "review",
+        "confidence": 0.82,
+        "reason": "系统比较检索与重排两个层级，并给出可核对的方法证据。",
+        "evidence": [
+          {
+            "quote": "Paragraph clustering recall and cross-layer attention"
+          }
+        ],
+        "review_layers": ["method", "evaluation"],
+        "classic_basis": [],
+        "bridge_memo": null
+      },
+      {
+        "bucket": "distant",
+        "confidence": 0.7,
+        "reason": "跨层注意力门控与长文档跨段依赖存在可检验的结构相似性。",
+        "evidence": [
+          {
+            "quote": "cross-layer attention reranking"
+          }
+        ],
+        "review_layers": [],
+        "classic_basis": [],
+        "bridge_memo": {
+          "source_mechanism": "跨层注意力门控缓解长文档信息稀释。",
+          "shared_structure": "跨段依赖可视为稀疏图上的消息传递。",
+          "transfer_experiment": "在长文档重排器中比较门控与无门控的跨段召回和延迟。",
+          "falsification_signal": "若提升只来自参数量增加，则假设不成立。"
+        }
+      }
+    ]
+  }
+}

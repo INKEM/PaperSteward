@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from papersteward.core.enums import (
+    VIEW_COMPONENT_ORDER,
     AssignedBy,
     BucketRole,
     BucketType,
@@ -31,7 +32,9 @@ from papersteward.core.enums import (
     ReviewStatus,
     RunStatus,
     ScoreTier,
+    ScoringChangeStatus,
     SpecialBucketKind,
+    SpecialNominationStatus,
     SummaryValidationStatus,
     TagLevel,
     TagRole,
@@ -220,7 +223,7 @@ class Tag:
 
 @dataclass(frozen=True, slots=True)
 class Bucket:
-    """主题桶或特殊桶；主题桶由主标签驱动，特殊桶由特殊归属规则驱动。"""
+    """主题桶或特殊桶；特殊桶的 ``quota`` 是每周上限，不是 KPI。"""
 
     id: str
     name: str
@@ -725,6 +728,200 @@ class ReviewItem:
 
 
 @dataclass(frozen=True, slots=True)
+class NominationEvidence:
+    """特殊桶提名的逐字证据；``valid`` 表示是否能在标题/摘要中核对到。"""
+
+    quote: str
+    valid: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "quote", _require_text(self.quote, "special_nomination.evidence.quote")
+        )
+        if not isinstance(self.valid, bool):
+            raise DomainValidationError("special_nomination.evidence.valid", "必须是布尔值")
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialNominationRecord:
+    """待审核/已决策的特殊桶提名；每篇文献每个特殊类型一行。"""
+
+    id: str
+    paper_id: str
+    kind: SpecialBucketKind
+    status: SpecialNominationStatus
+    confidence: float
+    reason: str
+    evidence: tuple[NominationEvidence, ...]
+    review_layers: tuple[str, ...]
+    classic_basis: tuple[str, ...]
+    bridge_memo: Mapping[str, Any] | None
+    reasons: tuple[str, ...]
+    provenance: Provenance
+    nominated_at: datetime
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    decision_note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "special_nomination.id"))
+        object.__setattr__(
+            self, "paper_id", _require_text(self.paper_id, "special_nomination.paper_id")
+        )
+        if not isinstance(self.kind, SpecialBucketKind):
+            raise DomainValidationError("special_nomination.kind", "必须是 SpecialBucketKind")
+        if not isinstance(self.status, SpecialNominationStatus):
+            raise DomainValidationError(
+                "special_nomination.status", "必须是 SpecialNominationStatus"
+            )
+        object.__setattr__(
+            self, "confidence", _require_ratio(self.confidence, "special_nomination.confidence")
+        )
+        object.__setattr__(self, "reason", _require_text(self.reason, "special_nomination.reason"))
+        if not isinstance(self.evidence, tuple | list) or not self.evidence:
+            raise DomainValidationError("special_nomination.evidence", "至少需要一条证据")
+        evidence = tuple(self.evidence)
+        for item in evidence:
+            if not isinstance(item, NominationEvidence):
+                raise DomainValidationError(
+                    "special_nomination.evidence[]", "必须是 NominationEvidence"
+                )
+        object.__setattr__(self, "evidence", evidence)
+        for name in ("review_layers", "classic_basis", "reasons"):
+            object.__setattr__(
+                self,
+                name,
+                _require_text_tuple(getattr(self, name), f"special_nomination.{name}"),
+            )
+        if self.bridge_memo is not None:
+            if not isinstance(self.bridge_memo, Mapping):
+                raise DomainValidationError(
+                    "special_nomination.bridge_memo", "必须是 JSON 对象或 null"
+                )
+            object.__setattr__(self, "bridge_memo", dict(self.bridge_memo))
+        if not isinstance(self.provenance, Provenance):
+            raise DomainValidationError("special_nomination.provenance", "必须是 Provenance")
+        object.__setattr__(
+            self,
+            "nominated_at",
+            _require_aware(self.nominated_at, "special_nomination.nominated_at"),
+        )
+        decided = (self.decided_at, self.decided_by)
+        if self.status is SpecialNominationStatus.PENDING:
+            if any(value is not None for value in decided):
+                raise DomainValidationError(
+                    "special_nomination.decided", "待审提名不能有决策时间/决策人"
+                )
+        else:
+            if any(value is None for value in decided):
+                raise DomainValidationError(
+                    "special_nomination.decided", "已决策提名必须记录时间和决策人"
+                )
+            assert self.decided_at is not None
+            object.__setattr__(
+                self,
+                "decided_at",
+                _require_aware(self.decided_at, "special_nomination.decided_at"),
+            )
+            object.__setattr__(
+                self,
+                "decided_by",
+                _require_text(self.decided_by, "special_nomination.decided_by"),
+            )
+        object.__setattr__(
+            self, "decision_note", _optional_text(self.decision_note, "special_nomination.note")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialTierSnapshot:
+    """特殊桶档位评估/人工覆盖的追加写历史；最新一条为当前档位。
+
+    ``value`` 是内部 V，只用于分档与审计，不是 P；展示层不得把它当优先级。
+    """
+
+    id: str
+    paper_id: str
+    kind: SpecialBucketKind
+    value: float
+    tier: ScoreTier
+    dimensions: Mapping[str, float]
+    weights: Mapping[str, float]
+    reasons: tuple[str, ...]
+    explanation: tuple[str, ...]
+    evidence: tuple[NominationEvidence, ...]
+    breakdown_json: Mapping[str, Any]
+    rubric_version: str
+    assigned_by: AssignedBy
+    created_at: datetime
+    nomination_id: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "special_tier.id"))
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "special_tier.paper_id"))
+        if not isinstance(self.kind, SpecialBucketKind):
+            raise DomainValidationError("special_tier.kind", "必须是 SpecialBucketKind")
+        object.__setattr__(self, "value", _require_score(self.value, "special_tier.value"))
+        if not isinstance(self.tier, ScoreTier):
+            raise DomainValidationError("special_tier.tier", "必须是 ScoreTier")
+        if not isinstance(self.dimensions, Mapping) or not self.dimensions:
+            raise DomainValidationError("special_tier.dimensions", "必须是非空 JSON 对象")
+        if not isinstance(self.weights, Mapping) or not self.weights:
+            raise DomainValidationError("special_tier.weights", "必须是非空 JSON 对象")
+        dimensions = dict(self.dimensions)
+        weights = dict(self.weights)
+        if set(dimensions) != set(weights):
+            raise DomainValidationError("special_tier.dimensions", "维度与权重键必须一致")
+        for name, value in dimensions.items():
+            if not isinstance(name, str) or not name.strip():
+                raise DomainValidationError("special_tier.dimensions", "维度名不能为空")
+            dimensions[name] = _require_score(value, f"special_tier.dimensions.{name}")
+        for name, value in weights.items():
+            weights[name] = _require_ratio(value, f"special_tier.weights.{name}")
+        if not math.isclose(math.fsum(weights.values()), 1.0, abs_tol=1e-6):
+            raise DomainValidationError("special_tier.weights", "权重之和必须为 1")
+        object.__setattr__(self, "dimensions", dimensions)
+        object.__setattr__(self, "weights", weights)
+        for name in ("reasons", "explanation"):
+            values = _require_text_tuple(getattr(self, name), f"special_tier.{name}")
+            if not values:
+                raise DomainValidationError(f"special_tier.{name}", "至少需要一条")
+            object.__setattr__(self, name, values)
+        if not isinstance(self.evidence, tuple | list) or not self.evidence:
+            raise DomainValidationError("special_tier.evidence", "至少需要一条证据")
+        evidence = tuple(self.evidence)
+        for item in evidence:
+            if not isinstance(item, NominationEvidence):
+                raise DomainValidationError("special_tier.evidence[]", "必须是 NominationEvidence")
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(
+            self,
+            "breakdown_json",
+            _require_mapping(self.breakdown_json, "special_tier.breakdown_json"),
+        )
+        object.__setattr__(
+            self,
+            "rubric_version",
+            _require_text(self.rubric_version, "special_tier.rubric_version"),
+        )
+        if not isinstance(self.assigned_by, AssignedBy):
+            raise DomainValidationError("special_tier.assigned_by", "必须是 AssignedBy")
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "special_tier.created_at")
+        )
+        object.__setattr__(
+            self,
+            "nomination_id",
+            _optional_text(self.nomination_id, "special_tier.nomination_id"),
+        )
+        note = _optional_text(self.note, "special_tier.note")
+        if self.assigned_by is AssignedBy.USER and note is None:
+            raise DomainValidationError("special_tier.note", "人工改档必须记录备注")
+        object.__setattr__(self, "note", note)
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """追加写事件；``paper_id`` 为空表示文档/配置级事件。"""
 
@@ -805,6 +1002,123 @@ class Config:
             "value_json",
             _require_mapping(self.value_json, "config.value_json"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ViewConfig:
+    """用户保存的自定义排序视图；只影响当前排序，不改全局评分配置。"""
+
+    id: str
+    name: str
+    weights: Mapping[str, float]
+    created_at: datetime
+    preset: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "view.id"))
+        name = _require_text(self.name, "view.name")
+        if len(name) > 128:
+            raise DomainValidationError("view.name", "不能超过 128 个字符")
+        object.__setattr__(self, "name", name)
+        if not isinstance(self.weights, Mapping) or set(self.weights) != set(VIEW_COMPONENT_ORDER):
+            raise DomainValidationError(
+                "view.weights", "必须包含 " + ", ".join(VIEW_COMPONENT_ORDER)
+            )
+        weights = {
+            key: _require_ratio(self.weights[key], f"view.weights.{key}")
+            for key in VIEW_COMPONENT_ORDER
+        }
+        if not any(value > 0 for value in weights.values()):
+            raise DomainValidationError("view.weights", "至少需要一个正权重")
+        if not math.isclose(math.fsum(weights.values()), 1.0, abs_tol=1e-6):
+            raise DomainValidationError("view.weights", "权重之和必须为 1")
+        object.__setattr__(self, "weights", weights)
+        preset = _optional_text(self.preset, "view.preset")
+        if preset is not None and len(preset) > 32:
+            raise DomainValidationError("view.preset", "不能超过 32 个字符")
+        object.__setattr__(self, "preset", preset)
+        description = _optional_text(self.description, "view.description")
+        if description is not None and len(description) > 2000:
+            raise DomainValidationError("view.description", "不能超过 2000 个字符")
+        object.__setattr__(self, "description", description)
+        object.__setattr__(self, "created_at", _require_aware(self.created_at, "view.created_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringChange:
+    """全局权重变更的预览/确认记录；只有 confirmed 会激活新配置版本。"""
+
+    id: str
+    status: ScoringChangeStatus
+    base_version: str
+    config_version: str
+    preview_day: date
+    effective_on: date
+    proposed_json: Mapping[str, Any]
+    preview_json: Mapping[str, Any]
+    preview_hash: str
+    created_at: datetime
+    confirmed_at: datetime | None = None
+    confirmed_by: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "scoring_change.id"))
+        if not isinstance(self.status, ScoringChangeStatus):
+            raise DomainValidationError("scoring_change.status", "必须是 ScoringChangeStatus")
+        base = _require_text(self.base_version, "scoring_change.base_version")
+        target = _require_text(self.config_version, "scoring_change.config_version")
+        if base == target:
+            raise DomainValidationError("scoring_change.config_version", "必须提升版本号")
+        object.__setattr__(self, "base_version", base)
+        object.__setattr__(self, "config_version", target)
+        if isinstance(self.preview_day, datetime) or not isinstance(self.preview_day, date):
+            raise DomainValidationError("scoring_change.preview_day", "必须是 date")
+        if isinstance(self.effective_on, datetime) or not isinstance(self.effective_on, date):
+            raise DomainValidationError("scoring_change.effective_on", "必须是 date")
+        if self.effective_on <= self.preview_day:
+            raise DomainValidationError("scoring_change.effective_on", "必须晚于预览日")
+        object.__setattr__(
+            self,
+            "proposed_json",
+            _require_mapping(self.proposed_json, "scoring_change.proposed_json"),
+        )
+        object.__setattr__(
+            self,
+            "preview_json",
+            _require_mapping(self.preview_json, "scoring_change.preview_json"),
+        )
+        object.__setattr__(
+            self,
+            "preview_hash",
+            _require_hash(self.preview_hash, "scoring_change.preview_hash"),
+        )
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "scoring_change.created_at")
+        )
+        if self.status is ScoringChangeStatus.PREVIEWED:
+            if any(
+                value is not None for value in (self.confirmed_at, self.confirmed_by, self.note)
+            ):
+                raise DomainValidationError("scoring_change.confirmed", "未确认变更不能有确认字段")
+        else:
+            if self.confirmed_at is None or self.confirmed_by is None:
+                raise DomainValidationError(
+                    "scoring_change.confirmed", "已确认变更必须记录时间和确认人"
+                )
+            assert self.confirmed_at is not None
+            object.__setattr__(
+                self,
+                "confirmed_at",
+                _require_aware(self.confirmed_at, "scoring_change.confirmed_at"),
+            )
+            object.__setattr__(
+                self,
+                "confirmed_by",
+                _require_text(self.confirmed_by, "scoring_change.confirmed_by"),
+            )
+        object.__setattr__(self, "note", _optional_text(self.note, "scoring_change.note"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -911,6 +1225,7 @@ __all__ = [
     "Enrichment",
     "EnrichmentSignals",
     "Event",
+    "NominationEvidence",
     "Paper",
     "PaperBucket",
     "PaperTag",
@@ -921,9 +1236,14 @@ __all__ = [
     "ReviewItem",
     "Run",
     "ScoreSnapshot",
+    "ScoringChange",
+    "SpecialNominationRecord",
+    "SpecialTierSnapshot",
     "StaticScoreSnapshot",
     "Summary",
     "Tag",
     "Taxonomy",
+    "VIEW_COMPONENT_ORDER",
+    "ViewConfig",
     "utc_now",
 ]

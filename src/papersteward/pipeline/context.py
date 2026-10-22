@@ -1,6 +1,6 @@
 """只消费初始化已确认的精确版本；复核前序证据，拒绝漂移。"""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,11 +16,20 @@ from papersteward.scoring.config import ScoringConfig, validate_scoring_config
 from papersteward.sources.queries import selected_profile
 from papersteward.storage.models import EventRow
 from papersteward.storage.onboarding import ensure_active
-from papersteward.storage.repositories import ConfigRepository, TaxonomyRepository
+from papersteward.storage.repositories import (
+    ConfigRepository,
+    ScoringChangeRepository,
+    TaxonomyRepository,
+)
 
 
 def bound_context(
-    session: Session, now: datetime, *, action: str = "ingest", enforce_schedule: bool = True
+    session: Session,
+    now: datetime,
+    *,
+    action: str = "ingest",
+    enforce_schedule: bool = True,
+    day: date | None = None,
 ) -> tuple[ResearchProfile, dict[str, Any]]:
     ensure_active(session, action=action)
     if now.tzinfo is None or now.utcoffset() is None:
@@ -46,21 +55,31 @@ def bound_context(
         runtime_config = ConfigRepository(session).get(
             "onboarding_runtime", evidence["runtime_version"]
         )
-        scoring_config = ConfigRepository(session).get("scoring", evidence["scoring_version"])
+        g4_scoring = ConfigRepository(session).get("scoring", evidence["scoring_version"])
         if (
             taxonomy is None
             or taxonomy.status is not DocumentStatus.CONFIRMED
             or runtime_config is None
-            or scoring_config is None
+            or g4_scoring is None
             or view["report"] != evidence["report"]
             or view["report_hash"] != evidence["report_hash"]
             or view["feedback_hash"] != evidence["feedback_hash"]
             or dict(runtime_config.value_json) != view["report"]["parameters"]
-            or dict(scoring_config.value_json) != view["report"]["scoring"]
+            or dict(g4_scoring.value_json) != view["report"]["scoring"]
         ):
             raise InvariantViolation("onboarding.binding", "选定版本或确认依据已漂移")
-        validate_scoring_config(ScoringConfig.model_validate(scoring_config.value_json))
         runtime = RuntimeParameters.model_validate(runtime_config.value_json)
+        target_day = day or now.astimezone(ZoneInfo(runtime.timezone)).date()
+        activation = ScoringChangeRepository(session).active_for(target_day)
+        scoring_version = (
+            activation.config_version if activation is not None else g4_scoring.version
+        )
+        scoring_config = ConfigRepository(session).get("scoring", scoring_version)
+        if scoring_config is None:
+            raise InvariantViolation(
+                "onboarding.binding", f"已激活的评分配置版本 {scoring_version} 不存在"
+            )
+        validate_scoring_config(ScoringConfig.model_validate(scoring_config.value_json))
         clock = now.astimezone(ZoneInfo(runtime.timezone)).strftime("%H:%M")
         start, end = runtime.quiet_start, runtime.quiet_end
         quiet = bool(
@@ -79,7 +98,9 @@ def bound_context(
             "taxonomy_version": taxonomy.version,
             "g4_event_id": g4.id,
             "runtime_version": runtime_config.version,
-            "scoring_version": scoring_config.version,
+            "scoring_version": scoring_version,
+            "base_scoring_version": g4_scoring.version,
+            "scoring_change_id": activation.id if activation is not None else None,
             "report_hash": view["report_hash"],
         }
     except (KeyError, TypeError) as exc:

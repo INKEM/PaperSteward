@@ -13,6 +13,7 @@ from papersteward.api.actions import router as actions_router
 from papersteward.api.archive import router as archive_router
 from papersteward.api.delivery import router as delivery_router
 from papersteward.api.errors import install_error_handlers
+from papersteward.api.governance import router as governance_router
 from papersteward.api.jobs import router as jobs_router
 from papersteward.api.middleware import RequestIdMiddleware
 from papersteward.api.onboarding import router as onboarding_router
@@ -20,6 +21,8 @@ from papersteward.api.pages import router as pages_router
 from papersteward.api.queue import router as queue_router
 from papersteward.api.review import router as review_router
 from papersteward.api.routes import router
+from papersteward.api.shelves import router as shelves_router
+from papersteward.api.views import router as views_router
 from papersteward.config import Settings, get_settings
 from papersteward.storage import create_db_engine, create_session_factory
 
@@ -56,6 +59,9 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(router)
     app.include_router(onboarding_router)
     app.include_router(review_router)
+    app.include_router(shelves_router)
+    app.include_router(views_router)
+    app.include_router(governance_router)
     app.include_router(queue_router)
     app.include_router(delivery_router)
     app.include_router(actions_router)

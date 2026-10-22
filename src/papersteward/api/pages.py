@@ -4,17 +4,17 @@ import json
 from datetime import date
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import utc_now
+from papersteward.core.entities import ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.delivery.actions import apply_action
@@ -22,9 +22,25 @@ from papersteward.delivery.archive import list_archives, read_archive
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
 from papersteward.delivery.service import create_digest
+from papersteward.delivery.shelf_view import (
+    ShelfItem,
+    ShelfPage,
+    ShelfSummary,
+    list_shelf,
+    parse_kind,
+    shelf_item_for_paper,
+    shelf_summaries,
+)
 from papersteward.errors import AppError, NotFoundError
 from papersteward.scoring.contracts import QueueItem
 from papersteward.scoring.queue import _context, explain_score, read_queue
+from papersteward.scoring.views import (
+    ViewPreview,
+    get_view_config,
+    list_presets,
+    list_view_configs,
+    preview_view,
+)
 from papersteward.storage.delivery import read_digest
 from papersteward.storage.repositories import PaperRepository, SummaryRepository
 
@@ -59,7 +75,8 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<script src="/ui/static/htmx.js" defer></script></head><body>'
         '<header><a class="brand" href="/ui/today">PaperSteward</a>'
         '<nav aria-label="主导航"><a href="/ui/today">今日</a>'
-        '<a href="/ui/queue">阅读队列</a><a href="/ui/archive">归档</a></nav></header>'
+        '<a href="/ui/queue">阅读队列</a><a href="/ui/shelves">特殊桶</a>'
+        '<a href="/ui/views">视图</a><a href="/ui/archive">归档</a></nav></header>'
         f"<main><h1>{escape(title)}</h1>{body}</main>"
         "<footer>阅读反馈保存在本地。备注不会发送到外部模型。</footer></body></html>",
         headers=HEADERS,
@@ -166,6 +183,155 @@ def _card(session: SessionDep, item: QueueItem) -> str:
     return body + "</article>"
 
 
+def _shelf_inner(item: ShelfItem) -> str:
+    tier_value = item.tier.tier.value if item.tier is not None else "unrated"
+    tier_label = item.tier.tier.value if item.tier is not None else "未评估"
+    body = (
+        f'<p><span class="tag tier-{tier_value}">{escape(tier_label)}</span> '
+        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(item.paper.status.value)}</p>"
+    )
+    meta = []
+    if item.paper.authors:
+        meta.append(", ".join(item.paper.authors[:3]))
+    if item.paper.venue:
+        meta.append(item.paper.venue)
+    if meta:
+        body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
+    if url := safe_url(item.paper.url):
+        body += f'<p><a class="source" rel="noreferrer" href="{escape(url)}">原文</a></p>'
+    if item.nomination is not None:
+        body += f"<p>{escape(item.nomination.reason)}</p>"
+    if item.needs_assessment:
+        body += '<p class="muted">尚未评估档位，请运行 papersteward shelf assess。</p>'
+    for evidence in item.evidence:
+        label = "有效证据" if evidence.valid else "未核对证据"
+        body += (
+            f'<blockquote><span class="muted">{label}</span> {escape(evidence.quote)}</blockquote>'
+        )
+    for line in item.tier.explanation if item.tier is not None else ():
+        body += f"<p>{escape(line)}</p>"
+    if item.nomination is not None and item.nomination.review_layers:
+        body += f"<p>覆盖层级：{escape(', '.join(item.nomination.review_layers))}</p>"
+    if item.nomination is not None and item.nomination.classic_basis:
+        body += f"<p>经典依据：{escape(', '.join(item.nomination.classic_basis))}</p>"
+    if item.nomination is not None and item.nomination.bridge_memo is not None:
+        body += "<details open><summary>桥接假设</summary>"
+        for key, label in (
+            ("source_mechanism", "源机制"),
+            ("shared_structure", "共享结构"),
+            ("transfer_experiment", "迁移实验"),
+            ("falsification_signal", "证伪信号"),
+        ):
+            value = item.nomination.bridge_memo.get(key)
+            if isinstance(value, str) and value.strip():
+                body += f"<p><strong>{label}</strong>：{escape(value)}</p>"
+        body += "</details>"
+    if item.tier is not None and item.tier.note:
+        body += f'<p class="muted">改档备注：{escape(item.tier.note)}</p>'
+    return body
+
+
+def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | None) -> str:
+    body = (
+        f"<section><h2>{escape(summary.name)} "
+        f'<span class="tag">{escape(summary.kind.value)}</span></h2>'
+        f'<p class="muted">周上限 {summary.quota} · 共 {summary.total} 篇 · '
+        f"high {summary.high} / medium {summary.medium} / low {summary.low} / "
+        f"未评估 {summary.unrated}</p>"
+    )
+    for item in page.items:
+        body += (
+            f'<article><h2><a href="/ui/papers/{quote(item.paper.id, safe="")}">'
+            f"{escape(item.paper.title)}</a></h2>{_shelf_inner(item)}</article>"
+        )
+    if not page.items:
+        body += '<p class="muted">暂无内容（不占位）。</p>'
+    if next_url is not None:
+        body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
+    return body + "</section>"
+
+
+def _view_table(preview: ViewPreview) -> str:
+    headers = "".join(f"<th>{key}</th>" for key in ("R", "A", "E", "F", "H", "U"))
+    rows = ""
+    for item in preview.items:
+        moved = (
+            "—"
+            if item.delta_rank == 0
+            else (f"↑{item.delta_rank}" if item.delta_rank > 0 else f"↓{-item.delta_rank}")
+        )
+        cells = "".join(
+            f"<td>{item.components[key].score:.0f}</td>" for key in ("R", "A", "E", "F", "H", "U")
+        )
+        rows += (
+            f"<tr><td>{item.rank}</td><td>{item.default_rank}</td><td>{moved}</td>"
+            f'<td><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
+            f"{escape(item.title)}</a></td><td>{item.view_score:.1f}</td>{cells}</tr>"
+        )
+    if not rows:
+        return '<p class="muted">当前合格候选为空；先生成当日快照或检查日期。</p>'
+    return (
+        "<table><thead><tr><th>#</th><th>默认</th><th>变化</th><th>标题</th>"
+        f"<th>视图分</th>{headers}</tr></thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None) -> str:
+    date_part = f"&date={day.isoformat()}" if day is not None else ""
+    links = "<p>预设："
+    parts = []
+    for preset in list_presets():
+        parts.append(
+            f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
+        )
+    links += " · ".join(parts) + "</p>"
+    links += "<p>已保存："
+    if saved:
+        parts = []
+        for config in saved:
+            parts.append(
+                f'<a href="/ui/views?name={quote(config.name)}{date_part}">'
+                f"{escape(config.name)}</a>"
+            )
+        links += " · ".join(parts)
+    else:
+        links += '<span class="muted">尚无；用 papersteward view save 保存。</span>'
+    links += "</p>"
+    formula_text = preview.view.as_json()["formula"]
+    links += (
+        f'<p class="muted">当前视图：{escape(preview.view.label)} · '
+        f"公式：{escape(formula_text)} · 候选 {preview.candidate_total} 篇 · "
+        f"{preview.changed} 篇名次变化。视图只重排当前队列，不改变全局权重与快照。</p>"
+    )
+    return links
+
+
+@router.get("/views")
+def views(
+    session: SessionDep,
+    preset: str | None = None,
+    name: str | None = None,
+    score_date: Annotated[date | None, Query(alias="date")] = None,
+    limit: int = 20,
+) -> HTMLResponse:
+    try:
+        saved = list_view_configs(session)
+        view_id = None
+        if name is not None:
+            view_id = get_view_config(session, name).id
+        preview = preview_view(
+            session,
+            score_date or utc_now().date(),
+            preset=preset,
+            view_id=view_id,
+            limit=limit,
+        )
+        body = _view_links(preview, saved, score_date) + _view_table(preview)
+        return _page("自定义排序", body)
+    except (DomainError, AppError) as exc:
+        return _page("自定义排序", f'<p role="alert">{escape(exc.message)}</p>')
+
+
 @router.get("/static/htmx.js")
 def htmx() -> FileResponse:
     return FileResponse(STATIC / "htmx-2.0.11.min.js", media_type="application/javascript")
@@ -221,10 +387,40 @@ def queue(session: SessionDep, offset: int = 0) -> HTMLResponse:
         return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
 
 
+@router.get("/shelves")
+def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HTMLResponse:
+    try:
+        all_summaries = list(shelf_summaries(session))
+        summaries = all_summaries
+        if kind is not None:
+            parsed = parse_kind(kind)
+            summaries = [summary for summary in summaries if summary.kind is parsed]
+        links = '<p><a href="/ui/shelves">全部</a>'
+        for summary in all_summaries:
+            links += (
+                f' · <a href="/ui/shelves?kind={quote(summary.kind.value)}">'
+                f"{escape(summary.name)}（{summary.total}）</a>"
+            )
+        body = links + "</p>"
+        for summary in summaries:
+            page = list_shelf(
+                session,
+                summary.kind,
+                limit=50,
+                offset=offset if kind is not None else 0,
+            )
+            next_url = None
+            if kind is not None and offset + 50 < page.total:
+                next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
+            body += _shelf_section(summary, page, next_url=next_url)
+        return _page("特殊桶", body)
+    except (DomainError, AppError) as exc:
+        return _page("特殊桶", f'<p role="alert">{escape(exc.message)}</p>')
+
+
 @router.get("/papers/{paper_id}")
 def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
     try:
-        _day(session)
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
             raise NotFoundError("文献不存在")
@@ -240,6 +436,16 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
                 str(record.content.get("metadata", {}).get("title", paper_id)),
                 "<article>" + body + "</article>",
             )
+        shelf_item = shelf_item_for_paper(session, paper_id)
+        if shelf_item is not None:
+            summary = SummaryRepository(session).get(paper_id)
+            body = "<article><blockquote>"
+            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+            body += _shelf_inner(shelf_item)
+            if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
+                body += _form(paper_id, "done")
+            return _page(paper.title, body + "</article>")
+        _day(session)
         score = explain_score(session, paper_id, now=utc_now())
         summary = SummaryRepository(session).get(paper_id)
         body = "<article><blockquote>"

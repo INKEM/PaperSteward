@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from datetime import date
 from typing import cast
 
 from pydantic import ValidationError
@@ -14,7 +15,11 @@ from papersteward import __version__
 from papersteward.cli.archive import add_commands as add_archive_commands
 from papersteward.cli.archive import run as run_archive_command
 from papersteward.cli.config import (
+    run_config_changes,
+    run_config_confirm,
     run_config_import,
+    run_config_preview,
+    run_config_show,
     run_config_validate,
     run_schema_show,
     run_schema_validate,
@@ -45,6 +50,10 @@ from papersteward.cli.ranking import add_commands as add_ranking_commands
 from papersteward.cli.ranking import run as run_ranking
 from papersteward.cli.reading import add_commands as add_reading_commands
 from papersteward.cli.reading import run as run_reading
+from papersteward.cli.shelf import add_commands as add_shelf_commands
+from papersteward.cli.shelf import run as run_shelf
+from papersteward.cli.views import add_commands as add_view_commands
+from papersteward.cli.views import run as run_views
 from papersteward.config import format_settings_error
 
 
@@ -75,6 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
     add_onboarding_commands(subparsers)
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
+    add_shelf_commands(subparsers)
+    add_view_commands(subparsers)
     add_ranking_commands(subparsers)
     add_delivery_commands(subparsers)
     add_reading_commands(subparsers)
@@ -100,6 +111,30 @@ def _build_parser() -> argparse.ArgumentParser:
     config_import = config_subparsers.add_parser("import", help="写入配置版本并记录事件")
     config_import.add_argument("path", help="scoring.yaml 路径")
     config_import.add_argument("--at", help="更新时间（ISO 8601，带时区）")
+
+    config_preview = config_subparsers.add_parser("preview", help="预览全局权重影响")
+    source = config_preview.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", help="完整 scoring.yaml")
+    source.add_argument("--set", action="append", default=[], metavar="PATH=VALUE")
+    config_preview.add_argument("--version", help="新版本号；缺省自动提升")
+    config_preview.add_argument("--date", type=date.fromisoformat, help="预览队列日期")
+    config_preview.add_argument("--effective-on", type=date.fromisoformat)
+    config_preview.add_argument("--limit", type=int, default=20)
+    config_preview.add_argument("--json", action="store_true")
+
+    config_confirm = config_subparsers.add_parser("confirm", help="确认并激活权重变更")
+    config_confirm.add_argument("change_id")
+    config_confirm.add_argument("--by", required=True, help="确认人")
+    config_confirm.add_argument("--note")
+    config_confirm.add_argument("--json", action="store_true")
+
+    config_changes = config_subparsers.add_parser("changes", help="列出权重变更记录")
+    config_changes.add_argument("--limit", type=int, default=50)
+    config_changes.add_argument("--json", action="store_true")
+
+    config_show = config_subparsers.add_parser("show", help="查看权重变更记录")
+    config_show.add_argument("change_id")
+    config_show.add_argument("--json", action="store_true")
 
     schema = subparsers.add_parser("schema", help="Agent 输出 JSON schema")
     schema_subparsers = schema.add_subparsers(dest="schema_command", required=True)
@@ -203,6 +238,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_ranking(args)
         if args.command in {"process", "review"}:
             return run_processing(args)
+        if args.command == "shelf":
+            return run_shelf(args)
+        if args.command == "view":
+            return run_views(args)
         if args.command == "doctor":
             return _run_doctor()
         if args.command == "demo" and getattr(args, "demo_command", None) == "seed":
@@ -231,6 +270,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return run_config_validate(args.path, json_output=args.json)
             if args.config_command == "import":
                 return run_config_import(args.path, at=args.at)
+            if args.config_command == "preview":
+                return run_config_preview(
+                    path=args.file,
+                    overrides=args.set,
+                    version=args.version,
+                    at=args.date,
+                    effective_on=args.effective_on,
+                    limit=args.limit,
+                    json_output=args.json,
+                )
+            if args.config_command == "confirm":
+                return run_config_confirm(
+                    args.change_id, by=args.by, note=args.note, json_output=args.json
+                )
+            if args.config_command == "changes":
+                return run_config_changes(limit=args.limit, json_output=args.json)
+            if args.config_command == "show":
+                return run_config_show(args.change_id, json_output=args.json)
         if args.command == "schema":
             if args.schema_command == "show":
                 return run_schema_show(args.name)

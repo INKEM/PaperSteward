@@ -77,6 +77,14 @@ class SpecialBucketKind(StrEnum):
     CLASSIC = "classic"
 
 
+class SpecialNominationStatus(StrEnum):
+    """特殊桶提名生命周期；决策一经写入不再回到 pending。"""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 # 数值越大优先级越高：跨层综述 > 经典/奠基 > 远邻领域。
 SPECIAL_BUCKET_PRIORITY: Final[Mapping[SpecialBucketKind, int]] = MappingProxyType(
     {
@@ -85,6 +93,10 @@ SPECIAL_BUCKET_PRIORITY: Final[Mapping[SpecialBucketKind, int]] = MappingProxyTy
         SpecialBucketKind.DISTANT: 1,
     }
 )
+
+
+# 自定义排序视图的组件顺序；权重按此顺序展示/归一化。
+VIEW_COMPONENT_ORDER: Final = ("R", "A", "E", "F", "H", "U")
 
 
 class AssignedBy(StrEnum):
@@ -141,6 +153,13 @@ class ReviewResolution(StrEnum):
     RELABELED = "relabeled"
 
 
+class ScoringChangeStatus(StrEnum):
+    """全局权重变更的预览/确认状态；只有 confirmed 会影响后续快照。"""
+
+    PREVIEWED = "previewed"
+    CONFIRMED = "confirmed"
+
+
 class ScoreTier(StrEnum):
     """特殊桶内部档位；主题桶使用 P 排序，不使用档位。"""
 
@@ -194,6 +213,7 @@ class EventType(StrEnum):
     TAXONOMY_CONFIRMED = "taxonomy.confirmed"
     TAXONOMY_ARCHIVED = "taxonomy.archived"
     CONFIG_UPDATED = "config.updated"
+    CONFIG_ACTIVATED = "config.activated"
     DIGEST_CREATED = "digest.created"
     DELIVERY_RESERVED = "delivery.reserved"
     DELIVERY_SENT = "delivery.sent"
@@ -241,8 +261,11 @@ __all__ = [
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",
+    "ScoringChangeStatus",
     "SpecialBucketKind",
+    "SpecialNominationStatus",
     "SummaryValidationStatus",
     "TagLevel",
     "TagRole",
+    "VIEW_COMPONENT_ORDER",
 ]

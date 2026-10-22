@@ -16,6 +16,7 @@ from papersteward.core.entities import (
     Enrichment,
     EnrichmentSignals,
     Event,
+    NominationEvidence,
     Paper,
     PaperBucket,
     PaperTag,
@@ -25,10 +26,14 @@ from papersteward.core.entities import (
     ReviewItem,
     Run,
     ScoreSnapshot,
+    ScoringChange,
+    SpecialNominationRecord,
+    SpecialTierSnapshot,
     StaticScoreSnapshot,
     Summary,
     Tag,
     Taxonomy,
+    ViewConfig,
 )
 from papersteward.core.enums import (
     AssignedBy,
@@ -43,7 +48,9 @@ from papersteward.core.enums import (
     ReviewStatus,
     RunStatus,
     ScoreTier,
+    ScoringChangeStatus,
     SpecialBucketKind,
+    SpecialNominationStatus,
     SummaryValidationStatus,
     TagLevel,
     TagRole,
@@ -62,10 +69,14 @@ from papersteward.storage.models import (
     ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    ScoringChangeRow,
+    SpecialNominationRow,
+    SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
     SummaryRow,
     TagRow,
     TaxonomyRow,
+    ViewConfigRow,
 )
 
 
@@ -395,6 +406,162 @@ def review_item_from_row(row: ReviewItemRow) -> ReviewItem:
     )
 
 
+def special_nomination_to_row(item: SpecialNominationRecord) -> SpecialNominationRow:
+    return SpecialNominationRow(
+        id=item.id,
+        paper_id=item.paper_id,
+        kind=item.kind.value,
+        status=item.status.value,
+        confidence=item.confidence,
+        reason=item.reason,
+        evidence_json=[{"quote": entry.quote, "valid": entry.valid} for entry in item.evidence],
+        review_layers_json=list(item.review_layers),
+        classic_basis_json=list(item.classic_basis),
+        bridge_memo_json=dict(item.bridge_memo) if item.bridge_memo is not None else None,
+        reasons_json=list(item.reasons),
+        **_provenance_columns(item.provenance),
+        nominated_at=item.nominated_at,
+        decided_at=item.decided_at,
+        decided_by=item.decided_by,
+        decision_note=item.decision_note,
+    )
+
+
+def special_nomination_from_row(row: SpecialNominationRow) -> SpecialNominationRecord:
+    provenance = _provenance_from_columns(
+        row.provenance_model,
+        row.provenance_prompt_version,
+        row.provenance_generated_at,
+        row.provenance_input_hash,
+    )
+    if provenance is None:
+        raise ValueError("special_nomination.provenance columns must be non-null")
+    return SpecialNominationRecord(
+        id=row.id,
+        paper_id=row.paper_id,
+        kind=SpecialBucketKind(row.kind),
+        status=SpecialNominationStatus(row.status),
+        confidence=row.confidence,
+        reason=row.reason,
+        evidence=tuple(
+            NominationEvidence(quote=str(entry["quote"]), valid=bool(entry["valid"]))
+            for entry in (row.evidence_json or ())
+        ),
+        review_layers=tuple(row.review_layers_json or ()),
+        classic_basis=tuple(row.classic_basis_json or ()),
+        bridge_memo=dict(row.bridge_memo_json) if row.bridge_memo_json is not None else None,
+        reasons=tuple(row.reasons_json or ()),
+        provenance=provenance,
+        nominated_at=as_utc(row.nominated_at),
+        decided_at=optional_utc(row.decided_at),
+        decided_by=row.decided_by,
+        decision_note=row.decision_note,
+    )
+
+
+def special_tier_to_row(item: SpecialTierSnapshot) -> SpecialTierSnapshotRow:
+    return SpecialTierSnapshotRow(
+        id=item.id,
+        paper_id=item.paper_id,
+        nomination_id=item.nomination_id,
+        kind=item.kind.value,
+        value=item.value,
+        tier=item.tier.value,
+        dimensions_json=dict(item.dimensions),
+        weights_json=dict(item.weights),
+        reasons_json=list(item.reasons),
+        explanation_json=list(item.explanation),
+        evidence_json=[{"quote": entry.quote, "valid": entry.valid} for entry in item.evidence],
+        breakdown_json=dict(item.breakdown_json),
+        rubric_version=item.rubric_version,
+        assigned_by=item.assigned_by.value,
+        note=item.note,
+        created_at=item.created_at,
+    )
+
+
+def special_tier_from_row(row: SpecialTierSnapshotRow) -> SpecialTierSnapshot:
+    return SpecialTierSnapshot(
+        id=row.id,
+        paper_id=row.paper_id,
+        nomination_id=row.nomination_id,
+        kind=SpecialBucketKind(row.kind),
+        value=row.value,
+        tier=ScoreTier(row.tier),
+        dimensions={str(key): float(value) for key, value in (row.dimensions_json or {}).items()},
+        weights={str(key): float(value) for key, value in (row.weights_json or {}).items()},
+        reasons=tuple(row.reasons_json or ()),
+        explanation=tuple(row.explanation_json or ()),
+        evidence=tuple(
+            NominationEvidence(quote=str(entry["quote"]), valid=bool(entry["valid"]))
+            for entry in (row.evidence_json or ())
+        ),
+        breakdown_json=dict(row.breakdown_json or {}),
+        rubric_version=row.rubric_version,
+        assigned_by=AssignedBy(row.assigned_by),
+        note=row.note,
+        created_at=as_utc(row.created_at),
+    )
+
+
+def scoring_change_to_row(change: ScoringChange) -> ScoringChangeRow:
+    return ScoringChangeRow(
+        id=change.id,
+        status=change.status.value,
+        base_version=change.base_version,
+        config_version=change.config_version,
+        preview_day=change.preview_day,
+        effective_on=change.effective_on,
+        proposed_json=dict(change.proposed_json),
+        preview_json=dict(change.preview_json),
+        preview_hash=change.preview_hash,
+        created_at=change.created_at,
+        confirmed_at=change.confirmed_at,
+        confirmed_by=change.confirmed_by,
+        note=change.note,
+    )
+
+
+def scoring_change_from_row(row: ScoringChangeRow) -> ScoringChange:
+    return ScoringChange(
+        id=row.id,
+        status=ScoringChangeStatus(row.status),
+        base_version=row.base_version,
+        config_version=row.config_version,
+        preview_day=row.preview_day,
+        effective_on=row.effective_on,
+        proposed_json=dict(row.proposed_json or {}),
+        preview_json=dict(row.preview_json or {}),
+        preview_hash=row.preview_hash,
+        created_at=as_utc(row.created_at),
+        confirmed_at=optional_utc(row.confirmed_at),
+        confirmed_by=row.confirmed_by,
+        note=row.note,
+    )
+
+
+def view_config_to_row(view: ViewConfig) -> ViewConfigRow:
+    return ViewConfigRow(
+        id=view.id,
+        name=view.name,
+        weights_json=dict(view.weights),
+        preset=view.preset,
+        description=view.description,
+        created_at=view.created_at,
+    )
+
+
+def view_config_from_row(row: ViewConfigRow) -> ViewConfig:
+    return ViewConfig(
+        id=row.id,
+        name=row.name,
+        weights={str(key): float(value) for key, value in (row.weights_json or {}).items()},
+        preset=row.preset,
+        description=row.description,
+        created_at=as_utc(row.created_at),
+    )
+
+
 def event_to_row(event: Event) -> EventRow:
     return EventRow(
         id=event.id,
@@ -676,6 +843,12 @@ __all__ = [
     "run_to_row",
     "score_snapshot_from_row",
     "score_snapshot_to_row",
+    "scoring_change_from_row",
+    "scoring_change_to_row",
+    "special_nomination_from_row",
+    "special_nomination_to_row",
+    "special_tier_from_row",
+    "special_tier_to_row",
     "summary_from_row",
     "summary_to_row",
     "tag_from_row",
@@ -683,4 +856,6 @@ __all__ = [
     "tag_to_row",
     "taxonomy_from_row",
     "taxonomy_to_row",
+    "view_config_from_row",
+    "view_config_to_row",
 ]

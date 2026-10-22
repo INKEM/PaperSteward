@@ -49,6 +49,7 @@ from papersteward.storage.repositories import (
     PaperTagRepository,
     ReviewRepository,
     ScoreSnapshotRepository,
+    SpecialNominationRepository,
     StaticScoreSnapshotRepository,
     SummaryRepository,
     TaxonomyRepository,
@@ -59,8 +60,16 @@ ELIGIBLE = frozenset({PaperStatus.CLASSIFIED, PaperStatus.SCORED, PaperStatus.QU
 WEEKLY_ELIGIBLE = ELIGIBLE | {PaperStatus.PUSHED}
 
 
-def _context(session: Session, now: datetime, *, execution: bool = False) -> dict[str, Any]:
-    profile, binding = bound_context(session, now, action="queue", enforce_schedule=execution)
+def _context(
+    session: Session,
+    now: datetime,
+    *,
+    execution: bool = False,
+    day: date | None = None,
+) -> dict[str, Any]:
+    profile, binding = bound_context(
+        session, now, action="queue", enforce_schedule=execution, day=day
+    )
     config = read_scoring_config(session, version=binding["scoring_version"])
     runtime = ConfigRepository(session).get("onboarding_runtime", binding["runtime_version"])
     taxonomy = TaxonomyRepository(session).get(binding["taxonomy_id"], binding["taxonomy_version"])
@@ -92,6 +101,8 @@ def _eligibility(
     bucket = BucketRepository(session).get(filing[0].bucket_id) if len(filing) == 1 else None
     if bucket is not None and bucket.bucket_type is not BucketType.TOPIC:
         return ["special_bucket"], None, None
+    if SpecialNominationRepository(session).has_pending(paper.id):
+        reasons.append("pending_special_nomination")
     if paper.status not in eligible:
         reasons.append("ineligible_status:" + paper.status.value)
     assigned = PaperTagRepository(session).list_for_paper(paper.id)
@@ -385,7 +396,7 @@ def create_snapshots(
     """追加当日快照；周任务可传入 ``WEEKLY_ELIGIBLE`` 以覆盖已投递未读候选。"""
     natural_day(day)
     with _atomic(session):
-        ctx = _context(session, now, execution=True)
+        ctx = _context(session, now, execution=True, day=day)
         if day > now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date():
             raise InvariantViolation("score_date", "不能生成未来日快照")
         candidates = []
@@ -459,7 +470,7 @@ def read_queue(
     natural_day(day)
     if not 1 <= limit <= 200 or offset < 0:
         raise InvariantViolation("pagination", "limit须为1–200，offset非负")
-    ctx = _context(session, now)
+    ctx = _context(session, now, day=day)
     items = []
     for paper in PaperRepository(session).list():
         reasons, tag, static = _eligibility(session, paper, ctx, day)
@@ -496,13 +507,20 @@ def read_queue(
 def explain_score(
     session: Session, paper_id: str, *, now: datetime, day: date | None = None
 ) -> ScoreExplanation | Exclusion:
-    ctx = _context(session, now)
+    target_day = day or now.date()
+    ctx = _context(session, now, day=target_day)
     paper = PaperRepository(session).get(paper_id)
     if paper is None:
         raise NotFoundError("文献不存在")
-    reasons, _, _ = _eligibility(session, paper, ctx, day or now.date())
+    reasons, _, _ = _eligibility(session, paper, ctx, target_day)
     if "special_bucket" in reasons:
         return Exclusion(paper_id=paper_id, reasons=["special_bucket"])
+    if "pending_special_nomination" in reasons:
+        return Exclusion(
+            paper_id=paper_id,
+            reasons=["pending_special_nomination"],
+            excluded_from_priority=False,
+        )
     history = ScoreSnapshotRepository(session).history(paper_id)
     snapshot = next(
         (

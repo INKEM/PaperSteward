@@ -24,9 +24,13 @@ from papersteward.storage.repositories import (
     ReviewRepository,
     RunRepository,
     ScoreSnapshotRepository,
+    ScoringChangeRepository,
+    SpecialNominationRepository,
+    SpecialTierRepository,
     StaticScoreSnapshotRepository,
     SummaryRepository,
     TaxonomyRepository,
+    ViewConfigRepository,
 )
 
 __all__ = [
@@ -47,9 +51,13 @@ __all__ = [
     "RunRepository",
     "RunRow",
     "ScoreSnapshotRepository",
+    "ScoringChangeRepository",
+    "SpecialNominationRepository",
+    "SpecialTierRepository",
     "StaticScoreSnapshotRepository",
     "SummaryRepository",
     "TaxonomyRepository",
+    "ViewConfigRepository",
     "check_database",
     "create_db_engine",
     "create_session_factory",

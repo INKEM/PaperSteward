@@ -34,11 +34,15 @@ DOMAIN_TABLES = {
     "research_profile",
     "run",
     "score_snapshot",
+    "scoring_change",
+    "special_nomination",
+    "special_tier_snapshot",
     "static_score_snapshot",
     "review_item",
     "summary",
     "tag",
     "taxonomy",
+    "view_config",
 }
 
 
@@ -112,6 +116,68 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "resolution",
             "note",
         }
+        assert {column["name"] for column in inspector.get_columns("special_nomination")} == {
+            "id",
+            "paper_id",
+            "kind",
+            "status",
+            "confidence",
+            "reason",
+            "evidence_json",
+            "review_layers_json",
+            "classic_basis_json",
+            "bridge_memo_json",
+            "reasons_json",
+            "provenance_model",
+            "provenance_prompt_version",
+            "provenance_generated_at",
+            "provenance_input_hash",
+            "nominated_at",
+            "decided_at",
+            "decided_by",
+            "decision_note",
+        }
+        assert {column["name"] for column in inspector.get_columns("special_tier_snapshot")} == {
+            "id",
+            "paper_id",
+            "nomination_id",
+            "kind",
+            "value",
+            "tier",
+            "dimensions_json",
+            "weights_json",
+            "reasons_json",
+            "explanation_json",
+            "evidence_json",
+            "breakdown_json",
+            "rubric_version",
+            "assigned_by",
+            "note",
+            "created_at",
+        }
+        assert {column["name"] for column in inspector.get_columns("scoring_change")} == {
+            "id",
+            "status",
+            "base_version",
+            "config_version",
+            "preview_day",
+            "effective_on",
+            "proposed_json",
+            "preview_json",
+            "preview_hash",
+            "created_at",
+            "confirmed_at",
+            "confirmed_by",
+            "note",
+        }
+        assert {column["name"] for column in inspector.get_columns("view_config")} == {
+            "id",
+            "name",
+            "weights_json",
+            "preset",
+            "description",
+            "created_at",
+        }
         assert {column["name"] for column in inspector.get_columns("enrichment")} == {
             "paper_id",
             "teams_json",
@@ -140,7 +206,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0010"
+        assert current == "0014"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:

@@ -12,13 +12,21 @@
   classified→scored→queued。重复同日复用，不重复EMA；未来/倒序补算拒绝。
 - `GET /queue?date=2026-10-22&limit=50&offset=0` 返回 items/total/limit/offset，读取不写库。
 - `GET /scores/{paper_id}/explain?date=2026-10-22` 返回当日分项/权重/贡献/置信度/证据/
-  版本；省略日期读取最近日快照。特殊FILING桶只返回excluded_from_priority与原因，无P/rank。
+  版本；省略日期读取最近日快照。特殊FILING桶只返回excluded_from_priority与原因，无P/rank；
+  待审特殊桶提名返回 `pending_special_nomination` 且 `excluded_from_priority=false`。
+  已归入特殊桶的档位/配额/轮换见 `papersteward shelf assess|tier|plan`；档位 V 存于
+  `special_tier_snapshot`，只用于特殊桶内 high/medium/low，不是 P/rank。
+  特殊桶只读展示见 `GET /shelves`、`/ui/shelves` 与 [特殊桶视图指南](shelves.md)；
+  自定义排序只重排当前合格队列，见 [自定义排序视图指南](views.md)。
+  全局权重变更需先预览/确认，确认后按生效日换用新版本；见
+  [权重治理指南](config-governance.md)。
 - 尚无快照时队列为空，explain返回404；先执行snapshot。G4未完成返回409；非法日期/分页422。
 - CLI默认也输出可读缩进JSON，`--json`可用于脚本；失败返回非0且给出初始化/迁移提示。
 
-合格候选：classified/scored/queued、合法激活主标签与主题归属、无开放review、通过摘要、
-R≥max(55,选定门槛)、静态快照版本匹配G1/G2/G4。snoozed/rejected/done/archived与特殊归属
-不进入队列。特殊MEMBERSHIP徽章不排除主题文献。人工批准不会绕过未通过摘要。
+合格候选：classified/scored/queued、合法激活主标签与主题归属、无开放review、无待审
+特殊桶提名、通过摘要、R≥max(55,选定门槛)、静态快照版本匹配G1/G2/G4。
+snoozed/rejected/done/archived与特殊归属不进入队列；待审提名的拒绝/接受后，下一日快照
+才重新评估（同日快照不重写）。特殊MEMBERSHIP徽章不排除主题文献。人工批准不会绕过未通过摘要。
 主标签改动后若静态分未重算，会明确排除，避免沿用旧分类；静态重算仍走版本化确认流程。
 
 解释包含F/H窗口与份额、U周截止/覆盖率/收缩、EMA原值/±8限制/reset、配置与静态hash。

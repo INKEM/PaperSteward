@@ -11,7 +11,7 @@
   不再伪造 SMTP `uncertain`，SMTP 修正后同一预约可重试；同日快照不重写语义、日期
   生成表单、`paper.pushed` 的 `trigger=user_read` 命名和 URL userinfo 拒绝一并修复。
   返工新增 5 项回归，`make check` 944 passed / 4 deselected、integration 302 passed；
-  独立复验待执行。
+  独立复验通过，P6 可以关闭。
 
 - **P4 验收返工（F1–F5）**：process 复用已有 enrichment，不再用中性值覆盖来源数据；
   缺摘要/无法摘要转为 `needs_review` 并打开 review item，不使批次回滚；process CLI
@@ -21,6 +21,49 @@
   39743222329）均通过；独立复验通过，P4 可以关闭。
 
 ### Added
+
+- **P7-S6**：P7 最终 e2e 与特殊桶提升。真实 Uvicorn/CLI 链路新增 5 篇合成论文，
+  覆盖特殊桶 review/distant/classic、档位/桥接/经典依据、视图重排、权重预览/确认与
+  生效日队列；新增 `shelf promote`（特殊桶回主标签主题桶、R 门槛、静态复用/重算、
+  下一次日快照回到 P），并创建 `docs/phases/P7-acceptance.md` 本地验收记录。
+  无新迁移/依赖；`make check` 1010 passed、integration 331 passed、e2e 4 passed。
+  未独立验收、未打 P7 tag、不宣称 Beta。
+
+- **P7-S5**：全局权重治理。新增迁移 `0014` 的 `scoring_change`、Top-N 影响预览、
+  preview hash、版本自动提升、显式确认、按生效日激活与已有静态分重算；
+  `config preview|confirm|changes|show` CLI 与 `/config/scoring/*` API。
+  预览只写 previewed 记录，不写配置/静态快照；确认后生效日及之后使用新版本，
+  旧日快照不变。`config import` 仍不自动激活，自定义视图与全局配置隔离。
+  无新依赖；`make check` 1009 passed、integration 330 passed、mypy 131 源文件。
+
+- **P7-S4**：自定义排序视图。新增迁移 `0013` 的 `view_config`、四个内置预设
+  （balanced/frontier/beginner/reproducible）、R/A/E/F/H/U 权重归一化、当前合格
+  队列的只读重排与名次变化预览；`view presets|preview|save|list|show|delete` CLI、
+  `/views` API 与 `/ui/views` 页面。保存只写视图表，不改全局配置、不生成新 P/日快照。
+  非法/全零/未知权重拒绝；无新依赖；`make check` 1003 passed、integration 327 passed、
+  mypy 129 源文件。
+
+- **P7-S3**：特殊桶只读视图。新增 `/shelves`、`/shelves/{kind}`、
+  `/shelves/{kind}/{paper_id}` API，`shelf list|distant|classic|show` CLI 与
+  `/ui/shelves` 页面；展示档位、理由、逐字证据、review 覆盖层级、classic 依据、
+  四段 bridge memo 与未评估提示，空桶不占位。响应/页面不含 V/P/rank_score，
+  `excluded_from_priority=true`；读取不写库、不自动补评估。无迁移/新依赖；
+  `make check` 992 passed、integration 322 passed、mypy 126 源文件。
+
+- **P7-S2**：特殊桶五维档位 rubric（review/distant/classic 权重冻结）、V 阈值
+  high≥75/medium 50–74/low<50、确定性代理分档与人工覆盖历史；迁移 `0012` 新增
+  `special_tier_snapshot`。三个特殊桶默认周配额 3/2/1，新增每日最多两槽、
+  review→classic→distant 轮换、低档/空桶/配额用尽跳过的纯计划；`shelf accept`
+  同事务自动分档，新增 `shelf assess|tier|plan`。无新依赖；`make check` 984 passed、
+  integration 314 passed、mypy 124 源文件。
+
+- **P7-S1**：特殊桶提名持久化与人工审核。迁移 `0011` 新增 `special_nomination`
+  （逐字证据、review layers、classic basis、bridge memo、LLM 溯源与决策记录），
+  每篇每个特殊类型一行；`process` 落库提名但不再混入普通 `review_item`，新增
+  `papersteward shelf review|accept|reject`，接受时写特殊 Filing、转 `shelved`、
+  追加 `paper.bucket_moved`/`paper.shelved` 并作废其他待审提名，拒绝保留主题归属。
+  待审提名以 `pending_special_nomination` 排除P快照；档位/配额/轮换/视图/权重治理
+  未在本卡实现。`make check` 950 passed / 4 deselected，mypy 122 源文件。
 
 - **P6-S7**：显式周度U API/CLI任务、每周幂等Run报告、评分数据/覆盖率检查；复用P5
   算术，只给未读候选追加新日快照。偏好历史优先投影阅读时元数据/标签，不查询备注。

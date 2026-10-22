@@ -32,7 +32,7 @@ def _openalex_work(index: int) -> dict:
 def test_cli_fixture_serves_multiple_pages_in_order(
     client, migrated_engine, monkeypatch, tmp_path, capsys
 ):
-    activate(client)
+    activate(client, quiet_start=None, quiet_end=None)
     monkeypatch.setenv("PAPERSTEWARD_DATABASE_URL", str(migrated_engine.url))
     works = [_openalex_work(index) for index in range(101)]
     fixture = tmp_path / "openalex-pages.json"

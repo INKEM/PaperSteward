@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -31,9 +31,13 @@ from papersteward.core.entities import (
     ReviewItem,
     Run,
     ScoreSnapshot,
+    ScoringChange,
+    SpecialNominationRecord,
+    SpecialTierSnapshot,
     StaticScoreSnapshot,
     Summary,
     Taxonomy,
+    ViewConfig,
     utc_now,
 )
 from papersteward.core.enums import (
@@ -43,6 +47,9 @@ from papersteward.core.enums import (
     ReviewResolution,
     ReviewStatus,
     RunStatus,
+    ScoringChangeStatus,
+    SpecialBucketKind,
+    SpecialNominationStatus,
 )
 from papersteward.core.errors import InvariantViolation
 from papersteward.core.invariants import (
@@ -87,12 +94,20 @@ from papersteward.storage.mappers import (
     run_to_row,
     score_snapshot_from_row,
     score_snapshot_to_row,
+    scoring_change_from_row,
+    scoring_change_to_row,
+    special_nomination_from_row,
+    special_nomination_to_row,
+    special_tier_from_row,
+    special_tier_to_row,
     static_score_snapshot_from_row,
     static_score_snapshot_to_row,
     summary_from_row,
     summary_to_row,
     taxonomy_from_row,
     taxonomy_to_row,
+    view_config_from_row,
+    view_config_to_row,
 )
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
@@ -108,9 +123,13 @@ from papersteward.storage.models import (
     ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    ScoringChangeRow,
+    SpecialNominationRow,
+    SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
+    ViewConfigRow,
 )
 from papersteward.storage.onboarding import ensure_active
 
@@ -275,6 +294,18 @@ class PaperBucketRepository(_Repository):
             select(PaperBucketRow)
             .where(PaperBucketRow.paper_id == paper_id)
             .order_by(PaperBucketRow.role, PaperBucketRow.bucket_id)
+        )
+        return [paper_bucket_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def list_filings(self, bucket_id: str) -> list[PaperBucket]:
+        """某个桶的归属文献；读取特殊桶视图用。"""
+        statement = (
+            select(PaperBucketRow)
+            .where(
+                PaperBucketRow.bucket_id == bucket_id,
+                PaperBucketRow.role == BucketRole.FILING.value,
+            )
+            .order_by(PaperBucketRow.paper_id)
         )
         return [paper_bucket_from_row(row) for row in self._session.scalars(statement).all()]
 
@@ -525,6 +556,183 @@ class ReviewRepository(_Repository):
         return item
 
 
+class SpecialNominationRepository(_Repository):
+    """特殊桶提名与人工决策。
+
+    ``upsert`` 只刷新待审提名；已接受/已拒绝的决策不会被 process 重跑覆盖。
+    """
+
+    def get(self, nomination_id: str) -> SpecialNominationRecord | None:
+        row = self._session.get(SpecialNominationRow, nomination_id)
+        return None if row is None else special_nomination_from_row(row)
+
+    def list_for_paper(self, paper_id: str) -> list[SpecialNominationRecord]:
+        statement = (
+            select(SpecialNominationRow)
+            .where(SpecialNominationRow.paper_id == paper_id)
+            .order_by(SpecialNominationRow.kind, SpecialNominationRow.id)
+        )
+        return [special_nomination_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def list_pending(
+        self,
+        *,
+        kind: SpecialBucketKind | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[SpecialNominationRecord], int]:
+        statement = select(SpecialNominationRow).where(
+            SpecialNominationRow.status == SpecialNominationStatus.PENDING.value
+        )
+        if kind is not None:
+            statement = statement.where(SpecialNominationRow.kind == kind.value)
+        statement = (
+            statement.order_by(
+                SpecialNominationRow.nominated_at.desc(),
+                SpecialNominationRow.paper_id,
+                SpecialNominationRow.kind,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        items = [special_nomination_from_row(row) for row in self._session.scalars(statement).all()]
+        count = (
+            select(func.count())
+            .select_from(SpecialNominationRow)
+            .where(SpecialNominationRow.status == SpecialNominationStatus.PENDING.value)
+        )
+        if kind is not None:
+            count = count.where(SpecialNominationRow.kind == kind.value)
+        return items, self._session.scalar(count) or 0
+
+    def has_pending(self, paper_id: str) -> bool:
+        statement = (
+            select(SpecialNominationRow.id)
+            .where(
+                SpecialNominationRow.paper_id == paper_id,
+                SpecialNominationRow.status == SpecialNominationStatus.PENDING.value,
+            )
+            .limit(1)
+        )
+        return self._session.scalar(statement) is not None
+
+    def upsert(self, item: SpecialNominationRecord) -> SpecialNominationRecord:
+        """按 paper_id+kind 幂等写入；已决策行保持原状。"""
+        row = self._session.scalar(
+            select(SpecialNominationRow).where(
+                SpecialNominationRow.paper_id == item.paper_id,
+                SpecialNominationRow.kind == item.kind.value,
+            )
+        )
+        if row is None:
+            self._session.add(special_nomination_to_row(item))
+            self._flush()
+            return item
+        existing = special_nomination_from_row(row)
+        if existing.status is not SpecialNominationStatus.PENDING:
+            return existing
+        mapped = special_nomination_to_row(item)
+        for field in (
+            "confidence",
+            "reason",
+            "evidence_json",
+            "review_layers_json",
+            "classic_basis_json",
+            "bridge_memo_json",
+            "reasons_json",
+            "provenance_model",
+            "provenance_prompt_version",
+            "provenance_generated_at",
+            "provenance_input_hash",
+            "nominated_at",
+        ):
+            setattr(row, field, getattr(mapped, field))
+        self._flush()
+        return special_nomination_from_row(row)
+
+    def decide(
+        self,
+        nomination_id: str,
+        *,
+        status: SpecialNominationStatus,
+        decided_by: str,
+        note: str | None,
+        now: datetime,
+    ) -> SpecialNominationRecord:
+        if status is SpecialNominationStatus.PENDING:
+            raise InvariantViolation("special_nomination.status", "决策不能回到待审")
+        row = self._session.get(SpecialNominationRow, nomination_id)
+        if row is None:
+            raise InvariantViolation("special_nomination", "提名不存在")
+        if row.status != SpecialNominationStatus.PENDING.value:
+            raise InvariantViolation("special_nomination.status", "提名已决策")
+        row.status = status.value
+        row.decided_at = now
+        row.decided_by = decided_by
+        row.decision_note = note
+        self._flush()
+        return special_nomination_from_row(row)
+
+
+class SpecialTierRepository(_Repository):
+    """特殊桶档位追加写历史；读取最新/历史，不提供 update/delete。"""
+
+    def append(self, snapshot: SpecialTierSnapshot) -> SpecialTierSnapshot:
+        self._session.add(special_tier_to_row(snapshot))
+        self._flush()
+        return snapshot
+
+    def latest(
+        self,
+        paper_id: str,
+        *,
+        kind: SpecialBucketKind | None = None,
+        as_of: datetime | None = None,
+    ) -> SpecialTierSnapshot | None:
+        statement = select(SpecialTierSnapshotRow).where(
+            SpecialTierSnapshotRow.paper_id == paper_id
+        )
+        if kind is not None:
+            statement = statement.where(SpecialTierSnapshotRow.kind == kind.value)
+        if as_of is not None:
+            statement = statement.where(SpecialTierSnapshotRow.created_at <= as_of)
+        statement = statement.order_by(
+            SpecialTierSnapshotRow.created_at.desc(), SpecialTierSnapshotRow.id.desc()
+        ).limit(1)
+        row = self._session.scalar(statement)
+        return None if row is None else special_tier_from_row(row)
+
+    def history(self, paper_id: str) -> list[SpecialTierSnapshot]:
+        statement = (
+            select(SpecialTierSnapshotRow)
+            .where(SpecialTierSnapshotRow.paper_id == paper_id)
+            .order_by(
+                SpecialTierSnapshotRow.created_at,
+                SpecialTierSnapshotRow.id,
+            )
+        )
+        return [special_tier_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def latest_all(self, *, as_of: datetime | None = None) -> list[SpecialTierSnapshot]:
+        """每篇文献最新一条；用于轮换计划，避免跨桶比较。"""
+        statement = select(SpecialTierSnapshotRow)
+        if as_of is not None:
+            statement = statement.where(SpecialTierSnapshotRow.created_at <= as_of)
+        statement = statement.order_by(
+            SpecialTierSnapshotRow.paper_id,
+            SpecialTierSnapshotRow.created_at.desc(),
+            SpecialTierSnapshotRow.id.desc(),
+        )
+        seen: set[str] = set()
+        result: list[SpecialTierSnapshot] = []
+        for row in self._session.scalars(statement).all():
+            if row.paper_id in seen:
+                continue
+            seen.add(row.paper_id)
+            result.append(special_tier_from_row(row))
+        return result
+
+
 class EventRepository(_Repository):
     """只追加的事件日志。"""
 
@@ -605,6 +813,112 @@ class ConfigRepository(_Repository):
             .order_by(ConfigRow.updated_at, ConfigRow.version)
         )
         return [config_from_row(row) for row in self._session.scalars(statement).all()]
+
+
+class ScoringChangeRepository(_Repository):
+    """全局权重变更预览/确认；确认行按 effective_on 激活后续快照配置。"""
+
+    def add(self, change: ScoringChange) -> ScoringChange:
+        self._session.add(scoring_change_to_row(change))
+        self._flush()
+        return change
+
+    def get(self, change_id: str) -> ScoringChange | None:
+        row = self._session.get(ScoringChangeRow, change_id)
+        return None if row is None else scoring_change_from_row(row)
+
+    def list(self, *, limit: int = 50, offset: int = 0) -> list[ScoringChange]:
+        statement = (
+            select(ScoringChangeRow)
+            .order_by(ScoringChangeRow.created_at.desc(), ScoringChangeRow.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [scoring_change_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def active_for(self, day: date) -> ScoringChange | None:
+        statement = (
+            select(ScoringChangeRow)
+            .where(
+                ScoringChangeRow.status == ScoringChangeStatus.CONFIRMED.value,
+                ScoringChangeRow.effective_on <= day,
+            )
+            .order_by(
+                ScoringChangeRow.effective_on.desc(),
+                ScoringChangeRow.confirmed_at.desc(),
+                ScoringChangeRow.id.desc(),
+            )
+            .limit(1)
+        )
+        row = self._session.scalar(statement)
+        return None if row is None else scoring_change_from_row(row)
+
+    def confirmed_for_version(self, version: str) -> ScoringChange | None:
+        statement = (
+            select(ScoringChangeRow)
+            .where(
+                ScoringChangeRow.status == ScoringChangeStatus.CONFIRMED.value,
+                ScoringChangeRow.config_version == version,
+            )
+            .limit(1)
+        )
+        row = self._session.scalar(statement)
+        return None if row is None else scoring_change_from_row(row)
+
+    def confirm(
+        self,
+        change_id: str,
+        *,
+        confirmed_by: str,
+        note: str | None,
+        now: datetime,
+    ) -> ScoringChange:
+        row = self._session.get(ScoringChangeRow, change_id)
+        if row is None:
+            raise InvariantViolation("scoring_change", "变更记录不存在")
+        if row.status != ScoringChangeStatus.PREVIEWED.value:
+            raise InvariantViolation("scoring_change.status", "变更已确认")
+        row.status = ScoringChangeStatus.CONFIRMED.value
+        row.confirmed_at = now
+        row.confirmed_by = confirmed_by
+        row.note = note
+        self._flush()
+        return scoring_change_from_row(row)
+
+
+class ViewConfigRepository(_Repository):
+    """自定义排序视图；名称大小写不敏感唯一，视图不改全局配置。"""
+
+    def get(self, view_id: str) -> ViewConfig | None:
+        row = self._session.get(ViewConfigRow, view_id)
+        return None if row is None else view_config_from_row(row)
+
+    def find_by_name(self, name: str) -> ViewConfig | None:
+        normalized = name.strip().casefold()
+        if not normalized:
+            return None
+        statement = select(ViewConfigRow).where(func.lower(ViewConfigRow.name) == normalized)
+        row = self._session.scalar(statement)
+        return None if row is None else view_config_from_row(row)
+
+    def list(self) -> list[ViewConfig]:
+        statement = select(ViewConfigRow).order_by(func.lower(ViewConfigRow.name), ViewConfigRow.id)
+        return [view_config_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def add(self, view: ViewConfig) -> ViewConfig:
+        if self.find_by_name(view.name) is not None:
+            raise InvariantViolation("view.name", "模板名已存在")
+        self._session.add(view_config_to_row(view))
+        self._flush()
+        return view
+
+    def delete(self, view_id: str) -> bool:
+        row = self._session.get(ViewConfigRow, view_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
 
 
 class RunRepository(_Repository):
@@ -754,6 +1068,19 @@ class BucketRepository(_Repository):
         if active_only:
             statement = statement.where(BucketRow.active.is_(True))
         return [bucket_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def set_quota(self, bucket_id: str, quota: int | None) -> Bucket:
+        """设置桶配额；``None`` 表示未配置，负数/非整数拒绝。"""
+        if quota is not None and (
+            isinstance(quota, bool) or not isinstance(quota, int) or quota < 0
+        ):
+            raise InvariantViolation("bucket.quota", "必须是非负整数或 null")
+        row = self._session.get(BucketRow, bucket_id)
+        if row is None:
+            raise InvariantViolation("bucket.id", f"桶 {bucket_id} 不存在")
+        row.quota = quota
+        self._flush()
+        return bucket_from_row(row)
 
 
 class ArchiveSnapshotRepository(_Repository):
