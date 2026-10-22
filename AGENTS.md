@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P4 富化、摘要、分类与静态评分（S1–S8 实现完成；独立验收 F1–F5 已返工，待独立复验；复验记录 docs/phases/P4-acceptance-rework.md）**；
-- 下一阶段：**P5 优先级排序、动态分与解释（P4 独立复验通过前不开始）**；P2/P3 CI 已验证、阶段 tag 待发布流程，P1 F5 保留；
+- 当前：**P5 优先级排序、动态分与解释（S1–S6 实现完成；本地阶段门验证，见 docs/phases/P5-ranking.md；独立验收、Docker/CI、合并/推送/tag待后续流程）**；
+- 下一阶段：**P6 日报推送、阅读反馈与归档**；P4 已独立复验通过；P2/P3 tag 待发布流程，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0008`（新增 review_item 审核队列表）；G4 前禁止入队/推送/归档。
 
@@ -22,7 +22,8 @@
 6. `docs/phases/P3-ingestion.md`（P3 契约、验收与 P4 handoff）；
 7. `docs/phases/P4-enrichment.md`（当前卡片、P4-S8/P5 交接与后续小阶段）；
 8. `docs/phases/P4-acceptance.md` 与 `docs/phases/P4-acceptance-rework.md`（验收/返工证据）；
-9. 本文件。
+9. `docs/phases/P5-ranking.md`、`docs/priority-queue.md` 与 `docs/adr/0015-priority-arithmetic.md`（P5冻结契约、舍入与P6交接）；
+10. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
 

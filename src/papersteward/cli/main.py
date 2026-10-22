@@ -35,6 +35,8 @@ from papersteward.cli.onboarding import add_commands as add_onboarding_commands
 from papersteward.cli.onboarding import run as run_onboarding
 from papersteward.cli.processing import add_commands as add_processing_commands
 from papersteward.cli.processing import run as run_processing
+from papersteward.cli.ranking import add_commands as add_ranking_commands
+from papersteward.cli.ranking import run as run_ranking
 from papersteward.config import format_settings_error
 
 
@@ -65,6 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_onboarding_commands(subparsers)
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
+    add_ranking_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -176,6 +179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_ingestion(args)
         if args.command == "onboarding":
             return run_onboarding(args)
+        if args.command in {"queue", "score", "scores"}:
+            return run_ranking(args)
         if args.command in {"process", "review"}:
             return run_processing(args)
         if args.command == "doctor":

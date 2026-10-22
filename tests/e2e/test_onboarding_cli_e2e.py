@@ -69,6 +69,9 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
             expected=expected,
         )
 
+    closed = client.get("/queue?date=2026-10-22")
+    assert closed.status_code == 409 and "G4" in closed.json()["error"]["message"]
+    assert client.post("/scores/snapshot", json={"score_date": "2026-10-22"}).status_code == 409
     assert cli("status")["stage"] == "seeds"
     cli("start")
     profile = tmp_path / "profile.json"
@@ -243,3 +246,45 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
             assert session.scalar(select(func.count()).select_from(table)) == 0
         assert session.scalar(select(func.count()).select_from(StaticScoreSnapshotRow)) == 1
         assert session.scalar(select(func.count()).select_from(ReviewItemRow)) == 1
+
+    # P5：真实CLI生成日快照，HTTP读取队列/解释，重复生成不再次EMA。
+    score_date = outcome["static"]["score_date"]
+    snapshots = subprocess.run(
+        [str(BIN / "papersteward"), "scores", "snapshot", "--date", score_date, "--json"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert snapshots.returncode == 0, (snapshots.stdout, snapshots.stderr)
+    assert json.loads(snapshots.stdout)["created"] == 1, snapshots.stdout
+    queue = client.get("/queue", params={"date": score_date}).json()
+    assert queue["total"] == 1
+    item = queue["items"][0]
+    assert item["paper_id"] == paper["id"]
+    assert item["explanation"]["scores"]["U"] == 50
+    assert item["explanation"]["dynamic"]["hunger"] == 50
+    assert item["explanation"]["components"]["R"]["confidence"] == 0.86
+    assert (
+        client.get(f"/scores/{paper['id']}/explain", params={"date": score_date}).json()
+        == item["explanation"]
+    )
+    repeated = client.post("/scores/snapshot", json={"score_date": score_date})
+    assert repeated.status_code == 200 and repeated.json()["existing"] == 1
+    assert repeated.json()["created"] == 0
+    assert client.get("/queue", params={"date": score_date}).json() == queue
+    for args in (["queue", "--date", score_date], ["score", "explain", paper["id"]]):
+        result = subprocess.run(
+            [str(BIN / "papersteward"), *args, "--json"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)
+    with session_scope(create_session_factory(engine)) as session:
+        assert session.scalar(select(func.count()).select_from(ScoreSnapshotRow)) == 1
+        assert session.scalar(select(func.count()).select_from(ArchiveSnapshotRow)) == 0

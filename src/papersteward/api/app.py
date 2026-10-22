@@ -12,6 +12,7 @@ from papersteward import __version__
 from papersteward.api.errors import install_error_handlers
 from papersteward.api.middleware import RequestIdMiddleware
 from papersteward.api.onboarding import router as onboarding_router
+from papersteward.api.queue import router as queue_router
 from papersteward.api.review import router as review_router
 from papersteward.api.routes import router
 from papersteward.config import Settings, get_settings
@@ -50,6 +51,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(router)
     app.include_router(onboarding_router)
     app.include_router(review_router)
+    app.include_router(queue_router)
     return app
 
 
