@@ -1,7 +1,7 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S1–S6 + F1–F3/N1–N4 返工完成；2026-10-22 独立验收 Not Accepted，
-> 待独立复验；P7 tag/Beta 未发布。**
+> 状态：**P7-S1–S6 + F1–F3/N1–N4 返工完成；2026-10-22 独立复验仍为
+> Not Accepted（N4 预览回归、N3 preview 残留）；P7 tag/Beta 未发布。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -275,21 +275,30 @@
   binding hash；N4 预览改按 rank_score。
 - 返工后本地门：`make check` **1015 passed / 4 deselected**，ruff **270** 文件、
   strict mypy **132** 源文件；integration **336 passed**；e2e **4 passed**；
-  migrate-check 0014↔0015、demo、secret 通过。
-- 仍未做：独立复验、fresh clone/Docker/CI（复验阶段补）、P7 tag/Beta。P8 继续阻塞。
+  migrate-check 0014↔0015、demo、secret 通过；fresh clone Python 3.14.7 同数通过。
+- **独立复验 Not Accepted**：F1–F3 已闭环，N1/N2 已修复；N4 预览层权重重复计算
+  （preview 43.8 vs 生效日队列 71.7）和 N3 config preview 缺省 UTC 日期仍需修。
+  详见 [P7-acceptance-rework.md §10](P7-acceptance-rework.md)。P7 tag/Beta 未发布；P8 继续阻塞。
+- 仍未做：返工 CI（`91d9255` 未推送）与 Docker 本地全量 build；不能把原始 PR #10
+  的 CI 当成返工 CI。
 
 ## P7 Handoff（P8）
 
-- P7-S1–S6 本地实现完成，head 仍为 `0014`；S6 没有 schema 变更。分支
-  `feat/p7-s6-e2e` 从 S5 `b556a61` 建立；独立验收对象 `6a877e9`（PR #10）。
+- P7-S1–S6 本地实现完成，返工 head 为 `0015`（迁移 `0015` 档位审核人）；S6 本体无
+  schema 变更。原始验收对象 `6a877e9`（PR #10，已合并到 main `56382c0`）；返工分支
+  `fix/p7-acceptance-rework`，代码 `91d9255`（本地未推送）。
 - **2026-10-22 独立验收 Not Accepted**：F1 权重治理可激活非权重字段、F2 确认后至
   生效日之间处理/提升的文献在生效日被旧静态快照排除、F3 拒绝后无法重新提名；另有
   N1–N4。详见 [P7-acceptance-independent.md](P7-acceptance-independent.md)。
+- **返工后独立复验仍为 Not Accepted**：F1–F3 已闭环、N1/N2 已修复；N4 返工
+  层权重重复计算（preview 43.8 vs 实际 71.7）为阻断回归，N3 preview 缺省 UTC 日期、
+  N2 API/页面审核人展示为残留。详见 [P7-acceptance-rework.md §10](P7-acceptance-rework.md)。
 - 冻结契约：特殊桶无 P/rank；Filing 唯一；主标签保留；视图只重排当前队列且不得写
   全局配置；全局权重必须 preview→confirm→版本→生效日；G4 原始证据仍复核。
 - 已知限制：主题桶→特殊桶独立 demote、提升 API（当前仅 CLI）、提升低 R 文献、
   P7 tag/Beta 发布未做；P8 成本/性能/降级不在此阶段。
-- **P7 独立验收未通过，P8 不得开始**；F1–F3 返工并再次独立复验前不得创建 P7 tag。
+- **P7 独立复验未通过，P8 不得开始**；N4/N3 返工并再次独立复验前不得创建 P7 tag。
 - P8 开工前先读 `docs/phases/P7-acceptance.md`、
-  `docs/phases/P7-acceptance-independent.md` 与 P7 handoff；当前 `make check`
-  1010 passed，e2e 4 passed，但 P7 独立验收 Not Accepted，返工复验完成前不得开始 P8。
+  `docs/phases/P7-acceptance-independent.md`、`docs/phases/P7-acceptance-rework.md`
+  与 P7 handoff；当前 `make check` 1015 passed、e2e 4 passed，但 P7 独立复验
+  Not Accepted，再次返工复验完成前不得开始 P8。

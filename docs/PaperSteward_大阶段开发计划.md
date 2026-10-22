@@ -868,8 +868,10 @@ papersteward config preview --set static.relevance=0.60
 
 > **2026-10-22 独立验收结论：Not Accepted。** S1–S6 本地实现和阶段门通过，但 F1
 > 权重治理可激活非权重字段并绕过预览边界、F2 确认后至生效日处理/提升的文献在生效日
-> 被旧静态快照排除、F3 拒绝提名后无法重新提名，另有 N1–N4。需返工并再次独立验收；
-> P7 tag/Beta 未发布，P8 不得开始。证据见 `docs/phases/P7-acceptance-independent.md`。
+> 被旧静态快照排除、F3 拒绝提名后无法重新提名，另有 N1–N4。返工后 F1–F3/N1–N2 已闭环，
+> 但 2026-10-22 独立复验仍为 Not Accepted：N4 preview 层权重重复计算（43.8 vs 实际 71.7）
+> 和 N3 config preview 缺省 UTC 日期待修。P7 tag/Beta 未发布，P8 不得开始。证据见
+> `docs/phases/P7-acceptance-independent.md` 与 `docs/phases/P7-acceptance-rework.md`。
 
 **测试要求**：档位阈值表驱动；特殊桶排除 P；视图权重归一化；配置预览 golden；e2e。
 

@@ -6,9 +6,10 @@
 > head `0014`；验收日期 2026-10-22（Asia/Shanghai）。验收只读取/运行，不修改实现代码；
 > 临时探针在取证后删除。
 >
-> **后续状态**：F1–F3/N1–N4 已返工，见
-> [P7 返工验证记录](P7-acceptance-rework.md)；独立复验尚未执行，本报告结论保持
-> Not Accepted，P7 tag/Beta/P8 继续阻塞。
+> **后续状态（2026-10-22）**：F1–F3 已返工闭环，N1/N2 已修复；N4 返工引入
+> 层权重重复计算的新阻断回归，N3 仍有 config preview 默认日期残留。独立复验仍为
+> **Not Accepted**，详见 [P7 返工验证记录](P7-acceptance-rework.md)；
+> P7 tag/Beta/P8 继续阻塞。
 
 ## 1. 结论
 

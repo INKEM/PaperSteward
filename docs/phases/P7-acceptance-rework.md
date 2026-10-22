@@ -4,8 +4,8 @@
 > **基线**：独立验收 `docs/phases/P7-acceptance-independent.md`（对象 `6a877e9`，
 > 文档提交 `f70e0a0`）；返工分支 `fix/p7-acceptance-rework`，提交 `91d9255`
 > **日期**：2026-10-22（Asia/Shanghai）
-> **性质**：实现方返工与自检记录。**独立复验尚未执行**，P7 仍为 Not Accepted；
-> P7 tag/Beta/P8 继续阻塞。
+> **性质**：实现方返工与自检记录。**2026-10-22 独立复验结论：Not Accepted**，
+> P7 tag/Beta/P8 继续阻塞；阻断项与证据见 §10。
 
 ## 1. 结论摘要
 
@@ -15,9 +15,9 @@
 | F2 确认后窗口文献丢失 | 阻断 | 已修复：process/promote 为 pending activation 补写生效日新版本静态快照；不重跑 LLM | `test_late_process_after_confirmation_gets_effective_snapshot`、`test_late_promotion_after_confirmation_gets_effective_snapshot` |
 | F3 拒绝后不能重提名 | 阻断 | 已修复：`shelf reopen` 把 rejected 受控回到 pending，追加审计事件；不重跑 LLM | `test_rejected_nomination_can_be_reopened_and_accepted`、CLI reopen 回归 |
 | N1 changes total 是页大小 | 中 | 已修复：仓储 count + API/CLI 全量 total | `test_changes_total_is_not_page_size`、CLI `--limit 1` |
-| N2 tier reviewer 未持久化 | 中 | 已修复：迁移 `0015` 增加 `reviewed_by`；override 写入，CLI/详情展示 | 既有 tier 测试新增断言 |
-| N3 UTC 日期不一致 | 中 | 已修复：process/explain/promote/confirm 用 runtime timezone 本地日；local_day 不放入 binding hash（避免周任务 ID 漂移） | `test_bound_context_local_day_uses_runtime_timezone`、全量周任务回归 |
-| N4 预览名次用 priority | 中 | 已修复：用 `compute_priority(reset=True)` 的 `rank_score` 排序，并输出 `new_rank_score` | 治理集成预览断言 |
+| N2 tier reviewer 未持久化 | 中 | 持久化已修复：迁移 `0015` 增加 `reviewed_by`，override 写入；CLI 展示，API/页面未暴露（见 §10.3） | 既有 tier 测试新增断言 |
+| N3 UTC 日期不一致 | 中 | 部分修复：process/explain/promote/confirm 用 runtime timezone 本地日；**config preview 缺省日仍用 UTC（见 §10.3）** | `test_bound_context_local_day_uses_runtime_timezone`、全量周任务回归 |
+| N4 预览名次用 priority | 中 | **返工有回归**：改用 `compute_priority(reset=True)`，但 static/dynamic 输入重复乘了层权重；preview 43.8 vs 实际 71.7（见 §10.2） | 治理集成预览仅断言字段存在 |
 
 ## 2. F1：只允许线性权重字段
 
@@ -141,6 +141,97 @@
 5. 复跑完整阶段门、fresh clone、Docker smoke、CI；更新本记录 §10 后才能
    Accepted、创建 P7 tag 或开始 P8。
 
-## 10. 独立复验结论
+## 10. 独立复验结论（2026-10-22）
 
-**待执行。** 当前 P7 仍为 **Not Accepted**；P7 tag/Beta/P8 阻塞。
+> **结论：Not Accepted。** 复验对象为 `91d9255`（返工代码）＋ `a5e9341`（返工文档）；
+> F1–F3 已闭环，N1/N2 已修复；但 N4 的返工引入了新的阻断回归，N3 仍有 preview
+> 默认日期的残留。P7 仍为 Not Accepted；P7 tag/Beta/P8 继续阻塞。
+
+### 10.1 已闭环项
+
+- **F1 已通过**：`test_preview_rejects_invalid_overrides_dates_and_versions` 通过；
+  `gates.max_daily_push`、`stability.rank_ema`、`dynamic.half_life_days.fast`、
+  `quasi_dynamic.tag_weight` 和完整 config 改 gates 均返回 400；错误信息包含线性权重
+  字段提示。只读审查确认 `apply_overrides` 的路径 allowlist 与 `_assert_weight_only`
+  在 preview/confirm 双重校验。
+- **F2 已通过**：`test_late_process_after_confirmation_gets_effective_snapshot` 与
+  `test_late_promotion_after_confirmation_gets_effective_snapshot` 通过；确认后、
+  生效日前处理/提升的文献会追加 `effective_on` 新配置静态快照，生效日队列包含该文献。
+  代码路径与测试一致，未发现改写历史快照或重跑 LLM。
+- **F3 已通过**：`test_rejected_nomination_can_be_reopened_and_accepted` 与 CLI reopen
+  回归通过；rejected→pending、清空本次决定字段、追加
+  `special_nomination.reopened` 事件、随后 accept 成立；非 classified/不存在 rejected
+  的路径返回冲突。
+- **N1 已通过**：两条变更、`limit=1` 时 API/CLI 均返回 `total=2`、`items` 1 条。
+- **N2 持久化已通过**：迁移 `0015` 增加 `reviewed_by`；`override_special_tier` 写入，
+  `shelf tier --json`/`shelf show --json` 可见；历史/自动档位为 null。
+
+### 10.2 剩余阻断：N4 预览值把层权重重复计算
+
+返工将 `_build_impact` 改为 `compute_priority(reset=True)`，但传入的 `static_new`/
+`dynamic_new` 使用了 `component_weights` 的**展开权重**：
+
+```text
+new_weights["R"] = static.weight * static.relevance
+static_new = Σ(R/A/E × new_weights)   # 已包含 static.weight
+...
+compute_priority(static_new, dynamic_new, U, proposed)
+# compute_priority 再乘一次 static.weight / dynamic.weight
+```
+
+独立探针（`/config/scoring/preview`，fixture `high-e`）：
+
+```text
+preview new_priority     = 43.8
+preview new_rank_score   = 43.8
+effective queue priority = 71.7
+effective queue rank_score = 71.7
+```
+
+即预览把 P 压低约 28 分，与生效日实际队列不一致；`new_rank` 也建立在错误的
+`new_rank_score` 上。本次返工前该字段至少使用正确的一次线性组合；返工为了修 N4
+反而引入了新的核心预览错误。现有回归只断言 `new_rank_score` **存在**，没有数值
+golden/实际队列对照，所以 1015 个测试未捕获。
+
+**要求**：`static_new`/`dynamic_new` 必须使用**未展开**的子权重
+（`proposed.static.relevance/authority/extra_value`、
+`proposed.dynamic.freshness/hunger`），再做 `compute_priority(reset=True)`；
+增加“preview new_priority/new_rank_score 与生效日 queue priority/rank_score 数值一致
+（允许明确的一位小数舍入）”回归。修好后 N4 才能关闭。
+
+### 10.3 非阻断残留
+
+- **N3 部分残留**：process/explain/promote/confirm 已使用 runtime local day；但
+  `api/governance.py` 与 `cli/config.py` 的 `config preview` 未指定 `--date` 时仍用
+  `utc_now().date()`。独立探针在 `2026-10-21T18:00Z`（Asia/Shanghai 2026-10-22
+  02:00）调用 preview，默认 `preview_day=2026-10-21`、`effective=2026-10-22`，
+  与已有 `2026-10-22` 静态快照冲突返回 409；若按本地日应为 2026-10-22/10-23。
+  应在 API/CLI 的 preview 缺省日也使用 runtime local day，并加 00:00–08:00 边界回归。
+- **N2 展示残留**：API `ShelfItemRead` 与 `/ui/papers` 未暴露 `tier_reviewed_by`
+  （CLI 已有）；数据审计已持久化，属于展示层小缺口。可按需补字段/页面，或明确仅 CLI
+  审计。
+- **验证环境**：rework 代码 `91d9255` 未推送，PR #10 仍是原始 `6a877e9`（已于
+  2026-10-22T15:11:59Z 合并到 main `56382c0`），因此 **没有 `91d9255` 的远程 CI**；
+  本地 Docker 镜像 build 未完成。不能把旧 PR 的 CI 当成返工 CI。
+
+### 10.4 复验门证据
+
+| 检查 | 结果 |
+|---|---|
+| `make check` | **1015 passed / 4 deselected**；ruff **270** 文件；strict mypy **132** 源文件 |
+| `make test-integration` | **336 passed** |
+| `make e2e` | **4 passed** |
+| `make migrate-check` | 0014 ↔ 0015 upgrade/downgrade/upgrade 通过 |
+| `make demo` / `make secret-scan` | 通过 |
+| 全新 clone（Python 3.14.7） | check **1015**、integration **336**、e2e **4**、migrate/demo/secret 通过，工作树干净 |
+| 定向 F1/F2/N1/N3 | 5 passed（含 late process/promotion、bound_context local day、changes total） |
+| 定向 F3/N2 | 3 passed（reopen、tier reviewer、CLI） |
+| Docker / CI | 返工镜像未完成；`91d9255` 未推送，无对应 CI |
+
+### 10.5 下一步
+
+1. 修 N4 的层权重重复计算，补数值/实际队列对照回归。
+2. 修 `config preview` 的缺省 runtime local day（N3 残留）；补 02:00 边界测试。
+3. 视需要暴露 `tier_reviewed_by` 到 API/页面（N2 展示）。
+4. 推送返工分支或建立新 PR，跑 CI；完成 Docker build/run；重跑完整阶段门/fresh clone。
+5. 再次独立复验通过前不得创建 P7 tag、不得宣称 Beta、不得开始 P8。
