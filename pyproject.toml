@@ -7,6 +7,7 @@ name = "papersteward"
 dynamic = ["version"]
 description = "本地优先的文献自动挖掘、优先级排序与每日推送系统"
 requires-python = ">=3.11"
+license = {file = "LICENSE"}
 dependencies = [
   "alembic>=1.13,<2.0",
   "fastapi>=0.115,<1.0",
