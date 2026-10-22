@@ -24,6 +24,7 @@ from papersteward.core.entities import (
     PaperBucket,
     PaperTag,
     ScoreSnapshot,
+    StaticScoreSnapshot,
     Summary,
     Taxonomy,
 )
@@ -389,6 +390,35 @@ def ensure_static_score_frozen(
         )
 
 
+def ensure_static_score_snapshot_append_only(
+    history: Sequence[StaticScoreSnapshot],
+    candidate: StaticScoreSnapshot,
+) -> None:
+    """静态分快照只允许在版本变化后按日期追加，不能同版本重算。"""
+    if not history:
+        return
+    latest = max(history, key=lambda item: item.score_date)
+    if candidate.paper_id != latest.paper_id:
+        raise InvariantViolation("static_score_snapshot.paper_id", "不能跨文献比较静态分")
+    if candidate.score_date <= latest.score_date:
+        raise InvariantViolation(
+            "static_score_snapshot.score_date", "新快照日期必须晚于已有静态分快照"
+        )
+    if (
+        candidate.profile_version,
+        candidate.taxonomy_version,
+        candidate.config_version,
+    ) == (
+        latest.profile_version,
+        latest.taxonomy_version,
+        latest.config_version,
+    ):
+        raise InvariantViolation(
+            "static_score_snapshot.versions",
+            "档案/分类法/评分配置版本未变，静态分已冻结，不能重算",
+        )
+
+
 def ensure_score_snapshot_append_only(
     history: Sequence[ScoreSnapshot],
     candidate: ScoreSnapshot,
@@ -468,6 +498,7 @@ __all__ = [
     "ensure_single_filing_bucket",
     "ensure_single_primary_tag",
     "ensure_static_score_frozen",
+    "ensure_static_score_snapshot_append_only",
     "ensure_tags_match_taxonomy",
     "ensure_taxonomy_shape",
 ]

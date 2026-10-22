@@ -24,6 +24,7 @@ from papersteward.core.entities import (
     ResearchProfile,
     Run,
     ScoreSnapshot,
+    StaticScoreSnapshot,
     Summary,
     Tag,
     Taxonomy,
@@ -57,6 +58,7 @@ from papersteward.storage.models import (
     ResearchProfileRow,
     RunRow,
     ScoreSnapshotRow,
+    StaticScoreSnapshotRow,
     SummaryRow,
     TagRow,
     TaxonomyRow,
@@ -320,6 +322,42 @@ def score_snapshot_from_row(row: ScoreSnapshotRow) -> ScoreSnapshot:
             row.provenance_generated_at,
             row.provenance_input_hash,
         ),
+    )
+
+
+def static_score_snapshot_to_row(snapshot: StaticScoreSnapshot) -> StaticScoreSnapshotRow:
+    return StaticScoreSnapshotRow(
+        paper_id=snapshot.paper_id,
+        score_date=snapshot.score_date,
+        relevance=snapshot.relevance,
+        authority=snapshot.authority,
+        extra_value=snapshot.extra_value,
+        static_score=snapshot.static_score,
+        confidence=snapshot.confidence,
+        config_version=snapshot.config_version,
+        profile_version=snapshot.profile_version,
+        taxonomy_version=snapshot.taxonomy_version,
+        input_hash=snapshot.input_hash,
+        breakdown_json=dict(snapshot.breakdown_json),
+        created_at=snapshot.created_at,
+    )
+
+
+def static_score_snapshot_from_row(row: StaticScoreSnapshotRow) -> StaticScoreSnapshot:
+    return StaticScoreSnapshot(
+        paper_id=row.paper_id,
+        score_date=row.score_date,
+        relevance=row.relevance,
+        authority=row.authority,
+        extra_value=row.extra_value,
+        static_score=row.static_score,
+        confidence=row.confidence,
+        config_version=row.config_version,
+        profile_version=row.profile_version,
+        taxonomy_version=row.taxonomy_version,
+        input_hash=row.input_hash,
+        breakdown_json=dict(row.breakdown_json or {}),
+        created_at=as_utc(row.created_at),
     )
 
 

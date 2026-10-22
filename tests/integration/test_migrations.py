@@ -34,6 +34,7 @@ DOMAIN_TABLES = {
     "research_profile",
     "run",
     "score_snapshot",
+    "static_score_snapshot",
     "summary",
     "tag",
     "taxonomy",
@@ -83,6 +84,21 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "oa_status",
             "canonical_id",
         }
+        assert {column["name"] for column in inspector.get_columns("static_score_snapshot")} == {
+            "paper_id",
+            "score_date",
+            "relevance",
+            "authority",
+            "extra_value",
+            "static_score",
+            "confidence",
+            "config_version",
+            "profile_version",
+            "taxonomy_version",
+            "input_hash",
+            "breakdown_json",
+            "created_at",
+        }
         assert {column["name"] for column in inspector.get_columns("enrichment")} == {
             "paper_id",
             "teams_json",
@@ -111,7 +127,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0006"
+        assert current == "0007"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:

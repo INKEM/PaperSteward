@@ -23,6 +23,7 @@ from papersteward.storage.repositories import (
     RatingRepository,
     RunRepository,
     ScoreSnapshotRepository,
+    StaticScoreSnapshotRepository,
     SummaryRepository,
     TaxonomyRepository,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "RunRepository",
     "RunRow",
     "ScoreSnapshotRepository",
+    "StaticScoreSnapshotRepository",
     "SummaryRepository",
     "TaxonomyRepository",
     "check_database",

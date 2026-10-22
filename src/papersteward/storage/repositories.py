@@ -30,6 +30,7 @@ from papersteward.core.entities import (
     ResearchProfile,
     Run,
     ScoreSnapshot,
+    StaticScoreSnapshot,
     Summary,
     Taxonomy,
     utc_now,
@@ -42,6 +43,7 @@ from papersteward.core.invariants import (
     ensure_secondary_tag_limit,
     ensure_single_filing_bucket,
     ensure_single_primary_tag,
+    ensure_static_score_snapshot_append_only,
 )
 from papersteward.core.state_machine import (
     PAPER_STATUS_EVENTS,
@@ -74,6 +76,8 @@ from papersteward.storage.mappers import (
     run_to_row,
     score_snapshot_from_row,
     score_snapshot_to_row,
+    static_score_snapshot_from_row,
+    static_score_snapshot_to_row,
     summary_from_row,
     summary_to_row,
     taxonomy_from_row,
@@ -92,6 +96,7 @@ from papersteward.storage.models import (
     ResearchProfileRow,
     RunRow,
     ScoreSnapshotRow,
+    StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
 )
@@ -338,6 +343,36 @@ class ScoreSnapshotRepository(_Repository):
         )
         row = self._session.scalars(statement).first()
         return None if row is None else score_snapshot_from_row(row)
+
+
+class StaticScoreSnapshotRepository(_Repository):
+    """P4 静态分快照：版本变化后按日期追加，不提供 update/delete。"""
+
+    def append(self, snapshot: StaticScoreSnapshot) -> StaticScoreSnapshot:
+        ensure_static_score_snapshot_append_only(self.history(snapshot.paper_id), snapshot)
+        self._session.add(static_score_snapshot_to_row(snapshot))
+        self._flush()
+        return snapshot
+
+    def history(self, paper_id: str) -> list[StaticScoreSnapshot]:
+        statement = (
+            select(StaticScoreSnapshotRow)
+            .where(StaticScoreSnapshotRow.paper_id == paper_id)
+            .order_by(StaticScoreSnapshotRow.score_date)
+        )
+        return [
+            static_score_snapshot_from_row(row) for row in self._session.scalars(statement).all()
+        ]
+
+    def latest(self, paper_id: str) -> StaticScoreSnapshot | None:
+        statement = (
+            select(StaticScoreSnapshotRow)
+            .where(StaticScoreSnapshotRow.paper_id == paper_id)
+            .order_by(StaticScoreSnapshotRow.score_date.desc())
+            .limit(1)
+        )
+        row = self._session.scalars(statement).first()
+        return None if row is None else static_score_snapshot_from_row(row)
 
 
 class EventRepository(_Repository):
@@ -598,6 +633,7 @@ __all__ = [
     "RatingRepository",
     "RunRepository",
     "ScoreSnapshotRepository",
+    "StaticScoreSnapshotRepository",
     "SummaryRepository",
     "TaxonomyRepository",
 ]

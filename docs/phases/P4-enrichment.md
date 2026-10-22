@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S6 完成并通过本地阶段门；P4-S7–S8 未开始。**
+> 状态：**P4-S1–S7 完成并通过本地阶段门；P4-S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -76,10 +76,10 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
   `pipeline/special.py`、提名正反例；
 - 范围外：配额/展示（P7）、最终归属写入；预估 1–2 天。
 
-### P4-S7：静态分 A/E/S 与快照
+### P4-S7：静态分 A/E/S 与快照（完成）
 
 - 目标：权威/额外价值/静态分确定性计算、版本冻结、快照追加写；
-- 输出：`scoring/static.py`、分项解释、golden；
+- 输出：`scoring/static.py`、A/E/S 分项解释、golden、迁移 `0007` 与静态快照仓储；
 - 范围外：动态分/排序（P5）；预估 1–2 天。
 
 ### P4-S8：审核队列与 `process` CLI e2e
@@ -475,6 +475,76 @@ P4-S5 超过 8 文件指引：prompt/schema 扩展、分类服务、taxonomy/证
 
 P4-S6 超过 8 文件指引：schema/prompt、三类提名校验、bridge memo、优先级选择、
 正反例与文档共同构成本次竖切；未实现 P4-S7 静态分或 P7 配额/展示。
+
+## P4-S7 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s7-make-check'`：
+  ruff format/check（182 文件）、strict mypy（**90 源文件**）通过；
+  **822 passed / 4 e2e excluded**（P4-S6 后基线 812，新增 10 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s7-integration'`：
+  **243 passed**（P4-S6 后基线 242；新增 1 项静态快照持久化）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s7-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → **0007** → base → 0007 通过。
+- `make demo DEMO_PORT=8062`：自动升级到 0007，`/health`、`/papers` 正常。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 LLM。
+- golden 演示：venue A* + 作者 1.0/0.5 + citation 0.8 → A=92.0；
+  code/data/repro/rigor/open 组合 → E=70.0；R=80、A=92、E=70、权重
+  0.65/0.20/0.15 → S=80.9。
+
+### 实现与决策
+
+- [ADR 0014](../adr/0014-static-score-snapshot.md)：静态分使用独立 `static_score_snapshot` 表，不伪造完整
+  `score_snapshot` 的动态分/priority；P5 组合完整日快照。
+- `scoring/static.py`：
+  - A = 100·(0.40·venue + 0.40·author_team + 0.20·citation)；
+    venue 分档 A*/A/B/C/unknown/predatory；author_team 用 max/top2；
+    <183 天或缺失引用用中性 0.5 并降低 confidence；
+  - E = 100·(0.30·code + 0.20·data + 0.20·repro + 0.20·rigor + 0.10·open)；
+    None 用中性 0.5，OA open/closed/unknown 映射 1/0/0.5；
+  - S = R·wR + A·wA + E·wE，权重来自已校验 `ScoringConfig`；
+  - breakdown/confidence/原因与 SHA256 输入哈希进入快照。
+- 迁移 `0007`：`static_score_snapshot`，PK `(paper_id, score_date)`，
+  CHECK 分值/置信度范围；仓储只追加、无 update/delete。
+- 版本冻结：同版本不重算；日期必须晚于已有快照；档案/分类法/配置版本变化后才允许
+  追加新快照。
+- golden fixtures：[static_golden.json](../../tests/fixtures/scoring/static_golden.json) 与
+  `tests/unit/test_static_score.py`。
+
+### 能做什么
+
+- 用确定性 A/E/S 公式和版本化配置生成静态分、分项解释与 confidence；
+- 将首次/版本变更后的静态快照写入独立表；读取 history/latest；
+- 用输入哈希、breakdown 和版本号审计“当时为什么是这个分”；
+- 为 P5 提供最新静态快照输入，而不会产生假的每日完整快照。
+
+### 不能做什么
+
+- 不计算 F/H/U/D/P 或每日 priority/tier；不写完整 `score_snapshot`；
+- 不做引用领域/年龄百分位的数据获取；citation percentile 由调用方提供，缺失按中性；
+- 不做 venue/author 白名单治理；输入等级/作者分由调用方/配置提供；
+- 不自动重算静态分；版本未变时仓储拒绝；
+- 未调用真实 LLM；无真实模型/质量验收。
+
+### P4-S8 输入与开工约束
+
+- 输入：`StaticScoreResult`/`StaticScoreSnapshot`、latest static snapshot、R/A/E、
+  `ClassificationResult`、`SummaryResult`、special nominations、`EnrichmentSignals`；
+- P4-S8 负责把 screened 文献处理到 classified/scored 或 needs_review，写入审核队列；
+- 完整 `score_snapshot` 留给 P5；P4-S8 不得伪造动态分/priority；
+- 新字段/表继续新增迁移（当前 0007），测试保持 FakeLLM/fixtures。
+
+### 回滚
+
+- `alembic downgrade 0006` 删除 `static_score_snapshot`；先备份静态快照；
+- 撤销 `scoring/static.py`、0007、测试/文档即可；`score_snapshot`/paper/run/event
+  不受影响。
+
+### 规模说明
+
+P4-S7 超过 8 文件指引：A/E/S 公式、置信度/中性值、独立快照决策、迁移、行/映射/
+仓储、golden 与文档共同构成本次竖切；未提前实现 P5 动态分或 P4-S8 编排。
 
 ## 与 P5 的边界
 

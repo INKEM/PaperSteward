@@ -454,6 +454,37 @@ class ScoreSnapshotRow(Base):
     provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class StaticScoreSnapshotRow(Base):
+    """P4 静态分快照；与每日完整 score_snapshot 分离。"""
+
+    __tablename__ = "static_score_snapshot"
+    __table_args__ = (
+        CheckConstraint("relevance >= 0.0 AND relevance <= 100.0", name="relevance_range"),
+        CheckConstraint("authority >= 0.0 AND authority <= 100.0", name="authority_range"),
+        CheckConstraint("extra_value >= 0.0 AND extra_value <= 100.0", name="extra_value_range"),
+        CheckConstraint("static_score >= 0.0 AND static_score <= 100.0", name="static_range"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="confidence_range"),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    score_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    relevance: Mapped[float] = mapped_column(Float, nullable=False)
+    authority: Mapped[float] = mapped_column(Float, nullable=False)
+    extra_value: Mapped[float] = mapped_column(Float, nullable=False)
+    static_score: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    breakdown_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class EventRow(Base):
     """追加写事件日志；仓储层不提供 update/delete。"""
 

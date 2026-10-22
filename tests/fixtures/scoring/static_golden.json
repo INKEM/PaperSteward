@@ -1,0 +1,24 @@
+{
+  "authority": {
+    "venue_level": "A*",
+    "author_scores": [1.0, 0.5],
+    "citation_percentile": 0.8,
+    "published_at": "2025-01-01T00:00:00Z",
+    "as_of": "2026-10-22",
+    "expected": 92.0
+  },
+  "extra_value": {
+    "code": 1.0,
+    "data": 0.5,
+    "reproducibility": 0.5,
+    "rigor": 0.5,
+    "oa_status": "open",
+    "expected": 70.0
+  },
+  "static": {
+    "relevance": 80.0,
+    "authority": 92.0,
+    "extra_value": 70.0,
+    "expected": 80.9
+  }
+}

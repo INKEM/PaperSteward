@@ -618,6 +618,62 @@ class ScoreSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class StaticScoreSnapshot:
+    """P4 静态分快照；与每日完整 score_snapshot 分离，按版本冻结/追加。"""
+
+    paper_id: str
+    score_date: date
+    relevance: float
+    authority: float
+    extra_value: float
+    static_score: float
+    confidence: float
+    config_version: str
+    profile_version: str
+    taxonomy_version: str
+    input_hash: str
+    breakdown_json: Mapping[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "paper_id", _require_text(self.paper_id, "static_score_snapshot.paper_id")
+        )
+        if isinstance(self.score_date, datetime):
+            object.__setattr__(self, "score_date", self.score_date.date())
+        if not isinstance(self.score_date, date):
+            raise DomainValidationError("static_score_snapshot.score_date", "必须是 date")
+        for name in ("relevance", "authority", "extra_value", "static_score"):
+            object.__setattr__(
+                self,
+                name,
+                _require_score(getattr(self, name), f"static_score_snapshot.{name}"),
+            )
+        object.__setattr__(
+            self,
+            "confidence",
+            _require_ratio(self.confidence, "static_score_snapshot.confidence"),
+        )
+        for name in ("config_version", "profile_version", "taxonomy_version"):
+            object.__setattr__(
+                self,
+                name,
+                _require_text(getattr(self, name), f"static_score_snapshot.{name}"),
+            )
+        object.__setattr__(
+            self, "input_hash", _require_hash(self.input_hash, "static_score_snapshot.input_hash")
+        )
+        object.__setattr__(
+            self,
+            "breakdown_json",
+            _require_mapping(self.breakdown_json, "static_score_snapshot.breakdown_json"),
+        )
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "static_score_snapshot.created_at")
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """追加写事件；``paper_id`` 为空表示文档/配置级事件。"""
 
@@ -809,6 +865,7 @@ __all__ = [
     "ResearchProfile",
     "Run",
     "ScoreSnapshot",
+    "StaticScoreSnapshot",
     "Summary",
     "Tag",
     "Taxonomy",

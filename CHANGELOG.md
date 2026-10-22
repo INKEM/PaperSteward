@@ -6,6 +6,10 @@
 
 ### Added
 
+- **P4-S7**：确定性静态分 A/E/S（venue/作者/引用、code/data/repro/rigor/open），
+  confidence/中性值与分项 breakdown；迁移 `0007` 新增独立
+  `static_score_snapshot`，同版本冻结、版本变化后按日期追加。完整每日
+  `score_snapshot` 留给 P5。无新依赖、无真实 LLM。
 - **P4-S6**：special_nomination 三类特殊桶提名：review 层覆盖、classic 依据、
   distant 四段 bridge memo、逐字证据与置信度；只提名不改归属，按
   review > classic > distant 选择默认 kind，低置信度/证据不足进入 review。

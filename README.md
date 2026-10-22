@@ -2,7 +2,7 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P4 富化、摘要、分类与静态评分（S1–S6 完成）**：P0/P1 的配置、API、
+当前处于 **P4 富化、摘要、分类与静态评分（S1–S7 完成）**：P0/P1 的配置、API、
 CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与确认门已通过；P3
 已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与可审计运行报告；
 P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权、脱敏 provider
@@ -10,9 +10,10 @@ P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权�
 P4-S3 新增相关度 R（离线哈希 embedding + rubric 证据校验 + 55/65 分 band）；
 P4-S4 新增 summary/v2 100 字四槽概括、逐字段证据/数字/空泛词校验与 needs_review；
 P4-S5 新增 classification/v2 主/副标签、runner-up/置信度、边界/证据校验与幂等写入；
-P4-S6 新增 special_nomination 三类提名、review/classic 条件与 distant bridge memo。
+P4-S6 新增 special_nomination 三类提名、review/classic 条件与 distant bridge memo；
+P4-S7 新增确定性 A/E/S 静态分、版本冻结与独立 static_score_snapshot（迁移 0007）。
 P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
-非阻断债务。下一阶段为 P4-S7 静态分 A/E/S 与快照。
+非阻断债务。下一阶段为 P4-S8 审核队列与 process CLI e2e。
 详细契约见 [P4 阶段记录](docs/phases/P4-enrichment.md)、[P3 阶段记录](docs/phases/P3-ingestion.md)
 与 [P3 验收报告](docs/phases/P3-acceptance.md)。
 
@@ -57,7 +58,7 @@ P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
-  （head `0006`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
+  （head `0007`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、相关度、摘要、特殊桶提名、评分快照、事件（正反例校验）；
@@ -69,6 +70,7 @@ P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍
 - 摘要：summary/v2 prompt、四槽/逐字证据/数字校验、needs_review 与 summary 表持久化；
 - 分类：classification/v2 主/副标签、runner-up/置信度、边界/证据校验与 paper_tag/paper_bucket 写入；
 - 特殊桶：special_nomination 三类提名、review 层级/classic 依据/distant bridge memo 校验；
+- 静态分：A/E/S 确定性公式、置信度/中性值、版本冻结与 `static_score_snapshot` 快照；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 初始化链路演示
@@ -364,12 +366,13 @@ docs/             # 设计与阶段文档
 - [P2 独立验收报告](docs/phases/P2-independent-acceptance.md)
 - [P3 阶段记录与 P4 交接](docs/phases/P3-ingestion.md)
 - [P3 独立验收报告](docs/phases/P3-acceptance.md)
-- [P4 阶段记录与 P4-S7 交接](docs/phases/P4-enrichment.md)
+- [P4 阶段记录与 P4-S8 交接](docs/phases/P4-enrichment.md)
 - [LLM provider 配置指南](docs/llm-provider.md)
 - [初始化 CLI 操作指南](docs/onboarding-cli.md)
 - [采集 CLI 操作指南](docs/ingestion-cli.md)
 - [ADR 0001：YAML front matter 解析](docs/adr/0001-yaml-front-matter.md)
 - [ADR 0013：真实 LLM provider 与显式授权](docs/adr/0013-llm-provider.md)
+- [ADR 0014：静态分独立快照](docs/adr/0014-static-score-snapshot.md)
 
 ## 安全
 
