@@ -98,6 +98,7 @@ def test_schema_registry_freeze() -> None:
         "summary",
         "scoring",
         "special_scoring",
+        "special_nomination",
         "event",
     }
     assert set(schema_for("classification")["required"]) == {
@@ -141,10 +142,17 @@ def test_schema_registry_freeze() -> None:
 
 def test_prompt_registry_and_fake_provider_freeze() -> None:
     registry = default_registry()
-    assert registry.names() == ("classification", "summary", "relevance", "repair")
+    assert registry.names() == (
+        "classification",
+        "summary",
+        "relevance",
+        "special_nomination",
+        "repair",
+    )
     assert registry.get("classification").version == "classification/v2"
     assert registry.get("summary").schema == "summary"
     assert registry.get("relevance").schema == "relevance"
+    assert registry.get("special_nomination").schema == "special_nomination"
     assert registry.get("repair").schema is None
 
     provider = FakeLLM()

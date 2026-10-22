@@ -19,7 +19,13 @@ from papersteward.core.enums import EventType, ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainValidationError
 
 SchemaName = Literal[
-    "classification", "relevance", "summary", "scoring", "special_scoring", "event"
+    "classification",
+    "relevance",
+    "summary",
+    "scoring",
+    "special_scoring",
+    "special_nomination",
+    "event",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -50,6 +56,52 @@ class SpecialCandidateOutput(_OutputModel):
     bucket: SpecialBucketKind
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str = Field(min_length=1)
+
+
+class BridgeMemoOutput(_OutputModel):
+    source_mechanism: str = Field(min_length=1, max_length=1000)
+    shared_structure: str = Field(min_length=1, max_length=1000)
+    transfer_experiment: str = Field(min_length=1, max_length=1000)
+    falsification_signal: str = Field(min_length=1, max_length=1000)
+
+
+class SpecialEvidenceOutput(_OutputModel):
+    quote: str = Field(min_length=1, max_length=500)
+
+
+class SpecialNominationOutput(_OutputModel):
+    bucket: SpecialBucketKind
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence: list[SpecialEvidenceOutput] = Field(min_length=1, max_length=3)
+    review_layers: list[
+        Literal["problem", "theory", "method", "system", "evaluation", "application"]
+    ] = Field(default_factory=list, max_length=6)
+    classic_basis: list[Literal["foundational", "citation", "standard", "award", "expert"]] = Field(
+        default_factory=list, max_length=5
+    )
+    bridge_memo: BridgeMemoOutput | None = None
+
+    @model_validator(mode="after")
+    def _bucket_specific_requirements(self) -> SpecialNominationOutput:
+        if self.bucket is SpecialBucketKind.REVIEW and len(set(self.review_layers)) < 2:
+            raise ValueError("review 提名必须覆盖至少两个层级")
+        if self.bucket is SpecialBucketKind.CLASSIC and not self.classic_basis:
+            raise ValueError("classic 提名必须提供至少一个经典依据")
+        if self.bucket is SpecialBucketKind.DISTANT and self.bridge_memo is None:
+            raise ValueError("distant 提名必须提供 bridge_memo")
+        return self
+
+
+class SpecialNominationsOutput(_OutputModel):
+    nominations: list[SpecialNominationOutput] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def _unique_buckets(self) -> SpecialNominationsOutput:
+        buckets = [item.bucket for item in self.nominations]
+        if len(buckets) != len(set(buckets)):
+            raise ValueError("同一个特殊桶只能提名一次")
+        return self
 
 
 class ClassificationEvidenceOutput(_OutputModel):
@@ -190,6 +242,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "summary": SummaryOutput,
         "scoring": ScoreSnapshotOutput,
         "special_scoring": SpecialScoreSnapshotOutput,
+        "special_nomination": SpecialNominationsOutput,
         "event": EventEnvelope,
     }
 )
@@ -250,6 +303,10 @@ __all__ = [
     "PriorityScoreOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
+    "SpecialEvidenceOutput",
+    "SpecialNominationOutput",
+    "SpecialNominationsOutput",
+    "BridgeMemoOutput",
     "RelevanceOutput",
     "SCHEMA_MODELS",
     "SchemaError",

@@ -16,11 +16,18 @@ from papersteward.llm import (
 def test_default_registry_is_versioned() -> None:
     registry = default_registry()
 
-    assert registry.names() == ("classification", "summary", "relevance", "repair")
+    assert registry.names() == (
+        "classification",
+        "summary",
+        "relevance",
+        "special_nomination",
+        "repair",
+    )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")
     assert registry.get("classification") == CLASSIFICATION_V2
     assert registry.get("relevance") == RELEVANCE_V1
     assert registry.versions("summary") == ("summary/v1", "summary/v2")
+    assert registry.get("special_nomination").schema == "special_nomination"
 
 
 def test_latest_and_explicit_version_lookup() -> None:

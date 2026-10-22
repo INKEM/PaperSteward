@@ -6,6 +6,10 @@
 
 ### Added
 
+- **P4-S6**：special_nomination 三类特殊桶提名：review 层覆盖、classic 依据、
+  distant 四段 bridge memo、逐字证据与置信度；只提名不改归属，按
+  review > classic > distant 选择默认 kind，低置信度/证据不足进入 review。
+  无迁移，测试只用 FakeLLM。
 - **P4-S5**：classification/v2 主/副标签、runner-up/置信度、逐字 evidence 与
   boundary_note；置信度/边界/证据不足进入 `needs_review`，标签与主题桶幂等写入
   `paper_tag`/`paper_bucket`，已有不同分类拒绝静默覆盖。无迁移，测试只用 FakeLLM。

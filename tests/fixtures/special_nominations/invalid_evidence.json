@@ -1,0 +1,13 @@
+{
+  "nominations": [
+    {
+      "bucket": "classic",
+      "confidence": 0.8,
+      "reason": "声称是标准基准，但证据不在摘要中。",
+      "evidence": [{"quote": "a fabricated claim not in the paper"}],
+      "review_layers": [],
+      "classic_basis": ["standard"],
+      "bridge_memo": null
+    }
+  ]
+}

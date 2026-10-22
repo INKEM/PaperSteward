@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S5 完成并通过本地阶段门；P4-S6–S8 未开始。**
+> 状态：**P4-S1–S6 完成并通过本地阶段门；P4-S7–S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -69,11 +69,12 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
   分类正反例、标签/桶幂等写入；
 - 范围外：特殊桶提名；预估 1–2 天。
 
-### P4-S6：特殊桶提名与桥接假设
+### P4-S6：特殊桶提名与桥接假设（完成）
 
 - 目标：review/distant/classic 三类提名、理由/证据与远邻 bridge memo；
-- 输出：`pipeline/special.py`、提名 schema/测试；
-- 范围外：配额/展示（P7）；预估 1–2 天。
+- 输出：`special_nomination/v1` prompt/schema（review layers、classic basis、bridge memo）、
+  `pipeline/special.py`、提名正反例；
+- 范围外：配额/展示（P7）、最终归属写入；预估 1–2 天。
 
 ### P4-S7：静态分 A/E/S 与快照
 
@@ -415,6 +416,65 @@ P4-S4 超过 8 文件指引：prompt 版本、摘要服务/校验、持久化、
 
 P4-S5 超过 8 文件指引：prompt/schema 扩展、分类服务、taxonomy/证据校验、标签/桶
 持久化、正反例与文档共同构成本次竖切；没有提前实现 P4-S6 特殊桶逻辑。
+
+## P4-S6 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s6-make-check'`：
+  ruff format/check（178 文件）、strict mypy（**89 源文件**）通过；
+  **812 passed / 4 e2e excluded**（P4-S5 后基线 803，新增 9 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s6-integration'`：
+  **242 passed**（本阶段为纯提名/schema，无新增集成用例）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s6-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → 0006 → base → 0006 通过（无新迁移）。
+- `make demo DEMO_PORT=8061`：`/health`、`/papers` 正常；head 仍为 0006。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 LLM。
+- 离线演示：`special_nomination/v1` + `FakeLLM` 得到 review（0.82，method+evaluation）
+  与 distant（0.70，四段 bridge memo）；`selected_kind=review`，证据逐字有效。
+
+### 实现
+
+- `special_nomination/v1` prompt：三类特殊桶定义、review/classic/distant 条件、
+  bridge memo 四段、证据与 confidence；明确不改主标签/配额。
+- 新 `special_nomination` schema：每条提名包含 bucket/confidence/reason/evidence；
+  review 至少两个层级、classic 至少一个经典依据、distant 必须四段 bridge memo；
+  同一桶最多一次，最多三条。
+- `pipeline/special.py`：逐字标题/摘要证据校验、置信度阈值（默认 0.6）、
+  无效/伪造证据/缺失 bridge memo 保留提名但 `accepted=false`；
+  `selected_kind` 按 `review > classic > distant` 选择；只提名，不写库、不改归属。
+- `needs_review` 汇总无效提名/低置信度/缺摘要原因；全部有效时可为 false。
+
+### 能做什么
+
+- 为论文生成 0–3 条特殊桶提名，附理由、逐字证据、review 层级/classic 依据；
+- 远邻提名强制四段可证伪 bridge memo；
+- 用 `selected_kind` 表达默认归属优先级，供 P4-S8 决定是否写入/展示；
+- 结构化 `SpecialNominationResult.as_json()` 供审核队列/配额阶段使用。
+
+### 不能做什么
+
+- 不写 `paper_bucket`、不改变主标签/论文状态；最终归属由 P4-S8 决定；
+- 不处理配额、展示、周限制（P7）；
+- 不调用真实 LLM；准确率/召回率未做真实模型验收；
+- 不自动把 distant/classic 提名转成成员关系；无迁移/新依赖。
+
+### P4-S7 输入与开工约束
+
+- 输入：`SpecialNominationResult.selected_kind`、`ClassificationResult`、R、摘要、
+  enrichment、已确认配置/版本；
+- 静态分 A/E/S 只做确定性计算，版本冻结；不因特殊桶提名改写主标签；
+- 新字段/表继续新增迁移（当前 0006），测试保持 FakeLLM/fixtures。
+
+### 回滚
+
+- 无迁移；撤销 `special_nomination` schema/prompt、`pipeline/special.py`、fixtures/测试即可；
+- 已存在的标签/桶/摘要数据不受影响。
+
+### 规模说明
+
+P4-S6 超过 8 文件指引：schema/prompt、三类提名校验、bridge memo、优先级选择、
+正反例与文档共同构成本次竖切；未实现 P4-S7 静态分或 P7 配额/展示。
 
 ## 与 P5 的边界
 

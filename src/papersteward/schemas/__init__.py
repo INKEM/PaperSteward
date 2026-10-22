@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from papersteward.schemas.models import (
     SCHEMA_MODELS,
+    BridgeMemoOutput,
     ClassificationEvidenceOutput,
     ClassificationOutput,
     DynamicScoreOutput,
@@ -18,6 +19,9 @@ from papersteward.schemas.models import (
     ScoreSnapshotOutput,
     SecondaryTagOutput,
     SpecialCandidateOutput,
+    SpecialEvidenceOutput,
+    SpecialNominationOutput,
+    SpecialNominationsOutput,
     SpecialScoreSnapshotOutput,
     StaticScoreOutput,
     SummaryOutput,
@@ -28,6 +32,7 @@ from papersteward.schemas.models import (
 
 __all__ = [
     "SCHEMA_MODELS",
+    "BridgeMemoOutput",
     "ClassificationEvidenceOutput",
     "ClassificationOutput",
     "DynamicScoreOutput",
@@ -42,6 +47,9 @@ __all__ = [
     "ScoreSnapshotOutput",
     "SecondaryTagOutput",
     "SpecialCandidateOutput",
+    "SpecialEvidenceOutput",
+    "SpecialNominationOutput",
+    "SpecialNominationsOutput",
     "SpecialScoreSnapshotOutput",
     "StaticScoreOutput",
     "SummaryOutput",

@@ -1,0 +1,18 @@
+{
+  "nominations": [
+    {
+      "bucket": "review",
+      "confidence": 0.8,
+      "reason": "review one",
+      "evidence": [{"quote": "retrieval and generation evaluation"}],
+      "review_layers": ["method", "evaluation"]
+    },
+    {
+      "bucket": "review",
+      "confidence": 0.7,
+      "reason": "review two",
+      "evidence": [{"quote": "retrieval and generation evaluation"}],
+      "review_layers": ["method", "evaluation"]
+    }
+  ]
+}
