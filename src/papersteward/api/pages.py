@@ -180,15 +180,18 @@ def style() -> FileResponse:
 def today(session: SessionDep, day: date | None = None) -> HTMLResponse:
     try:
         selected = _day(session, day)
+        current = _day(session)
         try:
             digest = read_digest(session, selected)
         except NotFoundError:
+            label = "今日" if selected == current else "该日"
             return _page(
                 "今日阅读",
-                "<p>按阅读容量与主题平衡，安排今天的文献。</p>"
+                f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'
                 '<form action="/ui/digests" method="post" hx-post="/ui/digests" '
                 'hx-target="main" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
-                "<button>生成今日日报</button></form>",
+                f'<input type="hidden" name="day" value="{selected.isoformat()}">'
+                f"<button>生成{label}日报</button></form>",
             )
         body = f'<p class="muted">{selected} · 队列 {digest.queue_total} 篇 · '
         body += f"待确认 {digest.pending_review} 篇</p>"
@@ -304,15 +307,32 @@ def _guard(request: Request) -> None:
 async def generate(request: Request, session: SessionDep) -> Response:
     try:
         _guard(request)
+        raw = await request.body()
+        if len(raw) > 10000:
+            raise InvariantViolation("ui.body", "表单过大")
+        fields = parse_qs(raw.decode(), keep_blank_values=True)
+        explicit = fields.get("day", [""])[-1]
+        try:
+            explicit_day = date.fromisoformat(explicit) if explicit else None
+        except ValueError:
+            raise InvariantViolation("digest.date", "日期无效") from None
         with session.begin():
-            create_digest(session, _day(session), now=utc_now())
+            selected = _day(session, explicit_day)
+            create_digest(session, selected, now=utc_now())
+            target = "/ui/today" if selected == _day(session) else f"/ui/today?day={selected}"
         return (
-            Response(status_code=200, headers={"HX-Redirect": "/ui/today"})
+            Response(status_code=200, headers={"HX-Redirect": target})
             if request.headers.get("hx-request")
-            else RedirectResponse("/ui/today", status_code=303)
+            else RedirectResponse(target, status_code=303)
         )
     except (DomainError, AppError) as exc:
         return _error(exc)
+    except (ValueError, UnicodeError):
+        return HTMLResponse(
+            '<article><p role="alert">表单须为UTF-8，日期须为有效日期。</p></article>',
+            status_code=422,
+            headers=HEADERS,
+        )
 
 
 @router.post("/actions/{paper_id}")

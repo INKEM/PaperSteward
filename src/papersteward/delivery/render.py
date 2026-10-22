@@ -24,7 +24,12 @@ def safe_url(value: str | None) -> str | None:
         return None
     try:
         parsed = urlsplit(value)
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username:
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
             return None
     except ValueError:
         return None
