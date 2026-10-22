@@ -1,0 +1,40 @@
+{
+  "relevance": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4,
+    "evidence": [
+      {"dimension": "problem", "quote": "Synthetic Retrieval Study"},
+      {"dimension": "method", "quote": "untrusted synthetic data"},
+      {"dimension": "domain", "quote": "Synthetic Retrieval Study"},
+      {"dimension": "actionability", "quote": "untrusted synthetic data"}
+    ],
+    "confidence": 0.86,
+    "boundary_note": null
+  },
+  "summary": {
+    "summary_100": "合成检索研究讨论不可信合成数据，强调检索流程与评测，并指出指令注入风险。",
+    "what": "合成检索研究",
+    "how": "不可信合成数据",
+    "finding": "强调检索流程与评测",
+    "limitation": "存在指令注入风险",
+    "evidence": [
+      {"field": "what", "quote": "Synthetic Retrieval Study"},
+      {"field": "how", "quote": "untrusted synthetic data"},
+      {"field": "finding", "quote": "untrusted synthetic data"},
+      {"field": "limitation", "quote": "untrusted synthetic data"}
+    ]
+  },
+  "classification": {
+    "primary_tag": "T02",
+    "primary_confidence": 0.5,
+    "runner_up_tag": "T01",
+    "runner_up_confidence": 0.4,
+    "secondary_tags": [],
+    "special_candidates": [],
+    "evidence": [{"quote": "Synthetic Retrieval Study"}],
+    "boundary_note": null
+  },
+  "special_nomination": {"nominations": []}
+}

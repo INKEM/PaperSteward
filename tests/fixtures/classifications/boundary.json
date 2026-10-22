@@ -1,0 +1,10 @@
+{
+  "primary_tag": "T02",
+  "primary_confidence": 0.86,
+  "runner_up_tag": "T01",
+  "runner_up_confidence": 0.62,
+  "secondary_tags": [],
+  "special_candidates": [],
+  "evidence": [{"quote": "retrieval-augmented generation"}],
+  "boundary_note": "贡献声明在生成侧，但实验主战场是检索器。"
+}

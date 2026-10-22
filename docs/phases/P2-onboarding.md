@@ -1,6 +1,6 @@
 # P2 初始化协商与确认门
 
-> 状态：P2-S1–S6 实现与本地阶段验收完成（2026-10-22）；Docker 已独立验证；CI 仍未触发，阶段发布门保持开放。独立报告见 [P2-independent-acceptance.md](P2-independent-acceptance.md)。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
+> 状态：P2-S1–S6 实现与本地阶段验收完成（2026-10-22）；Docker 与 CI 已独立验证，P2 验收通过；阶段 tag 待发布流程。独立报告见 [P2-independent-acceptance.md](P2-independent-acceptance.md)。依据：大阶段开发计划 §3 P2、设计方案 §4、P1 handoff §10.7。
 
 ## 小阶段卡片
 
@@ -614,5 +614,5 @@ make secret-scan
    cassette/fake，数据库 tmp_path；live 测试显式手动，不加入 CI。
 6. **已有限制**：P1 PaperTag 无 taxonomy_id，队列影响仅候选预览；无方向变更/reset
    契约，不能静默替换已选版本。真实模型/摘要/评分属于 P4/P5，不在 P3 顺手引入。
-7. **验收遗留**：Docker 已独立验证；CI 仍未触发，补 CI 通过后再考虑阶段 tag。P1 F5/F3
-   债务仍记录，不阻塞当前本地代码交接。未发现本轮引入的 P0/P1 阻断缺陷。
+7. **验收遗留**：Docker 与 CI 已独立验证（P2 CI run 39643102708）；阶段 tag 留待发布流程。
+   P1 F5/F3 债务仍记录，不阻塞当前本地代码交接。未发现本轮引入的 P0/P1 阻断缺陷。

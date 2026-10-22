@@ -19,8 +19,10 @@ from papersteward.storage.onboarding import ensure_active
 from papersteward.storage.repositories import ConfigRepository, TaxonomyRepository
 
 
-def bound_context(session: Session, now: datetime) -> tuple[ResearchProfile, dict[str, Any]]:
-    ensure_active(session, action="ingest")
+def bound_context(
+    session: Session, now: datetime, *, action: str = "ingest"
+) -> tuple[ResearchProfile, dict[str, Any]]:
+    ensure_active(session, action=action)
     if now.tzinfo is None or now.utcoffset() is None:
         raise InvariantViolation("ingest.time", "运行时间必须带时区")
     profile = selected_profile(session)
@@ -68,7 +70,7 @@ def bound_context(session: Session, now: datetime) -> tuple[ResearchProfile, dic
         )
         if runtime.paused or quiet:
             raise InvariantViolation(
-                "ingest.schedule", "当前处于暂停或安静时段，未调用来源；请稍后重试"
+                "ingest.schedule", "当前处于暂停或安静时段，未执行处理；请稍后重试"
             )
         return profile, {
             "profile_id": profile.id,

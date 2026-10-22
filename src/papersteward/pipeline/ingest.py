@@ -137,6 +137,16 @@ def _write_group(
                         },
                     )
                 )
+            # 收敛早期中断留下的状态：discovered 必须先到 deduped，再到
+            # screened/rejected；已在 screened 的文献只在出现新原因时降级为 rejected。
+            if old.status is PaperStatus.DISCOVERED:
+                papers.transition(
+                    paper_id,
+                    PaperStatus.DEDUPED,
+                    event_id=uuid4().hex,
+                    occurred_at=at,
+                    payload={"run_id": run_id, "reasons": list(group.reasons)},
+                )
             if reasons:
                 papers.transition(
                     paper_id,
@@ -144,6 +154,14 @@ def _write_group(
                     event_id=uuid4().hex,
                     occurred_at=at,
                     payload={"run_id": run_id, "reasons": reasons},
+                )
+            elif old.status in {PaperStatus.DISCOVERED, PaperStatus.DEDUPED}:
+                papers.transition(
+                    paper_id,
+                    PaperStatus.SCREENED,
+                    event_id=uuid4().hex,
+                    occurred_at=at,
+                    payload={"run_id": run_id, "reasons": []},
                 )
     else:
         item = group.candidate

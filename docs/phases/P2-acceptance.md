@@ -2,12 +2,12 @@
 
 日期：2026-10-22；Python 3.12；head 0004；S6 基线 `72336df`。
 
-> **独立复核（2026-10-22）**：本地阶段门与全新 clone 通过；Docker build/run
-> 已在当前 `f3b4a1b` 上独立验证；CI 尚无可归属于 P2 的运行证据。详见
-> [P2 独立验收报告](P2-independent-acceptance.md)。
+> **独立复核（2026-10-22）**：本地阶段门、全新 clone 与 Docker build/run 通过；
+> 后续 CI run [39643102708](https://github.com/INKEM/PaperSteward/actions/runs/39643102708)
+> 的 3 个 job 全绿。详见 [P2 独立验收报告](P2-independent-acceptance.md)。
 
-结论：**P2-S1–S6 实现与本地阶段门通过，Docker 已闭环，可交接 P3**。CI 本轮
-仍未触发；未声称 CI 通过，未打 p2-done tag。
+结论：**P2-S1–S6 实现与本地阶段门通过，Docker/CI 已闭环，可交接 P3**；未打
+p2-done tag，阶段 tag 留待发布流程。
 
 ## 需求与证据
 
@@ -40,7 +40,7 @@
 | 操作指南与 handoff | docs/onboarding-cli.md；P2-onboarding.md 的 S6/P3 handoff |
 | Docker Compose 配置 | 通过；独立复核执行 `docker compose config --quiet` |
 | Docker build/run | **通过（独立复核）**：当前 `f3b4a1b` 镜像构建成功；UID 10001、healthy、`/health`、`/papers`、`/onboarding` start 正常 |
-| CI / tag | **P2 CI 仍未触发 / 未打 tag**；P1 历史 CI 不能替代当前提交证据 |
+| CI / tag | **CI 通过**：run [39643102708](https://github.com/INKEM/PaperSteward/actions/runs/39643102708) 3 个 job 全绿；未打 tag，留待发布流程 |
 
 SQLite 验证全部使用 `/dev/shm` 下 pytest tmp_path/临时库，以规避当前工作区 fsync
 阻塞；没有更改同步设置或写 var/papersteward.db。可复制命令见 P2 阶段文档 S6。

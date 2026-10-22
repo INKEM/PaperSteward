@@ -195,6 +195,100 @@ def test_existing_final_or_scored_metadata_is_unchanged(client, migrated_engine,
         assert report.stats_json["new"] == 0 and report.stats_json["source_versions_added"] == 1
 
 
+@pytest.mark.parametrize(
+    "status,expected_new_events",
+    [
+        ("discovered", {EventType.PAPER_DEDUPED, EventType.PAPER_SCREENED}),
+        ("deduped", {EventType.PAPER_SCREENED}),
+    ],
+)
+def test_rerun_converges_early_ingest_states(client, migrated_engine, status, expected_new_events):
+    activate(client)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        run(session)
+        row = session.scalar(select(PaperRow).where(PaperRow.doi == "10.0000/fixture-only"))
+        identifier = row.id
+        before = {
+            event_type: session.scalar(
+                select(func.count())
+                .select_from(EventRow)
+                .where(
+                    EventRow.paper_id == identifier,
+                    EventRow.event_type == event_type.value,
+                )
+            )
+            for event_type in (EventType.PAPER_DEDUPED, EventType.PAPER_SCREENED)
+        }
+        row.status = status  # 仅测试准备：模拟中断后遗留的早期状态。
+    with session_scope(factory) as session:
+        report = run(session, run_id="converged")
+        row = session.get(PaperRow, identifier)
+        assert row.status == "screened"
+        assert report.stats_json["existing"] == 2
+        after = {
+            event_type: session.scalar(
+                select(func.count())
+                .select_from(EventRow)
+                .where(
+                    EventRow.paper_id == identifier,
+                    EventRow.event_type == event_type.value,
+                )
+            )
+            for event_type in (EventType.PAPER_DEDUPED, EventType.PAPER_SCREENED)
+        }
+        assert {
+            event_type: after[event_type] - before[event_type] for event_type in expected_new_events
+        } == dict.fromkeys(expected_new_events, 1)
+        if status == "deduped":
+            assert after[EventType.PAPER_DEDUPED] == before[EventType.PAPER_DEDUPED]
+
+
+def test_rerun_converges_early_state_to_rejected_on_new_reason(client, migrated_engine, tmp_path):
+    activate(client)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        run(session)
+        row = session.scalar(select(PaperRow).where(PaperRow.doi == "10.0000/fixture-only"))
+        identifier = row.id
+        row.status = "discovered"  # 仅测试准备：模拟中断后遗留的早期状态。
+    data = json.loads(FIXTURE.read_text())
+    data["items"][0]["document_type"] = "news"
+    path = tmp_path / "filtered-existing.json"
+    path.write_text(json.dumps(data))
+    with session_scope(factory) as session:
+        report = ingest(
+            session, [FakeSourceAdapter(path)], run_id="rejected", now=lambda: NOW, queries=QUERIES
+        )
+        row = session.get(PaperRow, identifier)
+        assert row.status == "rejected"
+        assert report.stats_json["filtered"] == [
+            {"paper_id": identifier, "reasons": ["document_type"]}
+        ]
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventRow)
+                .where(
+                    EventRow.paper_id == identifier,
+                    EventRow.event_type == EventType.PAPER_DEDUPED.value,
+                )
+            )
+            == 2
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventRow)
+                .where(
+                    EventRow.paper_id == identifier,
+                    EventRow.event_type == EventType.PAPER_REJECTED.value,
+                )
+            )
+            == 1
+        )
+
+
 def test_hard_filter_persists_rejected_reason(client, migrated_engine, tmp_path):
     activate(client)
     data = json.loads(FIXTURE.read_text())

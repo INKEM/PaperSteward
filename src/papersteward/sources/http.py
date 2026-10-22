@@ -22,6 +22,8 @@ class SourceHTTP:
         retries: int = 2,
         min_interval: float = 3,
         max_requests: int = 30,
+        cache_max_entries: int = 128,
+        cache_max_bytes: int = 32 * 1024 * 1024,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         api_key: SecretStr | None = None,
@@ -33,11 +35,14 @@ class SourceHTTP:
             or min_interval < 0
             or not 0 <= retries <= 5
             or max_requests < 1
+            or cache_max_entries < 1
+            or cache_max_bytes < 1
         ):
-            raise ValueError("HTTP 预算/超时/限流参数非法")
+            raise ValueError("HTTP 预算/超时/限流/缓存参数非法")
         self.source, self.retries, self.min_interval = source, retries, min_interval
         self.max_requests, self.clock, self.sleep = max_requests, clock, sleep
-        self.request_count = self.cache_hits = 0
+        self.cache_max_entries, self.cache_max_bytes = cache_max_entries, cache_max_bytes
+        self.request_count = self.cache_hits = self.cache_bytes = 0
         self._last: float | None = None
         self._cache: dict[str, tuple[float, bytes]] = {}
         headers = {"User-Agent": "PaperSteward/0.1"}
@@ -56,6 +61,20 @@ class SourceHTTP:
     def close(self) -> None:
         self._client.close()
 
+    def _remember(self, key: str, body: bytes) -> None:
+        """按条数和总字节数双重限制的 FIFO 缓存；超大响应只返回不缓存。"""
+        if len(body) > self.cache_max_bytes:
+            return
+        while self._cache and (
+            len(self._cache) >= self.cache_max_entries
+            or self.cache_bytes + len(body) > self.cache_max_bytes
+        ):
+            oldest = next(iter(self._cache))
+            _, evicted = self._cache.pop(oldest)
+            self.cache_bytes -= len(evicted)
+        self._cache[key] = (self.clock(), body)
+        self.cache_bytes += len(body)
+
     def get(self, url: str, params: Mapping[str, str | int]) -> bytes:
         target = httpx.URL(url)
         expected_host = {
@@ -67,9 +86,12 @@ class SourceHTTP:
             raise SourceError(self.source, "invalid_response")
         key = str(target.copy_merge_params(sorted(params.items())))
         cached = self._cache.get(key)
-        if cached and self.clock() - cached[0] < 86400:
-            self.cache_hits += 1
-            return cached[1]
+        if cached is not None:
+            if self.clock() - cached[0] < 86400:
+                self.cache_hits += 1
+                return cached[1]
+            self._cache.pop(key)
+            self.cache_bytes -= len(cached[1])
         for attempt in range(self.retries + 1):
             if self.request_count >= self.max_requests:
                 raise SourceError(self.source, "budget_exceeded")
@@ -89,9 +111,7 @@ class SourceHTTP:
                                 raise SourceError(self.source, "invalid_response")
                             chunks.append(chunk)
                         body = b"".join(chunks)
-                        if len(self._cache) >= 128:
-                            self._cache.pop(next(iter(self._cache)))
-                        self._cache[key] = (self.clock(), body)
+                        self._remember(key, body)
                         return body
                     retryable = response.status_code == 429 or response.status_code >= 500
                     error = SourceError(

@@ -1,0 +1,13 @@
+{
+  "nominations": [
+    {
+      "bucket": "classic",
+      "confidence": 0.78,
+      "reason": "提出该方向的标准评测基准，长期被后续工作采用。",
+      "evidence": [{"quote": "retrieval and generation evaluation"}],
+      "review_layers": [],
+      "classic_basis": ["standard"],
+      "bridge_memo": null
+    }
+  ]
+}

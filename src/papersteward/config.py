@@ -6,15 +6,17 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_PREFIX = "PAPERSTEWARD_"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_LOOPBACK_LLM_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class AppEnv(StrEnum):
@@ -30,6 +32,13 @@ class LogFormat(StrEnum):
 
     JSON = "json"
     CONSOLE = "console"
+
+
+class LLMProviderKind(StrEnum):
+    """LLM 接入方式；默认离线 FakeLLM，真实调用必须显式授权。"""
+
+    FAKE = "fake"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 
 class Settings(BaseSettings):
@@ -53,11 +62,69 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, ge=1, le=65535)
     timezone: str = "Asia/Shanghai"
     semantic_scholar_api_key: SecretStr | None = None
+    llm_provider: LLMProviderKind = LLMProviderKind.FAKE
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: SecretStr | None = None
+    llm_model: str | None = None
+    llm_timeout_s: float = Field(default=30.0, gt=0, le=600)
+    llm_max_attempts: int = Field(default=3, ge=1, le=5)
+    llm_prompt_cost_per_1k_usd: float = Field(default=0.0, ge=0)
+    llm_completion_cost_per_1k_usd: float = Field(default=0.0, ge=0)
 
     @field_validator("semantic_scholar_api_key", mode="before")
     @classmethod
     def _empty_source_key(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalize_llm_provider(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("-", "_")
+            if normalized in {"openai", "openai_compatible"}:
+                return LLMProviderKind.OPENAI_COMPATIBLE
+            if normalized == "fake":
+                return LLMProviderKind.FAKE
+        return value
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def _validate_llm_base_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        parsed = urlparse(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("必须是 http(s) API 根地址，不能包含认证、查询或片段")
+        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_LLM_HOSTS:
+            raise ValueError("非本机 LLM 地址必须使用 https")
+        return url
+
+    @field_validator("llm_api_key", mode="before")
+    @classmethod
+    def _empty_llm_key(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("llm_model", mode="before")
+    @classmethod
+    def _empty_llm_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("llm_model")
+    @classmethod
+    def _require_llm_model(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if info.data.get("llm_provider") is LLMProviderKind.OPENAI_COMPATIBLE and not value:
+            raise ValueError("provider=openai_compatible 时必须配置模型")
+        return value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -139,6 +206,7 @@ def get_settings() -> Settings:
 __all__ = [
     "ENV_PREFIX",
     "AppEnv",
+    "LLMProviderKind",
     "LogFormat",
     "LogLevel",
     "Settings",

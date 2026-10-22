@@ -1,8 +1,10 @@
 # P3 采集、去重与硬过滤
 
 > 依据：大阶段开发计划 §3 P3、§5.3；设计 §6；P2 handoff。
-> 状态：P3-S1–S7 实现与本地阶段门完成；stacked 分支未合并，Docker/CI待验证。日期：2026-10-22。
-> 前置：P1/P2 当前 checkout 为 stacked 基线，P2 CI/tag 证据仍待补。
+> 状态：P3-S1–S7 实现与本地阶段门完成；Docker/CI 已独立验证，P3 验收通过（2026-10-22）。
+> 验收后四项非阻断优化已跟进（状态收敛、缓存字节上限、OpenAlex 身份分页、CLI 多页
+> fixture）。独立报告见 [P3-acceptance.md](P3-acceptance.md)。
+> 前置：P1/P2 当前 checkout 为 stacked 基线；P2 CI 已由后续 run 补齐，P2 tag 仍待发布流程。
 
 ## 小阶段卡片
 
@@ -247,19 +249,61 @@ make secret-scan
 ```
 
 本地分支/提交链：S2 `92c00d0` → S3 `3336393` → S4 `08c5169` → S5 `0e3271a`
-→ S6 `eb23cd8` → 当前S7分支。每项均独立分支与Conventional Commit；只在本地
-前序提交上stacked，没有自动合并/推送/发布/tag。P3工程实现与本地门完成，正式
-合并及Docker/CI证据、阶段tag仍是后续发布工作，不能据此声称已发布Alpha。
+→ S6 `eb23cd8` → S7 `a93d96a`。P3-S7 已合并到 main（`9fe91dc`）；Docker/CI
+已独立验证（branch run 39709657832、main run 39709826878）。P3 阶段 tag 仍待发布
+流程，不据此声称已发布 Alpha。
 
-## P4 handoff：尚未开始
+## P3 验收后非阻断优化（2026-10-22）
 
+依据 [P3-acceptance.md](P3-acceptance.md) §5 的四项低优先级观察完成优化；未变更 schema、
+执行门禁、来源契约或 P4 边界：
+
+1. **早期状态收敛**：重跑时，由 ingest 创建且仍处 `discovered`/`deduped` 的文献在无新
+   过滤原因时按状态机补齐 `deduped → screened`；出现新原因时进入 `rejected`。事件链与
+   新建文献一致；归档/已拒绝/已评分/种子/校准记录仍不改写。
+2. **缓存字节上限**：`SourceHTTP` 缓存仍最多 128 条，同时受 32 MiB 总字节限制，按 FIFO
+   淘汰；单响应仍限 8 MiB，超过总字节预算的单条响应只返回不缓存。新增 `cache_bytes`
+   统计供测试/诊断。
+3. **OpenAlex 身份消歧分页**：作者/venue/机构精确名称解析由只读第一页改为最多 3 页
+   （300 条）的保守分页；仅当完整扫描且精确匹配唯一时解析为 ID，同名多匹配或未完整
+   扫描仍返回 `unsupported_query`，不猜人/机构。
+4. **CLI 多页 fixture**：`--fixture` 文件可为原始响应（继续重复回放），也可为
+   `{"responses": [对象/字符串, ...]}` 信封，按 HTTP 请求顺序回放多页响应；列表耗尽返回
+   明确的 400 而不是重复最后一页。多页 arXiv/OpenAlex/Semantic Scholar cassette 可按
+   请求顺序端到端演示。
+
+验证：新增/更新回归覆盖状态收敛、缓存条数/字节淘汰、身份消歧分页/歧义/缺 meta、fixture
+顺序回放/耗尽/非法信封。阶段门结果见下方“P3 优化验证”。回滚：四项均为本地代码/文档
+改动，无迁移、无依赖、无持久化格式变更；撤销提交即可，既有运行报告与来源记录无需迁移。
+
+### P3 优化验证
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-opt-make-check'`：
+  ruff format/check、strict mypy（80 源文件）通过；**700 passed / 4 e2e excluded**
+  （较验收基线 684 新增 16 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-opt-integration'`：
+  **228 passed**（较验收基线 224 新增 4 项，含真实 CLI 多页 fixture）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p3-opt-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → 0005 → base → 0005 通过。
+- `make demo DEMO_PORT=8055`：临时库迁移/seed、`/health`、`/papers` 正常。
+- `make secret-scan`、`git diff --check` 通过；未使用真实网络/LLM/用户密钥。
+
+本轮仅改代码、测试与文档，**未新增 schema/迁移/依赖/容器配置**，head 仍为 `0005`；
+未重跑 Docker/CI，因此不把本轮说成新的 Docker/CI 验收。P3 验收报告中的 Docker/CI
+证据仍对应 `a93d96a`（main `9fe91dc`）。回滚方式见上。
+
+## P4 handoff（P4-S1–S8 已完成）
+
+- P4-S1–S8 已完成真实 OpenAI-compatible provider/配置入口、富化输入契约、
+  `enrichment` 持久化、相关度 R、100 字摘要、分类/标签桶、特殊桶提名、静态分与
+  process/review 审核闭环，见 [P4-enrichment.md](P4-enrichment.md)；P5 待开始。
 - 输入：SourceAdapter/QuerySpec/PaperCandidate、三个来源cassette、canonicalization/
   DedupeGroup、screened候选池、paper_source原始记录/候选JSON、run报告与选定文档/配置绑定。
-- P4开工前先拆5–8张卡；继续使用FakeLLM/cassette，不因ACTIVE擅自调用真实模型。
-  精确读取G1/G2/G4选定版本；新字段/表走新增迁移（当前0005），不能重写旧迁移。
+- P4 已拆 8 张卡；继续使用FakeLLM/cassette，不因ACTIVE擅自调用真实模型。
+  精确读取G1/G2/G4选定版本；新字段/表走新增迁移（当前0008），不能重写旧迁移。
 - 能做：手动离线/明确live采集、去重/硬过滤、可审计运行报告和CLI；不能做：自动调度、
   embedding语义去重、摘要/分类/评分、生产队列/推送/归档、再协商/reset。
 - 已知边界：词法摘要去重可能漏掉翻译/重写；过滤清单由已确认档案显式提供，未知语言/
   日期不伪造。持久化失败只保存脱敏pipeline_failed报告；来源API变更需重放cassette定位。
-- P1 F5弃用警告/F3非阻断测试债、P2 CI/tag待补保留。本轮无真实API/LLM/用户密钥调用。
-  所有小阶段为本地stacked分支，按用户要求未自动合并/推送/发布/打tag；Docker/CI未运行。
+- P1 F5弃用警告/F3非阻断测试债仍保留；P2/P3 CI 已通过，阶段 tag 仍待发布流程。
+  本轮无真实API/LLM/用户密钥调用。

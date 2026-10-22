@@ -85,3 +85,66 @@ def test_long_retry_after_is_not_retried_early():
             http.get("https://evil.invalid/", {})
     finally:
         http.close()
+
+
+def test_cache_is_bounded_by_total_bytes():
+    def handle(_):
+        return httpx.Response(200, content=b"1234")
+
+    http = SourceHTTP(
+        "arxiv",
+        transport=httpx.MockTransport(handle),
+        sleep=lambda _: None,
+        cache_max_entries=10,
+        cache_max_bytes=10,
+    )
+    try:
+        for query in ("one", "two", "three"):
+            assert http.get(URL, {"q": query}) == b"1234"
+        assert http.request_count == 3 and http.cache_bytes == 8
+        # FIFO 淘汰：最早的 one 已被移出，重新请求必须再次访问来源。
+        assert http.get(URL, {"q": "one"}) == b"1234"
+        assert http.request_count == 4 and http.cache_bytes == 8
+        assert http.get(URL, {"q": "three"}) == b"1234"
+        assert http.request_count == 4 and http.cache_hits == 1
+    finally:
+        http.close()
+
+
+def test_cache_respects_entry_limit_and_skips_oversized_bodies():
+    http = SourceHTTP(
+        "arxiv",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b"1234")),
+        sleep=lambda _: None,
+        cache_max_entries=2,
+        cache_max_bytes=100,
+    )
+    try:
+        for query in (1, 2, 3):
+            http.get(URL, {"q": query})
+        assert http.cache_bytes == 8
+        http.get(URL, {"q": 1})
+        assert http.request_count == 4
+        http.get(URL, {"q": 3})
+        assert http.cache_hits == 1
+    finally:
+        http.close()
+    oversized = SourceHTTP(
+        "arxiv",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b"1234")),
+        sleep=lambda _: None,
+        cache_max_bytes=3,
+    )
+    try:
+        assert oversized.get(URL, {}) == b"1234"
+        assert oversized.cache_bytes == 0
+        oversized.get(URL, {})
+        assert oversized.request_count == 2 and oversized.cache_hits == 0
+    finally:
+        oversized.close()
+
+
+@pytest.mark.parametrize("kwargs", [{"cache_max_entries": 0}, {"cache_max_bytes": 0}])
+def test_invalid_cache_budget(kwargs):
+    with pytest.raises(ValueError, match="缓存"):
+        SourceHTTP("arxiv", **kwargs)

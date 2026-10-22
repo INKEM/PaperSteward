@@ -85,9 +85,10 @@ def test_follow_list_resolves_exact_identity(field, endpoint, prefix):
             return httpx.Response(
                 200,
                 json={
+                    "meta": {"count": 1},
                     "results": [
                         {"display_name": "Example", "id": f"https://openalex.org/{prefix}1"}
-                    ]
+                    ],
                 },
             )
         assert f"https://openalex.org/{prefix}1" in request.url.params["filter"]
@@ -96,6 +97,97 @@ def test_follow_list_resolves_exact_identity(field, endpoint, prefix):
     http = SourceHTTP("openalex", transport=httpx.MockTransport(handle), sleep=lambda _: None)
     try:
         assert OpenAlexAdapter(http).search(QuerySpec(keywords=("Example",), field=field)) == []
+    finally:
+        http.close()
+
+
+def test_follow_list_paginates_until_exact_identity_is_found():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.url.path == "/authors":
+            page = int(request.url.params["page"])
+            if page == 1:
+                results = [
+                    {"display_name": "Other", "id": f"https://openalex.org/A9{i:03d}"}
+                    for i in range(100)
+                ]
+            else:
+                results = [{"display_name": "Example", "id": "https://openalex.org/A1"}]
+            return httpx.Response(200, json={"meta": {"count": 101}, "results": results})
+        assert "authorships.author.id:https://openalex.org/A1" in request.url.params["filter"]
+        return httpx.Response(200, json={"results": []})
+
+    http = SourceHTTP("openalex", transport=httpx.MockTransport(handle), sleep=lambda _: None)
+    try:
+        assert OpenAlexAdapter(http).search(QuerySpec(keywords=("Example",), field="author")) == []
+        assert [request.url.params["page"] for request in requests[:2]] == ["1", "2"]
+    finally:
+        http.close()
+
+
+def test_follow_list_rejects_ambiguous_or_unscanned_identity():
+    def ambiguous(request):
+        if request.url.path == "/authors":
+            return httpx.Response(
+                200,
+                json={
+                    "meta": {"count": 2},
+                    "results": [
+                        {"display_name": "Example", "id": "https://openalex.org/A1"},
+                        {"display_name": "example", "id": "https://openalex.org/A2"},
+                    ],
+                },
+            )
+        raise AssertionError("ambiguous identity must not query works")
+
+    http = SourceHTTP("openalex", transport=httpx.MockTransport(ambiguous), sleep=lambda _: None)
+    try:
+        with pytest.raises(SourceError, match="unsupported_query"):
+            OpenAlexAdapter(http).search(QuerySpec(keywords=("Example",), field="author"))
+    finally:
+        http.close()
+
+    def partial(request):
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"count": 500},
+                "results": [
+                    {"display_name": "Example", "id": "https://openalex.org/A1"},
+                    *[
+                        {"display_name": "Other", "id": f"https://openalex.org/A9{i:03d}"}
+                        for i in range(99)
+                    ],
+                ],
+            },
+        )
+
+    http = SourceHTTP("openalex", transport=httpx.MockTransport(partial), sleep=lambda _: None)
+    try:
+        with pytest.raises(SourceError, match="unsupported_query"):
+            OpenAlexAdapter(http, identity_max_pages=1).search(
+                QuerySpec(keywords=("Example",), field="author")
+            )
+    finally:
+        http.close()
+
+
+def test_follow_list_requires_identity_total_count():
+    http = SourceHTTP(
+        "openalex",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={"results": [{"display_name": "Example", "id": "https://openalex.org/A1"}]},
+            )
+        ),
+        sleep=lambda _: None,
+    )
+    try:
+        with pytest.raises(SourceError, match="invalid_response"):
+            OpenAlexAdapter(http).search(QuerySpec(keywords=("Example",), field="author"))
     finally:
         http.close()
 

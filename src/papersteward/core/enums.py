@@ -119,6 +119,28 @@ class ReadMode(StrEnum):
     SKIM = "skim"
 
 
+class RelevanceBand(StrEnum):
+    """P4 相关度 R 的入队区间；不直接改变文献状态。"""
+
+    BELOW_THRESHOLD = "below_threshold"
+    LOW = "low"
+    NORMAL = "normal"
+
+
+class ReviewStatus(StrEnum):
+    """人工审核项状态；开放项可批准或改标签后关闭。"""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class ReviewResolution(StrEnum):
+    """审核关闭方式。"""
+
+    APPROVED = "approved"
+    RELABELED = "relabeled"
+
+
 class ScoreTier(StrEnum):
     """特殊桶内部档位；主题桶使用 P 排序，不使用档位。"""
 
@@ -206,6 +228,9 @@ __all__ = [
     "PaperStatus",
     "ReadMode",
     "RecalculationTrigger",
+    "RelevanceBand",
+    "ReviewResolution",
+    "ReviewStatus",
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",

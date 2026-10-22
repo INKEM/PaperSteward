@@ -1,0 +1,10 @@
+{
+  "nominations": [
+    {
+      "bucket": "distant",
+      "confidence": 0.8,
+      "reason": "claims transfer without memo",
+      "evidence": [{"quote": "graph neural network gating"}]
+    }
+  ]
+}

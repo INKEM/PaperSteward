@@ -1,0 +1,12 @@
+{
+  "primary_tag": "T02",
+  "primary_confidence": 0.86,
+  "runner_up_tag": "T01",
+  "runner_up_confidence": 0.62,
+  "secondary_tags": [
+    {"facet": "method", "name": "custom concept", "confidence": 0.7}
+  ],
+  "special_candidates": [],
+  "evidence": [{"quote": "retrieval-augmented generation"}],
+  "boundary_note": null
+}

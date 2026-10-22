@@ -130,7 +130,7 @@ class LLMGateway:
                 completion = self._provider.complete(prompt, timeout_s=self._timeout_s)
             except LLMProviderError as exc:
                 usage.calls += 1
-                if attempt < self._max_attempts:
+                if exc.retryable and attempt < self._max_attempts:
                     usage.retries += 1
                     self._sleep(self._backoff_s * (2 ** (attempt - 1)))
                     continue

@@ -25,6 +25,7 @@ DOMAIN_TABLES = {
     "archive_snapshot",
     "bucket",
     "config",
+    "enrichment",
     "event",
     "paper",
     "paper_bucket",
@@ -33,6 +34,8 @@ DOMAIN_TABLES = {
     "research_profile",
     "run",
     "score_snapshot",
+    "static_score_snapshot",
+    "review_item",
     "summary",
     "tag",
     "taxonomy",
@@ -82,6 +85,52 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "oa_status",
             "canonical_id",
         }
+        assert {column["name"] for column in inspector.get_columns("static_score_snapshot")} == {
+            "paper_id",
+            "score_date",
+            "relevance",
+            "authority",
+            "extra_value",
+            "static_score",
+            "confidence",
+            "config_version",
+            "profile_version",
+            "taxonomy_version",
+            "input_hash",
+            "breakdown_json",
+            "created_at",
+        }
+        assert {column["name"] for column in inspector.get_columns("review_item")} == {
+            "paper_id",
+            "status",
+            "reasons_json",
+            "payload_json",
+            "created_at",
+            "updated_at",
+            "resolved_at",
+            "resolved_by",
+            "resolution",
+            "note",
+        }
+        assert {column["name"] for column in inspector.get_columns("enrichment")} == {
+            "paper_id",
+            "teams_json",
+            "venue_level",
+            "citation_count",
+            "citation_velocity",
+            "code_url",
+            "data_url",
+            "oa_status",
+            "experiment_quality_json",
+            "confidence",
+            "source",
+            "created_at",
+            "updated_at",
+            "provenance_model",
+            "provenance_prompt_version",
+            "provenance_generated_at",
+            "provenance_input_hash",
+        }
         tag_indexes = {index["name"] for index in inspector.get_indexes("paper_tag")}
         assert "uq_paper_tag_primary" in tag_indexes
         filing_indexes = {index["name"] for index in inspector.get_indexes("paper_bucket")}
@@ -91,7 +140,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0005"
+        assert current == "0008"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:

@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from papersteward.core.enums import (
     AssignedBy,
@@ -25,6 +27,8 @@ from papersteward.core.enums import (
     OaStatus,
     PaperStatus,
     ReadMode,
+    ReviewResolution,
+    ReviewStatus,
     RunStatus,
     ScoreTier,
     SpecialBucketKind,
@@ -57,6 +61,21 @@ def _optional_text(value: object, field_name: str) -> str | None:
         raise DomainValidationError(field_name, "必须是字符串或 null")
     stripped = value.strip()
     return stripped or None
+
+
+def _optional_http_url(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    text = _require_text(value, field_name)
+    parsed = urlparse(text)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+    ):
+        raise DomainValidationError(field_name, "必须是 http(s) URL 且不能包含认证信息")
+    return text
 
 
 def _require_code(value: object, field_name: str) -> str:
@@ -451,6 +470,85 @@ class Summary:
 
 
 @dataclass(frozen=True, slots=True)
+class EnrichmentSignals:
+    """P4 富化信号；未知字段保持中性值，缺失证据不得被解释为负面信号。"""
+
+    teams: tuple[str, ...] = ()
+    venue_level: str | None = None
+    citation_count: int | None = None
+    citation_velocity: float | None = None
+    code_url: str | None = None
+    data_url: str | None = None
+    oa_status: OaStatus = OaStatus.UNKNOWN
+    experiment_quality: tuple[str, ...] = ()
+    confidence: float = 0.0
+    source: str = "neutral"
+
+    def __post_init__(self) -> None:
+        for name in ("teams", "experiment_quality"):
+            values = _require_text_tuple(getattr(self, name), f"enrichment.{name}")
+            if len(set(values)) != len(values):
+                raise DomainValidationError(f"enrichment.{name}", "不能包含重复项")
+            object.__setattr__(self, name, values)
+        object.__setattr__(
+            self, "venue_level", _optional_text(self.venue_level, "enrichment.venue_level")
+        )
+        object.__setattr__(
+            self, "citation_count", _require_quota(self.citation_count, "enrichment.citation_count")
+        )
+        if self.citation_velocity is not None:
+            velocity = self.citation_velocity
+            if (
+                isinstance(velocity, bool)
+                or not isinstance(velocity, int | float)
+                or not math.isfinite(velocity)
+                or velocity < 0
+            ):
+                raise DomainValidationError(
+                    "enrichment.citation_velocity", "必须是非负有限数或 null"
+                )
+            object.__setattr__(self, "citation_velocity", float(velocity))
+        object.__setattr__(
+            self, "code_url", _optional_http_url(self.code_url, "enrichment.code_url")
+        )
+        object.__setattr__(
+            self, "data_url", _optional_http_url(self.data_url, "enrichment.data_url")
+        )
+        if not isinstance(self.oa_status, OaStatus):
+            raise DomainValidationError("enrichment.oa_status", "必须是 OaStatus")
+        object.__setattr__(
+            self, "confidence", _require_ratio(self.confidence, "enrichment.confidence")
+        )
+        object.__setattr__(self, "source", _require_text(self.source, "enrichment.source"))
+
+
+@dataclass(frozen=True, slots=True)
+class Enrichment:
+    """P4 富化结果；每篇文献一条，保留来源/置信度与可选 Agent 溯源。"""
+
+    paper_id: str
+    signals: EnrichmentSignals
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    provenance: Provenance | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "enrichment.paper_id"))
+        if not isinstance(self.signals, EnrichmentSignals):
+            raise DomainValidationError("enrichment.signals", "必须是 EnrichmentSignals")
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "enrichment.created_at")
+        )
+        object.__setattr__(
+            self, "updated_at", _require_aware(self.updated_at, "enrichment.updated_at")
+        )
+        if self.updated_at < self.created_at:
+            raise DomainValidationError("enrichment.updated_at", "不能早于 created_at")
+        if self.provenance is not None and not isinstance(self.provenance, Provenance):
+            raise DomainValidationError("enrichment.provenance", "必须是 Provenance 或 null")
+
+
+@dataclass(frozen=True, slots=True)
 class ScoreSnapshot:
     """某日评分快照；追加写，历史不覆盖。"""
 
@@ -519,6 +617,111 @@ class ScoreSnapshot:
         )
         if self.provenance is not None and not isinstance(self.provenance, Provenance):
             raise DomainValidationError("score_snapshot.provenance", "必须是 Provenance 或 null")
+
+
+@dataclass(frozen=True, slots=True)
+class StaticScoreSnapshot:
+    """P4 静态分快照；与每日完整 score_snapshot 分离，按版本冻结/追加。"""
+
+    paper_id: str
+    score_date: date
+    relevance: float
+    authority: float
+    extra_value: float
+    static_score: float
+    confidence: float
+    config_version: str
+    profile_version: str
+    taxonomy_version: str
+    input_hash: str
+    breakdown_json: Mapping[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "paper_id", _require_text(self.paper_id, "static_score_snapshot.paper_id")
+        )
+        if isinstance(self.score_date, datetime):
+            object.__setattr__(self, "score_date", self.score_date.date())
+        if not isinstance(self.score_date, date):
+            raise DomainValidationError("static_score_snapshot.score_date", "必须是 date")
+        for name in ("relevance", "authority", "extra_value", "static_score"):
+            object.__setattr__(
+                self,
+                name,
+                _require_score(getattr(self, name), f"static_score_snapshot.{name}"),
+            )
+        object.__setattr__(
+            self,
+            "confidence",
+            _require_ratio(self.confidence, "static_score_snapshot.confidence"),
+        )
+        for name in ("config_version", "profile_version", "taxonomy_version"):
+            object.__setattr__(
+                self,
+                name,
+                _require_text(getattr(self, name), f"static_score_snapshot.{name}"),
+            )
+        object.__setattr__(
+            self, "input_hash", _require_hash(self.input_hash, "static_score_snapshot.input_hash")
+        )
+        object.__setattr__(
+            self,
+            "breakdown_json",
+            _require_mapping(self.breakdown_json, "static_score_snapshot.breakdown_json"),
+        )
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "static_score_snapshot.created_at")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewItem:
+    """人工审核项；每篇文献一条，处理低置信度/边界/特殊提名。"""
+
+    paper_id: str
+    status: ReviewStatus
+    reasons: tuple[str, ...]
+    payload_json: Mapping[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+    resolution: ReviewResolution | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "review.paper_id"))
+        if not isinstance(self.status, ReviewStatus):
+            raise DomainValidationError("review.status", "必须是 ReviewStatus")
+        if not isinstance(self.reasons, tuple | list) or not self.reasons:
+            raise DomainValidationError("review.reasons", "至少需要一个审核原因")
+        reasons = tuple(_require_text(item, "review.reasons[]") for item in self.reasons)
+        object.__setattr__(self, "reasons", reasons)
+        object.__setattr__(
+            self, "payload_json", _require_mapping(self.payload_json, "review.payload_json")
+        )
+        object.__setattr__(self, "created_at", _require_aware(self.created_at, "review.created_at"))
+        object.__setattr__(self, "updated_at", _require_aware(self.updated_at, "review.updated_at"))
+        if self.updated_at < self.created_at:
+            raise DomainValidationError("review.updated_at", "不能早于 created_at")
+        resolved = (self.resolved_at, self.resolved_by, self.resolution)
+        if self.status is ReviewStatus.OPEN:
+            if any(value is not None for value in resolved):
+                raise DomainValidationError("review.resolved", "开放项不能有处理结果")
+        else:
+            if any(value is None for value in resolved):
+                raise DomainValidationError("review.resolved", "已处理项必须记录时间/处理人/方式")
+            assert self.resolved_at is not None
+            object.__setattr__(
+                self, "resolved_at", _require_aware(self.resolved_at, "review.resolved_at")
+            )
+            object.__setattr__(
+                self, "resolved_by", _require_text(self.resolved_by, "review.resolved_by")
+            )
+            if not isinstance(self.resolution, ReviewResolution):
+                raise DomainValidationError("review.resolution", "必须是 ReviewResolution")
+        object.__setattr__(self, "note", _optional_text(self.note, "review.note"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,6 +904,8 @@ __all__ = [
     "ArchiveSnapshot",
     "Bucket",
     "Config",
+    "Enrichment",
+    "EnrichmentSignals",
     "Event",
     "Paper",
     "PaperBucket",
@@ -709,8 +914,10 @@ __all__ = [
     "Provenance",
     "Rating",
     "ResearchProfile",
+    "ReviewItem",
     "Run",
     "ScoreSnapshot",
+    "StaticScoreSnapshot",
     "Summary",
     "Tag",
     "Taxonomy",

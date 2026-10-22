@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from papersteward.config import (
     AppEnv,
+    LLMProviderKind,
     LogFormat,
     Settings,
     format_settings_error,
@@ -158,3 +159,88 @@ def test_get_settings_is_cached() -> None:
     second = get_settings()
 
     assert first is second
+
+
+def test_llm_defaults_are_offline_and_key_is_optional() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_provider is LLMProviderKind.FAKE
+    assert settings.llm_base_url == "https://api.openai.com/v1"
+    assert settings.llm_model is None
+    assert settings.llm_api_key is None
+    assert settings.llm_timeout_s == 30.0
+    assert settings.llm_max_attempts == 3
+    assert settings.llm_prompt_cost_per_1k_usd == 0.0
+    assert settings.llm_completion_cost_per_1k_usd == 0.0
+
+
+def test_llm_env_overrides_and_provider_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_MODEL", " test-model ")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_API_KEY", "sk-secret-value")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_BASE_URL", "https://llm.example/v1/")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_TIMEOUT_S", "12.5")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_MAX_ATTEMPTS", "4")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_PROMPT_COST_PER_1K_USD", "0.1")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_COMPLETION_COST_PER_1K_USD", "0.2")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_provider is LLMProviderKind.OPENAI_COMPATIBLE
+    assert settings.llm_model == "test-model"
+    assert settings.llm_base_url == "https://llm.example/v1"
+    assert settings.llm_timeout_s == 12.5
+    assert settings.llm_max_attempts == 4
+    assert settings.llm_prompt_cost_per_1k_usd == 0.1
+    assert settings.llm_completion_cost_per_1k_usd == 0.2
+    assert settings.llm_api_key is not None
+    assert settings.llm_api_key.get_secret_value() == "sk-secret-value"
+    assert "sk-secret-value" not in repr(settings)
+
+
+def test_llm_blank_values_fall_back_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_LLM_API_KEY", "   ")
+    monkeypatch.setenv("PAPERSTEWARD_LLM_MODEL", "   ")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_api_key is None
+    assert settings.llm_model is None
+
+
+def test_llm_openai_provider_requires_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_LLM_PROVIDER", "openai_compatible")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    message = format_settings_error(exc_info.value)
+    assert "PAPERSTEWARD_LLM_MODEL" in message
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://llm.example/v1",
+        "https://user:pass@llm.example/v1",
+        "https://llm.example/v1?token=secret",
+        "not-a-url",
+    ],
+)
+def test_llm_base_url_rejects_insecure_or_embedded_secrets(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_LLM_BASE_URL", value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "PAPERSTEWARD_LLM_BASE_URL" in format_settings_error(exc_info.value)
+
+
+def test_llm_base_url_allows_loopback_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPERSTEWARD_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_base_url == "http://127.0.0.1:11434/v1"

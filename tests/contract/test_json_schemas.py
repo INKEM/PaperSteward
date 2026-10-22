@@ -51,6 +51,36 @@ def _summary() -> dict[str, object]:
     }
 
 
+def _relevance() -> dict[str, object]:
+    return {
+        "problem": 5,
+        "method": 4,
+        "domain": 5,
+        "actionability": 4,
+        "evidence": [
+            {"dimension": "problem", "quote": "long-document retrieval"},
+            {"dimension": "method", "quote": "cross-encoder reranking"},
+            {"dimension": "domain", "quote": "long-document QA benchmarks"},
+            {"dimension": "actionability", "quote": "improve retrieval"},
+        ],
+        "confidence": 0.86,
+    }
+
+
+def _special_nomination() -> dict[str, object]:
+    return {
+        "nominations": [
+            {
+                "bucket": "review",
+                "confidence": 0.82,
+                "reason": "比较检索与生成评测两个层级。",
+                "evidence": [{"quote": "retrieval and generation evaluation"}],
+                "review_layers": ["method", "evaluation"],
+            }
+        ]
+    }
+
+
 def _scoring() -> dict[str, object]:
     return {
         "paper_id": "p001",
@@ -85,9 +115,11 @@ def _event() -> dict[str, object]:
 def test_schema_registry_and_generated_json_schema() -> None:
     assert set(SCHEMA_MODELS) == {
         "classification",
+        "relevance",
         "summary",
         "scoring",
         "special_scoring",
+        "special_nomination",
         "event",
     }
 
@@ -105,9 +137,11 @@ def test_schema_registry_and_generated_json_schema() -> None:
     ("name", "payload"),
     [
         ("classification", _classification()),
+        ("relevance", _relevance()),
         ("summary", _summary()),
         ("scoring", _scoring()),
         ("special_scoring", _special_scoring()),
+        ("special_nomination", _special_nomination()),
         ("event", _event()),
     ],
 )
@@ -219,3 +253,62 @@ def test_validate_json_text_handles_syntax_and_type_errors() -> None:
         validate_json_text("classification", "{not-json", source="bad.json")
     with pytest.raises(SchemaError, match="根节点"):
         validate_json_text("classification", "[]", source="bad.json")
+
+
+def test_relevance_rejects_out_of_range_and_missing_evidence() -> None:
+    payload = _relevance()
+    payload["problem"] = 6
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("relevance", payload)
+    assert exc_info.value.field == "schema.relevance.problem"
+
+    payload = _relevance()
+    payload["evidence"] = []
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("relevance", payload)
+    assert exc_info.value.field == "schema.relevance.evidence"
+
+
+def test_classification_runner_up_and_evidence_contract() -> None:
+    payload = _classification()
+    payload.update(
+        runner_up_tag="T01",
+        runner_up_confidence=0.62,
+        evidence=[{"quote": "retrieval-augmented generation"}],
+    )
+    model = validate_mapping("classification", payload)
+    assert model.model_dump(mode="json")["runner_up_tag"] == "T01"
+
+    payload = _classification()
+    payload["runner_up_tag"] = "T01"
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("classification", payload)
+    assert "runner_up_confidence" in str(exc_info.value)
+
+    payload = _classification()
+    payload.update(runner_up_tag="T02", runner_up_confidence=0.5)
+    with pytest.raises(SchemaError, match="runner_up_tag"):
+        validate_mapping("classification", payload)
+
+
+def test_special_nomination_bucket_specific_requirements() -> None:
+    payload = _special_nomination()
+    payload["nominations"][0]["review_layers"] = ["method"]
+    with pytest.raises(SchemaError, match="两个层级"):
+        validate_mapping("special_nomination", payload)
+
+    payload = _special_nomination()
+    payload["nominations"][0]["bucket"] = "distant"
+    with pytest.raises(SchemaError, match="bridge_memo"):
+        validate_mapping("special_nomination", payload)
+
+    payload = _special_nomination()
+    payload["nominations"][0]["bucket"] = "classic"
+    payload["nominations"][0]["review_layers"] = []
+    with pytest.raises(SchemaError, match="经典依据"):
+        validate_mapping("special_nomination", payload)
+
+    payload = _special_nomination()
+    payload["nominations"].append(dict(payload["nominations"][0]))
+    with pytest.raises(SchemaError, match="只能提名一次"):
+        validate_mapping("special_nomination", payload)

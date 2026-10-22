@@ -14,26 +14,36 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from papersteward.core.entities import (
     ArchiveSnapshot,
     Bucket,
     Config,
+    Enrichment,
     Event,
     Paper,
     PaperBucket,
     PaperTag,
     Rating,
     ResearchProfile,
+    ReviewItem,
     Run,
     ScoreSnapshot,
+    StaticScoreSnapshot,
     Summary,
     Taxonomy,
     utc_now,
 )
-from papersteward.core.enums import DocumentStatus, PaperStatus, RunStatus
+from papersteward.core.enums import (
+    BucketRole,
+    DocumentStatus,
+    PaperStatus,
+    ReviewResolution,
+    ReviewStatus,
+    RunStatus,
+)
 from papersteward.core.errors import InvariantViolation
 from papersteward.core.invariants import (
     ensure_event_appended,
@@ -41,6 +51,7 @@ from papersteward.core.invariants import (
     ensure_secondary_tag_limit,
     ensure_single_filing_bucket,
     ensure_single_primary_tag,
+    ensure_static_score_snapshot_append_only,
 )
 from papersteward.core.state_machine import (
     PAPER_STATUS_EVENTS,
@@ -51,10 +62,13 @@ from papersteward.core.state_machine import (
 from papersteward.storage.mappers import (
     archive_snapshot_from_row,
     archive_snapshot_to_row,
+    as_utc,
     bucket_from_row,
     bucket_to_row,
     config_from_row,
     config_to_row,
+    enrichment_from_row,
+    enrichment_to_row,
     event_from_row,
     event_to_row,
     paper_bucket_from_row,
@@ -67,10 +81,14 @@ from papersteward.storage.mappers import (
     profile_to_row,
     rating_from_row,
     rating_to_row,
+    review_item_from_row,
+    review_item_to_row,
     run_from_row,
     run_to_row,
     score_snapshot_from_row,
     score_snapshot_to_row,
+    static_score_snapshot_from_row,
+    static_score_snapshot_to_row,
     summary_from_row,
     summary_to_row,
     taxonomy_from_row,
@@ -80,14 +98,17 @@ from papersteward.storage.models import (
     ArchiveSnapshotRow,
     BucketRow,
     ConfigRow,
+    EnrichmentRow,
     EventRow,
     PaperBucketRow,
     PaperRow,
     PaperTagRow,
     RatingRow,
     ResearchProfileRow,
+    ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
 )
@@ -187,6 +208,18 @@ class PaperTagRepository(_Repository):
         self._validate_paper(tags[0].paper_id)
         return tuple(tags)
 
+    def replace_all(self, paper_id: str, tags: Sequence[PaperTag]) -> tuple[PaperTag, ...]:
+        """人工改标签：删除旧分配并原子写入新分配（调用方控制事务）。"""
+        if not tags:
+            raise InvariantViolation("paper_tag", "至少需要一个主标签")
+        if any(tag.paper_id != paper_id for tag in tags):
+            raise InvariantViolation("paper_tag.paper_id", "标签必须属于同一篇文献")
+        self._session.execute(delete(PaperTagRow).where(PaperTagRow.paper_id == paper_id))
+        self._session.add_all(paper_tag_to_row(tag) for tag in tags)
+        self._flush()
+        self._validate_paper(paper_id)
+        return tuple(tags)
+
     def list_for_paper(self, paper_id: str) -> list[PaperTag]:
         statement = (
             select(PaperTagRow)
@@ -221,6 +254,21 @@ class PaperBucketRepository(_Repository):
         self._flush()
         self._validate_paper(buckets[0].paper_id)
         return tuple(buckets)
+
+    def replace_filing(self, paper_id: str, filing: PaperBucket) -> PaperBucket:
+        """人工改主标签时替换唯一归属桶，保留其他成员关系。"""
+        if filing.paper_id != paper_id or filing.role is not BucketRole.FILING:
+            raise InvariantViolation("paper_bucket", "必须提供同一篇文献的 FILING 桶")
+        self._session.execute(
+            delete(PaperBucketRow).where(
+                PaperBucketRow.paper_id == paper_id,
+                PaperBucketRow.role == BucketRole.FILING.value,
+            )
+        )
+        self._session.add(paper_bucket_to_row(filing))
+        self._flush()
+        self._validate_paper(paper_id)
+        return filing
 
     def list_for_paper(self, paper_id: str) -> list[PaperBucket]:
         statement = (
@@ -259,6 +307,55 @@ class SummaryRepository(_Repository):
         return None if row is None else summary_from_row(row)
 
 
+class EnrichmentRepository(_Repository):
+    """每篇文献一条富化结果；相同内容重复保存不改变 updated_at。"""
+
+    _DATA_FIELDS = (
+        "teams_json",
+        "venue_level",
+        "citation_count",
+        "citation_velocity",
+        "code_url",
+        "data_url",
+        "oa_status",
+        "experiment_quality_json",
+        "confidence",
+        "source",
+        "provenance_model",
+        "provenance_prompt_version",
+        "provenance_generated_at",
+        "provenance_input_hash",
+    )
+
+    def save(self, enrichment: Enrichment) -> tuple[Enrichment, bool]:
+        """新增或更新；返回 ``(实际保存值, 是否发生变化)``，不提交事务。"""
+        row = self._session.get(EnrichmentRow, enrichment.paper_id)
+        if row is None:
+            self._session.add(enrichment_to_row(enrichment))
+            self._flush()
+            return enrichment, True
+        existing = enrichment_from_row(row)
+        if existing.signals == enrichment.signals and existing.provenance == enrichment.provenance:
+            return existing, False
+        mapped = enrichment_to_row(enrichment)
+        for field in self._DATA_FIELDS:
+            setattr(row, field, getattr(mapped, field))
+        # created_at 保持首次写入；时间戳只前进，不回退。
+        row.updated_at = max(existing.updated_at, enrichment.updated_at)
+        self._flush()
+        return enrichment_from_row(row), True
+
+    def get(self, paper_id: str) -> Enrichment | None:
+        row = self._session.get(EnrichmentRow, paper_id)
+        return None if row is None else enrichment_from_row(row)
+
+    def list(self, *, limit: int | None = None, offset: int = 0) -> list[Enrichment]:
+        statement = select(EnrichmentRow).order_by(EnrichmentRow.paper_id).offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
+        return [enrichment_from_row(row) for row in self._session.scalars(statement).all()]
+
+
 class ScoreSnapshotRepository(_Repository):
     """评分快照追加写。"""
 
@@ -285,6 +382,147 @@ class ScoreSnapshotRepository(_Repository):
         )
         row = self._session.scalars(statement).first()
         return None if row is None else score_snapshot_from_row(row)
+
+
+class StaticScoreSnapshotRepository(_Repository):
+    """P4 静态分快照：版本变化后按日期追加，不提供 update/delete。"""
+
+    def append(self, snapshot: StaticScoreSnapshot) -> StaticScoreSnapshot:
+        ensure_static_score_snapshot_append_only(self.history(snapshot.paper_id), snapshot)
+        self._session.add(static_score_snapshot_to_row(snapshot))
+        self._flush()
+        return snapshot
+
+    def history(self, paper_id: str) -> list[StaticScoreSnapshot]:
+        statement = (
+            select(StaticScoreSnapshotRow)
+            .where(StaticScoreSnapshotRow.paper_id == paper_id)
+            .order_by(StaticScoreSnapshotRow.score_date)
+        )
+        return [
+            static_score_snapshot_from_row(row) for row in self._session.scalars(statement).all()
+        ]
+
+    def latest(self, paper_id: str) -> StaticScoreSnapshot | None:
+        statement = (
+            select(StaticScoreSnapshotRow)
+            .where(StaticScoreSnapshotRow.paper_id == paper_id)
+            .order_by(StaticScoreSnapshotRow.score_date.desc())
+            .limit(1)
+        )
+        row = self._session.scalars(statement).first()
+        return None if row is None else static_score_snapshot_from_row(row)
+
+
+class ReviewRepository(_Repository):
+    """人工审核队列；每篇一条，开放项可重复更新，处理后保留原因/结果。"""
+
+    def get(self, paper_id: str) -> ReviewItem | None:
+        row = self._session.get(ReviewItemRow, paper_id)
+        return None if row is None else review_item_from_row(row)
+
+    def list_open(self, *, limit: int = 50, offset: int = 0) -> tuple[list[ReviewItem], int]:
+        statement = (
+            select(ReviewItemRow)
+            .where(ReviewItemRow.status == ReviewStatus.OPEN.value)
+            .order_by(ReviewItemRow.updated_at.desc(), ReviewItemRow.paper_id)
+            .offset(offset)
+            .limit(limit)
+        )
+        items = [review_item_from_row(row) for row in self._session.scalars(statement).all()]
+        total = (
+            self._session.scalar(
+                select(func.count())
+                .select_from(ReviewItemRow)
+                .where(ReviewItemRow.status == ReviewStatus.OPEN.value)
+            )
+            or 0
+        )
+        return items, total
+
+    def open(
+        self,
+        paper_id: str,
+        reasons: Sequence[str],
+        payload: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> ReviewItem:
+        """创建或重新打开审核项；相同 paper_id 只保留一条。"""
+        resolved_reasons = tuple(
+            dict.fromkeys(reason.strip() for reason in reasons if reason.strip())
+        )
+        if not resolved_reasons:
+            raise InvariantViolation("review.reasons", "至少需要一个审核原因")
+        row = self._session.get(ReviewItemRow, paper_id)
+        if row is None:
+            item = ReviewItem(
+                paper_id=paper_id,
+                status=ReviewStatus.OPEN,
+                reasons=resolved_reasons,
+                payload_json=dict(payload),
+                created_at=now,
+                updated_at=now,
+            )
+            self._session.add(review_item_to_row(item))
+            self._flush()
+            return item
+        updated = ReviewItem(
+            paper_id=paper_id,
+            status=ReviewStatus.OPEN,
+            reasons=resolved_reasons,
+            payload_json=dict(payload),
+            created_at=as_utc(row.created_at),
+            updated_at=now,
+        )
+        mapped = review_item_to_row(updated)
+        row.status = mapped.status
+        row.reasons_json = mapped.reasons_json
+        row.payload_json = mapped.payload_json
+        row.updated_at = mapped.updated_at
+        row.resolved_at = None
+        row.resolved_by = None
+        row.resolution = None
+        row.note = None
+        self._flush()
+        return updated
+
+    def resolve(
+        self,
+        paper_id: str,
+        *,
+        resolved_by: str,
+        resolution: ReviewResolution,
+        note: str | None,
+        now: datetime,
+    ) -> ReviewItem:
+        row = self._session.get(ReviewItemRow, paper_id)
+        if row is None or row.status != ReviewStatus.OPEN.value:
+            raise InvariantViolation("review.status", "审核项不存在或已处理")
+        item = ReviewItem(
+            paper_id=paper_id,
+            status=ReviewStatus.RESOLVED,
+            reasons=tuple(row.reasons_json or ()),
+            payload_json=dict(row.payload_json or {}),
+            created_at=as_utc(row.created_at),
+            updated_at=now,
+            resolved_at=now,
+            resolved_by=resolved_by,
+            resolution=resolution,
+            note=note,
+        )
+        mapped = review_item_to_row(item)
+        for field in (
+            "status",
+            "updated_at",
+            "resolved_at",
+            "resolved_by",
+            "resolution",
+            "note",
+        ):
+            setattr(row, field, getattr(mapped, field))
+        self._flush()
+        return item
 
 
 class EventRepository(_Repository):
@@ -536,14 +774,17 @@ __all__ = [
     "ArchiveSnapshotRepository",
     "BucketRepository",
     "ConfigRepository",
+    "EnrichmentRepository",
     "EventRepository",
     "PaperBucketRepository",
     "PaperRepository",
     "PaperTagRepository",
     "ProfileRepository",
     "RatingRepository",
+    "ReviewRepository",
     "RunRepository",
     "ScoreSnapshotRepository",
+    "StaticScoreSnapshotRepository",
     "SummaryRepository",
     "TaxonomyRepository",
 ]

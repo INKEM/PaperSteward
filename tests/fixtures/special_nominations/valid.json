@@ -1,0 +1,27 @@
+{
+  "nominations": [
+    {
+      "bucket": "review",
+      "confidence": 0.82,
+      "reason": "系统比较检索与生成评测两个层级，并指出评测缺口。",
+      "evidence": [{"quote": "retrieval and generation evaluation"}],
+      "review_layers": ["method", "evaluation"],
+      "classic_basis": [],
+      "bridge_memo": null
+    },
+    {
+      "bucket": "distant",
+      "confidence": 0.7,
+      "reason": "图神经网络门控与跨段依赖存在可检验的结构相似性。",
+      "evidence": [{"quote": "graph neural network gating"}],
+      "review_layers": [],
+      "classic_basis": [],
+      "bridge_memo": {
+        "source_mechanism": "图神经网络中的边特征门控缓解过平滑。",
+        "shared_structure": "跨段依赖可视为稀疏图上的消息传递。",
+        "transfer_experiment": "在长文档重排器中加入门控并比较跨段召回与延迟。",
+        "falsification_signal": "若提升只来自参数量增加，则假设不成立。"
+      }
+    }
+  ]
+}

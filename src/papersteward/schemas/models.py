@@ -18,7 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from papersteward.core.enums import EventType, ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainValidationError
 
-SchemaName = Literal["classification", "summary", "scoring", "special_scoring", "event"]
+SchemaName = Literal[
+    "classification",
+    "relevance",
+    "summary",
+    "scoring",
+    "special_scoring",
+    "special_nomination",
+    "event",
+]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
 
@@ -40,7 +48,7 @@ class _OutputModel(BaseModel):
 
 class SecondaryTagOutput(_OutputModel):
     facet: Literal["method", "task", "data", "theory", "application", "evaluation"]
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=64)
     confidence: float = Field(ge=0.0, le=1.0)
 
 
@@ -50,11 +58,64 @@ class SpecialCandidateOutput(_OutputModel):
     reason: str = Field(min_length=1)
 
 
+class BridgeMemoOutput(_OutputModel):
+    source_mechanism: str = Field(min_length=1, max_length=1000)
+    shared_structure: str = Field(min_length=1, max_length=1000)
+    transfer_experiment: str = Field(min_length=1, max_length=1000)
+    falsification_signal: str = Field(min_length=1, max_length=1000)
+
+
+class SpecialEvidenceOutput(_OutputModel):
+    quote: str = Field(min_length=1, max_length=500)
+
+
+class SpecialNominationOutput(_OutputModel):
+    bucket: SpecialBucketKind
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence: list[SpecialEvidenceOutput] = Field(min_length=1, max_length=3)
+    review_layers: list[
+        Literal["problem", "theory", "method", "system", "evaluation", "application"]
+    ] = Field(default_factory=list, max_length=6)
+    classic_basis: list[Literal["foundational", "citation", "standard", "award", "expert"]] = Field(
+        default_factory=list, max_length=5
+    )
+    bridge_memo: BridgeMemoOutput | None = None
+
+    @model_validator(mode="after")
+    def _bucket_specific_requirements(self) -> SpecialNominationOutput:
+        if self.bucket is SpecialBucketKind.REVIEW and len(set(self.review_layers)) < 2:
+            raise ValueError("review 提名必须覆盖至少两个层级")
+        if self.bucket is SpecialBucketKind.CLASSIC and not self.classic_basis:
+            raise ValueError("classic 提名必须提供至少一个经典依据")
+        if self.bucket is SpecialBucketKind.DISTANT and self.bridge_memo is None:
+            raise ValueError("distant 提名必须提供 bridge_memo")
+        return self
+
+
+class SpecialNominationsOutput(_OutputModel):
+    nominations: list[SpecialNominationOutput] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def _unique_buckets(self) -> SpecialNominationsOutput:
+        buckets = [item.bucket for item in self.nominations]
+        if len(buckets) != len(set(buckets)):
+            raise ValueError("同一个特殊桶只能提名一次")
+        return self
+
+
+class ClassificationEvidenceOutput(_OutputModel):
+    quote: str = Field(min_length=1, max_length=500)
+
+
 class ClassificationOutput(_OutputModel):
     primary_tag: str = Field(pattern=_CODE_PATTERN)
     primary_confidence: float = Field(ge=0.0, le=1.0)
+    runner_up_tag: str | None = Field(default=None, pattern=_CODE_PATTERN)
+    runner_up_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     secondary_tags: list[SecondaryTagOutput] = Field(default_factory=list, max_length=5)
     special_candidates: list[SpecialCandidateOutput] = Field(default_factory=list, max_length=3)
+    evidence: list[ClassificationEvidenceOutput] = Field(default_factory=list, max_length=5)
     boundary_note: str | None = None
 
     @model_validator(mode="after")
@@ -62,6 +123,10 @@ class ClassificationOutput(_OutputModel):
         keys = [(tag.facet, tag.name.casefold()) for tag in self.secondary_tags]
         if len(keys) != len(set(keys)):
             raise ValueError("secondary_tags 的 facet+name 不能重复")
+        if (self.runner_up_tag is None) != (self.runner_up_confidence is None):
+            raise ValueError("runner_up_tag 与 runner_up_confidence 必须同时提供")
+        if self.runner_up_tag is not None and self.runner_up_tag == self.primary_tag:
+            raise ValueError("runner_up_tag 不能等于 primary_tag")
         return self
 
 
@@ -84,6 +149,21 @@ class SummaryOutput(_OutputModel):
         if count > 100:
             raise ValueError(f"summary_100 不能超过 100 个非空白字符，实际 {count}")
         return self
+
+
+class RelevanceEvidenceOutput(_OutputModel):
+    dimension: Literal["problem", "method", "domain", "actionability"]
+    quote: str = Field(min_length=1, max_length=500)
+
+
+class RelevanceOutput(_OutputModel):
+    problem: int = Field(ge=0, le=5)
+    method: int = Field(ge=0, le=5)
+    domain: int = Field(ge=0, le=5)
+    actionability: int = Field(ge=0, le=5)
+    evidence: list[RelevanceEvidenceOutput] = Field(min_length=1, max_length=12)
+    confidence: float = Field(ge=0.0, le=1.0)
+    boundary_note: str | None = None
 
 
 class StaticScoreOutput(_OutputModel):
@@ -158,9 +238,11 @@ class EventEnvelope(_OutputModel):
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
+        "relevance": RelevanceOutput,
         "summary": SummaryOutput,
         "scoring": ScoreSnapshotOutput,
         "special_scoring": SpecialScoreSnapshotOutput,
+        "special_nomination": SpecialNominationsOutput,
         "event": EventEnvelope,
     }
 )
@@ -213,12 +295,19 @@ def validate_json_text(name: str, text: str, *, source: str | None = None) -> Ba
 
 
 __all__ = [
+    "ClassificationEvidenceOutput",
     "ClassificationOutput",
     "DynamicScoreOutput",
     "EventEnvelope",
     "EvidenceItem",
     "PriorityScoreOutput",
     "QuasiScoreOutput",
+    "RelevanceEvidenceOutput",
+    "SpecialEvidenceOutput",
+    "SpecialNominationOutput",
+    "SpecialNominationsOutput",
+    "BridgeMemoOutput",
+    "RelevanceOutput",
     "SCHEMA_MODELS",
     "SchemaError",
     "SchemaName",

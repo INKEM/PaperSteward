@@ -1,0 +1,13 @@
+{
+  "nominations": [
+    {
+      "bucket": "review",
+      "confidence": 0.4,
+      "reason": "可能是跨层综述，但证据不足。",
+      "evidence": [{"quote": "retrieval and generation evaluation"}],
+      "review_layers": ["method", "evaluation"],
+      "classic_basis": [],
+      "bridge_memo": null
+    }
+  ]
+}

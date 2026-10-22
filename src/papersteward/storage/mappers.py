@@ -13,6 +13,8 @@ from papersteward.core.entities import (
     ArchiveSnapshot,
     Bucket,
     Config,
+    Enrichment,
+    EnrichmentSignals,
     Event,
     Paper,
     PaperBucket,
@@ -20,8 +22,10 @@ from papersteward.core.entities import (
     Provenance,
     Rating,
     ResearchProfile,
+    ReviewItem,
     Run,
     ScoreSnapshot,
+    StaticScoreSnapshot,
     Summary,
     Tag,
     Taxonomy,
@@ -35,6 +39,8 @@ from papersteward.core.enums import (
     OaStatus,
     PaperStatus,
     ReadMode,
+    ReviewResolution,
+    ReviewStatus,
     RunStatus,
     ScoreTier,
     SpecialBucketKind,
@@ -46,14 +52,17 @@ from papersteward.storage.models import (
     ArchiveSnapshotRow,
     BucketRow,
     ConfigRow,
+    EnrichmentRow,
     EventRow,
     PaperBucketRow,
     PaperRow,
     PaperTagRow,
     RatingRow,
     ResearchProfileRow,
+    ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    StaticScoreSnapshotRow,
     SummaryRow,
     TagRow,
     TaxonomyRow,
@@ -225,6 +234,52 @@ def summary_from_row(row: SummaryRow) -> Summary:
     )
 
 
+def enrichment_to_row(enrichment: Enrichment) -> EnrichmentRow:
+    signals = enrichment.signals
+    return EnrichmentRow(
+        paper_id=enrichment.paper_id,
+        teams_json=list(signals.teams),
+        venue_level=signals.venue_level,
+        citation_count=signals.citation_count,
+        citation_velocity=signals.citation_velocity,
+        code_url=signals.code_url,
+        data_url=signals.data_url,
+        oa_status=signals.oa_status.value,
+        experiment_quality_json=list(signals.experiment_quality),
+        confidence=signals.confidence,
+        source=signals.source,
+        created_at=enrichment.created_at,
+        updated_at=enrichment.updated_at,
+        **_provenance_columns(enrichment.provenance),
+    )
+
+
+def enrichment_from_row(row: EnrichmentRow) -> Enrichment:
+    return Enrichment(
+        paper_id=row.paper_id,
+        signals=EnrichmentSignals(
+            teams=tuple(row.teams_json or ()),
+            venue_level=row.venue_level,
+            citation_count=row.citation_count,
+            citation_velocity=row.citation_velocity,
+            code_url=row.code_url,
+            data_url=row.data_url,
+            oa_status=OaStatus(row.oa_status),
+            experiment_quality=tuple(row.experiment_quality_json or ()),
+            confidence=row.confidence,
+            source=row.source,
+        ),
+        created_at=as_utc(row.created_at),
+        updated_at=as_utc(row.updated_at),
+        provenance=_provenance_from_columns(
+            row.provenance_model,
+            row.provenance_prompt_version,
+            row.provenance_generated_at,
+            row.provenance_input_hash,
+        ),
+    )
+
+
 def score_snapshot_to_row(snapshot: ScoreSnapshot) -> ScoreSnapshotRow:
     return ScoreSnapshotRow(
         paper_id=snapshot.paper_id,
@@ -271,6 +326,72 @@ def score_snapshot_from_row(row: ScoreSnapshotRow) -> ScoreSnapshot:
             row.provenance_generated_at,
             row.provenance_input_hash,
         ),
+    )
+
+
+def static_score_snapshot_to_row(snapshot: StaticScoreSnapshot) -> StaticScoreSnapshotRow:
+    return StaticScoreSnapshotRow(
+        paper_id=snapshot.paper_id,
+        score_date=snapshot.score_date,
+        relevance=snapshot.relevance,
+        authority=snapshot.authority,
+        extra_value=snapshot.extra_value,
+        static_score=snapshot.static_score,
+        confidence=snapshot.confidence,
+        config_version=snapshot.config_version,
+        profile_version=snapshot.profile_version,
+        taxonomy_version=snapshot.taxonomy_version,
+        input_hash=snapshot.input_hash,
+        breakdown_json=dict(snapshot.breakdown_json),
+        created_at=snapshot.created_at,
+    )
+
+
+def static_score_snapshot_from_row(row: StaticScoreSnapshotRow) -> StaticScoreSnapshot:
+    return StaticScoreSnapshot(
+        paper_id=row.paper_id,
+        score_date=row.score_date,
+        relevance=row.relevance,
+        authority=row.authority,
+        extra_value=row.extra_value,
+        static_score=row.static_score,
+        confidence=row.confidence,
+        config_version=row.config_version,
+        profile_version=row.profile_version,
+        taxonomy_version=row.taxonomy_version,
+        input_hash=row.input_hash,
+        breakdown_json=dict(row.breakdown_json or {}),
+        created_at=as_utc(row.created_at),
+    )
+
+
+def review_item_to_row(item: ReviewItem) -> ReviewItemRow:
+    return ReviewItemRow(
+        paper_id=item.paper_id,
+        status=item.status.value,
+        reasons_json=list(item.reasons),
+        payload_json=dict(item.payload_json),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        resolved_at=item.resolved_at,
+        resolved_by=item.resolved_by,
+        resolution=item.resolution.value if item.resolution is not None else None,
+        note=item.note,
+    )
+
+
+def review_item_from_row(row: ReviewItemRow) -> ReviewItem:
+    return ReviewItem(
+        paper_id=row.paper_id,
+        status=ReviewStatus(row.status),
+        reasons=tuple(row.reasons_json or ()),
+        payload_json=dict(row.payload_json or {}),
+        created_at=as_utc(row.created_at),
+        updated_at=as_utc(row.updated_at),
+        resolved_at=optional_utc(row.resolved_at),
+        resolved_by=row.resolved_by,
+        resolution=ReviewResolution(row.resolution) if row.resolution is not None else None,
+        note=row.note,
     )
 
 

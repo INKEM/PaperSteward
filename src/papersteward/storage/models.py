@@ -353,6 +353,52 @@ class SummaryRow(Base):
     provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class EnrichmentRow(Base):
+    """每篇文献一条富化信号；缺失字段保持中性值，来源与置信度可审计。"""
+
+    __tablename__ = "enrichment"
+    __table_args__ = (
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="confidence_range"),
+        CheckConstraint(
+            "citation_count IS NULL OR citation_count >= 0", name="citation_count_non_negative"
+        ),
+        CheckConstraint(
+            "citation_velocity IS NULL OR citation_velocity >= 0.0",
+            name="citation_velocity_non_negative",
+        ),
+        CheckConstraint("oa_status IN ('open', 'closed', 'unknown')", name="oa_status_values"),
+        CheckConstraint(
+            "(provenance_model IS NULL AND provenance_prompt_version IS NULL "
+            "AND provenance_generated_at IS NULL AND provenance_input_hash IS NULL) "
+            "OR (provenance_model IS NOT NULL AND provenance_prompt_version IS NOT NULL "
+            "AND provenance_generated_at IS NOT NULL AND provenance_input_hash IS NOT NULL)",
+            name="provenance_all_or_none",
+        ),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    teams_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    venue_level: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citation_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    citation_velocity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    code_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    oa_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    experiment_quality_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="neutral")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provenance_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provenance_prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance_generated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class ScoreSnapshotRow(Base):
     """每日评分快照；主键保证同一天只有一条。"""
 
@@ -406,6 +452,69 @@ class ScoreSnapshotRow(Base):
         DateTime(timezone=True), nullable=True
     )
     provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class StaticScoreSnapshotRow(Base):
+    """P4 静态分快照；与每日完整 score_snapshot 分离。"""
+
+    __tablename__ = "static_score_snapshot"
+    __table_args__ = (
+        CheckConstraint("relevance >= 0.0 AND relevance <= 100.0", name="relevance_range"),
+        CheckConstraint("authority >= 0.0 AND authority <= 100.0", name="authority_range"),
+        CheckConstraint("extra_value >= 0.0 AND extra_value <= 100.0", name="extra_value_range"),
+        CheckConstraint("static_score >= 0.0 AND static_score <= 100.0", name="static_range"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="confidence_range"),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    score_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    relevance: Mapped[float] = mapped_column(Float, nullable=False)
+    authority: Mapped[float] = mapped_column(Float, nullable=False)
+    extra_value: Mapped[float] = mapped_column(Float, nullable=False)
+    static_score: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    breakdown_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReviewItemRow(Base):
+    """人工审核项；每篇一条，开放/已处理状态可复用。"""
+
+    __tablename__ = "review_item"
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'resolved')", name="status_values"),
+        CheckConstraint(
+            "resolution IS NULL OR resolution IN ('approved', 'relabeled')",
+            name="resolution_values",
+        ),
+        CheckConstraint(
+            "(status = 'open' AND resolved_at IS NULL AND resolved_by IS NULL "
+            "AND resolution IS NULL) OR (status = 'resolved' AND resolved_at IS NOT NULL "
+            "AND resolved_by IS NOT NULL AND resolution IS NOT NULL)",
+            name="resolved_fields",
+        ),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EventRow(Base):

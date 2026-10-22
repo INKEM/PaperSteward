@@ -8,6 +8,7 @@ import pytest
 from papersteward.llm import (
     FakeLLM,
     LLMGateway,
+    LLMProviderError,
     LLMTimeoutError,
     LLMValidationError,
     PromptRenderError,
@@ -46,7 +47,7 @@ def test_valid_completion_records_provenance_and_usage() -> None:
     assert result.repair_used is False
     assert result.attempts == 1
     assert result.provenance.model == "fake-llm"
-    assert result.provenance.prompt_version == "classification/v1"
+    assert result.provenance.prompt_version == "classification/v2"
     assert result.provenance.generated_at == NOW
     assert len(result.provenance.input_hash) == 64
     assert result.usage.calls == 1
@@ -65,7 +66,7 @@ def test_schema_invalid_output_is_repaired_once() -> None:
 
     assert isinstance(result.data, ClassificationOutput)
     assert result.repair_used is True
-    assert result.provenance.prompt_version == "classification/v1+repair:repair/v1"
+    assert result.provenance.prompt_version == "classification/v2+repair:repair/v1"
     assert result.usage.calls == 2
     assert result.usage.repairs == 1
     assert result.attempts == 2
@@ -131,7 +132,7 @@ def test_summary_prompt_uses_summary_schema() -> None:
     )
 
     assert isinstance(result.data, SummaryOutput)
-    assert result.provenance.prompt_version == "summary/v1"
+    assert result.provenance.prompt_version == "summary/v2"
 
 
 def test_ping_and_input_hash_are_deterministic() -> None:
@@ -170,3 +171,22 @@ def test_fake_llm_repeats_last_response_and_validates_constructor() -> None:
         FakeLLM([])
     with pytest.raises(ValueError):
         FakeLLM(["x"], cost_per_1k_tokens=-1)
+
+
+def test_non_retryable_provider_error_is_not_retried() -> None:
+    class UnauthorizedProvider:
+        model_id = "unauthorized"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, prompt: str, *, timeout_s: float) -> object:
+            self.calls += 1
+            raise LLMProviderError("LLM 认证失败", retryable=False)
+
+    provider = UnauthorizedProvider()
+    with pytest.raises(LLMProviderError, match="认证失败") as caught:
+        LLMGateway(provider, max_attempts=3).ping()  # type: ignore[arg-type]
+
+    assert provider.calls == 1
+    assert caught.value.usage.calls == 1

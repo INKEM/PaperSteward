@@ -4,6 +4,8 @@ import pytest
 
 from papersteward.llm import (
     CLASSIFICATION_V1,
+    CLASSIFICATION_V2,
+    RELEVANCE_V1,
     PromptRegistryError,
     PromptRenderError,
     PromptTemplate,
@@ -14,26 +16,36 @@ from papersteward.llm import (
 def test_default_registry_is_versioned() -> None:
     registry = default_registry()
 
-    assert registry.names() == ("classification", "summary", "repair")
-    assert registry.versions("classification") == ("classification/v1",)
-    assert registry.get("classification") == CLASSIFICATION_V1
+    assert registry.names() == (
+        "classification",
+        "summary",
+        "relevance",
+        "special_nomination",
+        "repair",
+    )
+    assert registry.versions("classification") == ("classification/v1", "classification/v2")
+    assert registry.get("classification") == CLASSIFICATION_V2
+    assert registry.get("relevance") == RELEVANCE_V1
+    assert registry.versions("summary") == ("summary/v1", "summary/v2")
+    assert registry.get("special_nomination").schema == "special_nomination"
 
 
 def test_latest_and_explicit_version_lookup() -> None:
     registry = default_registry()
-    v2 = PromptTemplate(
+    v3 = PromptTemplate(
         name="classification",
-        version="classification/v2",
+        version="classification/v3",
         schema="classification",
-        template="v2 {title} {abstract} {taxonomy}",
+        template="v3 {title} {abstract} {taxonomy}",
     )
-    registry.register(v2)
+    registry.register(v3)
 
-    assert registry.get("classification") == v2
+    assert registry.get("classification") == v3
     assert registry.get("classification", "classification/v1") == CLASSIFICATION_V1
     assert registry.versions("classification") == (
         "classification/v1",
         "classification/v2",
+        "classification/v3",
     )
 
 
