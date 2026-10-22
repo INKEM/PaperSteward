@@ -40,7 +40,7 @@ version = { attr = "papersteward.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-papersteward = ["static/*", "_migrations/*", "_migrations/versions/*.py"]
+papersteward = ["static/*", "_migrations/*", "_migrations/versions/*.py", "resources/starter/*"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

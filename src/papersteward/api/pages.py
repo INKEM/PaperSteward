@@ -42,6 +42,7 @@ from papersteward.scoring.views import (
     preview_view,
 )
 from papersteward.storage.delivery import read_digest
+from papersteward.storage.onboarding import get_onboarding
 from papersteward.storage.repositories import PaperRepository, SummaryRepository
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
@@ -72,9 +73,10 @@ def _page(title: str, body: str) -> HTMLResponse:
         f'<meta name="htmx-config" content="{escape(json.dumps(config))}">'
         f"<title>{escape(title)} · PaperSteward</title>"
         '<link rel="stylesheet" href="/ui/static/style.css">'
-        '<script src="/ui/static/htmx.js" defer></script></head><body>'
+        '<script src="/ui/static/htmx.js" defer></script>'
+        '<script src="/ui/static/setup.js" defer></script></head><body>'
         '<header><a class="brand" href="/ui/today">PaperSteward</a>'
-        '<nav aria-label="主导航"><a href="/ui/today">今日</a>'
+        '<nav aria-label="主导航"><a href="/ui/setup">设置</a><a href="/ui/today">今日</a>'
         '<a href="/ui/queue">阅读队列</a><a href="/ui/shelves">特殊桶</a>'
         '<a href="/ui/views">视图</a><a href="/ui/archive">归档</a></nav></header>'
         f"<main><h1>{escape(title)}</h1>{body}</main>"
@@ -343,7 +345,9 @@ def style() -> FileResponse:
 
 
 @router.get("/today")
-def today(session: SessionDep, day: date | None = None) -> HTMLResponse:
+def today(session: SessionDep, day: date | None = None) -> Response:
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
     try:
         selected = _day(session, day)
         current = _day(session)
