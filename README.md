@@ -2,12 +2,12 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P6 日报推送、阅读反馈与归档（S1–S7 本地实现、Docker/CI 通过；独立验收未通过，F1/F2 返工中）**。
+当前处于 **P6 日报推送、阅读反馈与归档（S1–S7 本地实现、Docker/CI 通过；独立验收未通过，F1/F2 返工已实施并通过本地阶段门，独立复验待执行）**。
 P0–P5已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列。
 P6新增容量/多样性日报、文件/SMTP幂等投递、阅读反馈、不可变归档/导出、本地HTMX页面
 和周度U任务。迁移head为0010，无新增Python依赖；HTMX固定本地分发。
 PR #8 已合并到 main；独立验收发现周任务漏 PUSHED 与二次 preflight 假 uncertain，
-返工/复验前不创建 P6 tag、不宣称 Alpha 通过，也不开始 P7。
+返工已修复并补充回归；独立复验通过前不创建 P6 tag、不宣称 Alpha 通过，也不开始 P7。
 
 ```bash
 .venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
@@ -19,8 +19,9 @@ PR #8 已合并到 main；独立验收发现周任务漏 PUSHED 与二次 prefli
 先完成初始化、process与审核。特殊归属桶排除P/rank，主队列只包含合格主题候选；
 页面从 `/ui/today` 开始，提供今日/队列/详情/归档。SMTP必须G4明确选择且CLI显式发送；
 阅读备注默认仅本地保存。操作见[日报与归档指南](docs/delivery-cli.md)、
-[P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)
-和[P6独立验收报告](docs/phases/P6-acceptance-independent.md)。
+[P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
+[P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
+[P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
 公式边界见[优先级队列指南](docs/priority-queue.md)；上阶段独立验收证据见
 [P5独立验收](docs/phases/P5-acceptance.md)。P4复验记录仍见
 [P4返工复验](docs/phases/P4-acceptance-rework.md)。

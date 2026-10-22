@@ -3,7 +3,8 @@
 日期：2026-10-22。范围：P6-S1→S7，严格顺序、每卡单独分支/提交后才开始下一卡。
 本记录由实现方整理，**不是独立验收结论**；远程 CI、Docker 与 PR #8 已通过/合并，
 但独立验收未通过（F1/F2），见[P6 独立验收报告](P6-acceptance-independent.md)。
-本地阶段门全部通过；逐卡基线见[P6执行文档](P6-delivery.md)。
+本地阶段门全部通过；返工后门禁见[P6 返工验证记录](P6-acceptance-rework.md)，
+逐卡基线见[P6执行文档](P6-delivery.md)。
 
 ## 交付与冻结契约
 
@@ -14,14 +15,17 @@
   push_time/暂停/安静/渠道门禁。SMTP预约先提交，未知结果不自动重试、跨日也保守去重。
   本地文件和邮件独立；旧G4本地授权不会隐式启用SMTP。
 - 阅读：done/score/note/snooze/skip/reject，严格整数、客户端全局请求ID回执、冲突拒绝；
-  用户主动阅读沿状态机记录user_read，绝不声称真正发送过邮件。
+  用户主动阅读沿状态机写 `paper.pushed` 且 payload 标记 `trigger=user_read`，没有独立
+  `user_read` 事件，也绝不声称真正发送过邮件。
 - 归档：done、Rating、完整快照、archived和审计同事务；冻结元数据/摘要证据/标签桶与
   徽章/建议实际方式/完整S/D/U/P解释、配置/模型版本。方式覆盖有事件；评分备注修订追加。
 - 导出：BibTeX/CSV/Markdown/JSON包含标签、评分、备注、链接和修订；CSV防公式，文本转义。
 - 页面：`/ui/today`、`/ui/queue`、`/ui/papers/{id}`、`/ui/archive`；本地HTMX、CSP、
   同源表单保护；浏览器和真实Uvicorn/CLI完整闭环均已实测。
 - 周任务：复用P5，选定周截止排他、每周幂等报告/显式重试、覆盖率检查与弱信号；
-  只给未读合格候选追加快照。优先SQL投影阅读时元数据与标签，不查询备注或完整归档正文。
+  候选包含未读合格主题以及已投递未读（PUSHED），到期 snooze 与日报一致恢复；
+  只给未读候选追加快照，同日已有快照不重写。优先SQL投影阅读时元数据与标签，
+  不查询备注或完整归档正文。
 
 冻结：`delivery/contracts.py` 的Digest/DigestCard/Action/ArchiveRecord；现有P5
 QueueItem/ScoreExplanation/RankConfig保持不变。无新Python运行依赖；本地HTMX采用0BSD，

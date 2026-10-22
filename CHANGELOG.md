@@ -6,6 +6,13 @@
 
 ### Fixed
 
+- **P6 独立验收返工（F1/F2 + N1–N4）**：周任务候选纳入已投递未读（PUSHED）并恢复
+  到期 snooze，报告同步；第二次无副作用 preflight 失败改记 `failed` 并明确未尝试投递，
+  不再伪造 SMTP `uncertain`，SMTP 修正后同一预约可重试；同日快照不重写语义、日期
+  生成表单、`paper.pushed` 的 `trigger=user_read` 命名和 URL userinfo 拒绝一并修复。
+  返工新增 5 项回归，`make check` 944 passed / 4 deselected、integration 302 passed；
+  独立复验待执行。
+
 - **P4 验收返工（F1–F5）**：process 复用已有 enrichment，不再用中性值覆盖来源数据；
   缺摘要/无法摘要转为 `needs_review` 并打开 review item，不使批次回滚；process CLI
   捕获 LLMError、`--live` 在 provider=fake 时拒绝、单一 fixture 仅允许 `--paper`；
