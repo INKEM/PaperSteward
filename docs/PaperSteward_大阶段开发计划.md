@@ -725,8 +725,8 @@ papersteward scores snapshot --date 2026-10-21
 **风险/回滚**：公式漂移。以设计文档 §10 为准；所有公式参数进配置；加 golden；变更走 ADR + 配置版本。
 
 本地执行：2026-10-22，S1–S6按顺序完成；完整证据见
-[P5阶段交接](phases/P5-ranking.md)。设计示例组件75.1与P4冻结静态分后分层75.2的
-中间舍入差异见ADR0015。当前是本地stacked提交；合并/推送/tag、独立验收、Docker/CI待后续流程。
+[P5阶段交接](phases/P5-ranking.md)与[P5独立验收](phases/P5-acceptance.md)。设计示例组件75.1与P4冻结静态分后分层75.2的
+中间舍入差异见ADR0015。PR #7已合并到main且CI通过；Docker/CI与独立验收证据已记录，P5 tag待发布流程。
 
 **交接给 P6**：`QueueItem`、`ScoreExplanation`、`RankConfig`、队列 API、golden 分数。
 

@@ -2,11 +2,11 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P5 优先级排序、动态分与解释（S1–S6 实现完成，本地阶段门验证）**。
+当前处于 **P5 优先级排序、动态分与解释（S1–S6 实现完成，本地阶段门与独立验收通过）**。
 P0–P4 已提供初始化G1–G4、采集/去重/过滤、富化、摘要/分类/静态分与人工审核；
 P5 新增 F/H/D、周度偏好U、综合P、EMA稳定排序、不可变日快照、队列与分项解释。
-迁移head仍为0008，无新增依赖。实现按六张卡顺序保存在本地stacked分支，尚未合并/推送/tag；
-本轮Docker/CI与独立验收尚未运行，不代表已发布Alpha。
+迁移head仍为0008，无新增依赖。PR #7 已合并到 `main` 且 CI 通过；P5 tag 待发布流程，
+不代表已发布 Alpha。
 
 ```bash
 .venv/bin/papersteward scores snapshot --date 2026-10-22 --json
@@ -17,7 +17,8 @@ P5 新增 F/H/D、周度偏好U、综合P、EMA稳定排序、不可变日快照
 先完成初始化、process与审核。特殊归属桶排除P/rank，主队列只包含合格主题候选；
 暂无日报/推送/阅读写操作/归档（P6）。
 操作、公式舍入边界与数据限制见[优先级队列指南](docs/priority-queue.md)和
-[P5阶段交接](docs/phases/P5-ranking.md)。P4复验记录仍见
+[P5阶段交接](docs/phases/P5-ranking.md)；验收证据见
+[P5独立验收](docs/phases/P5-acceptance.md)。P4复验记录仍见
 [P4返工复验](docs/phases/P4-acceptance-rework.md)。
 
 ## 当前能力
