@@ -32,6 +32,7 @@ from papersteward.core.enums import (
     RunStatus,
     ScoreTier,
     SpecialBucketKind,
+    SpecialNominationStatus,
     SummaryValidationStatus,
     TagLevel,
     TagRole,
@@ -725,6 +726,112 @@ class ReviewItem:
 
 
 @dataclass(frozen=True, slots=True)
+class NominationEvidence:
+    """特殊桶提名的逐字证据；``valid`` 表示是否能在标题/摘要中核对到。"""
+
+    quote: str
+    valid: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "quote", _require_text(self.quote, "special_nomination.evidence.quote")
+        )
+        if not isinstance(self.valid, bool):
+            raise DomainValidationError("special_nomination.evidence.valid", "必须是布尔值")
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialNominationRecord:
+    """待审核/已决策的特殊桶提名；每篇文献每个特殊类型一行。"""
+
+    id: str
+    paper_id: str
+    kind: SpecialBucketKind
+    status: SpecialNominationStatus
+    confidence: float
+    reason: str
+    evidence: tuple[NominationEvidence, ...]
+    review_layers: tuple[str, ...]
+    classic_basis: tuple[str, ...]
+    bridge_memo: Mapping[str, Any] | None
+    reasons: tuple[str, ...]
+    provenance: Provenance
+    nominated_at: datetime
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    decision_note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "special_nomination.id"))
+        object.__setattr__(
+            self, "paper_id", _require_text(self.paper_id, "special_nomination.paper_id")
+        )
+        if not isinstance(self.kind, SpecialBucketKind):
+            raise DomainValidationError("special_nomination.kind", "必须是 SpecialBucketKind")
+        if not isinstance(self.status, SpecialNominationStatus):
+            raise DomainValidationError(
+                "special_nomination.status", "必须是 SpecialNominationStatus"
+            )
+        object.__setattr__(
+            self, "confidence", _require_ratio(self.confidence, "special_nomination.confidence")
+        )
+        object.__setattr__(self, "reason", _require_text(self.reason, "special_nomination.reason"))
+        if not isinstance(self.evidence, tuple | list) or not self.evidence:
+            raise DomainValidationError("special_nomination.evidence", "至少需要一条证据")
+        evidence = tuple(self.evidence)
+        for item in evidence:
+            if not isinstance(item, NominationEvidence):
+                raise DomainValidationError(
+                    "special_nomination.evidence[]", "必须是 NominationEvidence"
+                )
+        object.__setattr__(self, "evidence", evidence)
+        for name in ("review_layers", "classic_basis", "reasons"):
+            object.__setattr__(
+                self,
+                name,
+                _require_text_tuple(getattr(self, name), f"special_nomination.{name}"),
+            )
+        if self.bridge_memo is not None:
+            if not isinstance(self.bridge_memo, Mapping):
+                raise DomainValidationError(
+                    "special_nomination.bridge_memo", "必须是 JSON 对象或 null"
+                )
+            object.__setattr__(self, "bridge_memo", dict(self.bridge_memo))
+        if not isinstance(self.provenance, Provenance):
+            raise DomainValidationError("special_nomination.provenance", "必须是 Provenance")
+        object.__setattr__(
+            self,
+            "nominated_at",
+            _require_aware(self.nominated_at, "special_nomination.nominated_at"),
+        )
+        decided = (self.decided_at, self.decided_by)
+        if self.status is SpecialNominationStatus.PENDING:
+            if any(value is not None for value in decided):
+                raise DomainValidationError(
+                    "special_nomination.decided", "待审提名不能有决策时间/决策人"
+                )
+        else:
+            if any(value is None for value in decided):
+                raise DomainValidationError(
+                    "special_nomination.decided", "已决策提名必须记录时间和决策人"
+                )
+            assert self.decided_at is not None
+            object.__setattr__(
+                self,
+                "decided_at",
+                _require_aware(self.decided_at, "special_nomination.decided_at"),
+            )
+            object.__setattr__(
+                self,
+                "decided_by",
+                _require_text(self.decided_by, "special_nomination.decided_by"),
+            )
+        object.__setattr__(
+            self, "decision_note", _optional_text(self.decision_note, "special_nomination.note")
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """追加写事件；``paper_id`` 为空表示文档/配置级事件。"""
 
@@ -911,6 +1018,7 @@ __all__ = [
     "Enrichment",
     "EnrichmentSignals",
     "Event",
+    "NominationEvidence",
     "Paper",
     "PaperBucket",
     "PaperTag",
@@ -921,6 +1029,7 @@ __all__ = [
     "ReviewItem",
     "Run",
     "ScoreSnapshot",
+    "SpecialNominationRecord",
     "StaticScoreSnapshot",
     "Summary",
     "Tag",

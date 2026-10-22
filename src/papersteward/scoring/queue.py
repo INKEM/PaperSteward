@@ -49,6 +49,7 @@ from papersteward.storage.repositories import (
     PaperTagRepository,
     ReviewRepository,
     ScoreSnapshotRepository,
+    SpecialNominationRepository,
     StaticScoreSnapshotRepository,
     SummaryRepository,
     TaxonomyRepository,
@@ -92,6 +93,8 @@ def _eligibility(
     bucket = BucketRepository(session).get(filing[0].bucket_id) if len(filing) == 1 else None
     if bucket is not None and bucket.bucket_type is not BucketType.TOPIC:
         return ["special_bucket"], None, None
+    if SpecialNominationRepository(session).has_pending(paper.id):
+        reasons.append("pending_special_nomination")
     if paper.status not in eligible:
         reasons.append("ineligible_status:" + paper.status.value)
     assigned = PaperTagRepository(session).list_for_paper(paper.id)
@@ -503,6 +506,12 @@ def explain_score(
     reasons, _, _ = _eligibility(session, paper, ctx, day or now.date())
     if "special_bucket" in reasons:
         return Exclusion(paper_id=paper_id, reasons=["special_bucket"])
+    if "pending_special_nomination" in reasons:
+        return Exclusion(
+            paper_id=paper_id,
+            reasons=["pending_special_nomination"],
+            excluded_from_priority=False,
+        )
     history = ScoreSnapshotRepository(session).history(paper_id)
     snapshot = next(
         (

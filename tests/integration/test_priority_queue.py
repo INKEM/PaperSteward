@@ -9,10 +9,12 @@ from papersteward.cli.main import main
 from papersteward.config import get_settings
 from papersteward.core.entities import (
     Bucket,
+    NominationEvidence,
     Paper,
     PaperBucket,
     PaperTag,
     Provenance,
+    SpecialNominationRecord,
     StaticScoreSnapshot,
     Summary,
 )
@@ -21,6 +23,7 @@ from papersteward.core.enums import (
     BucketType,
     PaperStatus,
     SpecialBucketKind,
+    SpecialNominationStatus,
     SummaryValidationStatus,
     TagRole,
 )
@@ -35,6 +38,7 @@ from papersteward.storage.repositories import (
     PaperTagRepository,
     ReviewRepository,
     ScoreSnapshotRepository,
+    SpecialNominationRepository,
     StaticScoreSnapshotRepository,
     SummaryRepository,
 )
@@ -200,3 +204,36 @@ def test_cli_reads_and_generates_without_network(client, migrated_engine, monkey
         assert "错误" in capsys.readouterr().err
     finally:
         get_settings.cache_clear()
+
+
+def _pending_nomination(paper_id: str) -> SpecialNominationRecord:
+    return SpecialNominationRecord(
+        id=f"nom-{paper_id}",
+        paper_id=paper_id,
+        kind=SpecialBucketKind.REVIEW,
+        status=SpecialNominationStatus.PENDING,
+        confidence=0.8,
+        reason="合成提名",
+        evidence=(NominationEvidence("evidence", True),),
+        review_layers=("method", "evaluation"),
+        classic_basis=(),
+        bridge_memo=None,
+        reasons=(),
+        provenance=Provenance("fixture", "special_nomination/v1", NOW, "0" * 64),
+        nominated_at=NOW,
+    )
+
+
+def test_pending_special_nomination_is_excluded_from_priority(client, migrated_engine):
+    activate(client)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        seed(session, "pending-special")
+        SpecialNominationRepository(session).upsert(_pending_nomination("pending-special"))
+    response = client.post("/scores/snapshot", json={"score_date": str(DAY)})
+    assert response.status_code == 200, response.text
+    excluded = {item["paper_id"]: item for item in response.json()["excluded"]}
+    assert "pending_special_nomination" in excluded["pending-special"]["reasons"]
+    explanation = client.get("/scores/pending-special/explain").json()
+    assert explanation["reasons"] == ["pending_special_nomination"]
+    assert explanation["excluded_from_priority"] is False

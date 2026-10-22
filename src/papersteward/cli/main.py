@@ -45,6 +45,8 @@ from papersteward.cli.ranking import add_commands as add_ranking_commands
 from papersteward.cli.ranking import run as run_ranking
 from papersteward.cli.reading import add_commands as add_reading_commands
 from papersteward.cli.reading import run as run_reading
+from papersteward.cli.shelf import add_commands as add_shelf_commands
+from papersteward.cli.shelf import run as run_shelf
 from papersteward.config import format_settings_error
 
 
@@ -75,6 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_onboarding_commands(subparsers)
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
+    add_shelf_commands(subparsers)
     add_ranking_commands(subparsers)
     add_delivery_commands(subparsers)
     add_reading_commands(subparsers)
@@ -203,6 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_ranking(args)
         if args.command in {"process", "review"}:
             return run_processing(args)
+        if args.command == "shelf":
+            return run_shelf(args)
         if args.command == "doctor":
             return _run_doctor()
         if args.command == "demo" and getattr(args, "demo_command", None) == "seed":

@@ -77,6 +77,14 @@ class SpecialBucketKind(StrEnum):
     CLASSIC = "classic"
 
 
+class SpecialNominationStatus(StrEnum):
+    """特殊桶提名生命周期；决策一经写入不再回到 pending。"""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 # 数值越大优先级越高：跨层综述 > 经典/奠基 > 远邻领域。
 SPECIAL_BUCKET_PRIORITY: Final[Mapping[SpecialBucketKind, int]] = MappingProxyType(
     {
@@ -242,6 +250,7 @@ __all__ = [
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",
     "SpecialBucketKind",
+    "SpecialNominationStatus",
     "SummaryValidationStatus",
     "TagLevel",
     "TagRole",

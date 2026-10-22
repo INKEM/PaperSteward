@@ -31,6 +31,7 @@ from papersteward.core.entities import (
     ReviewItem,
     Run,
     ScoreSnapshot,
+    SpecialNominationRecord,
     StaticScoreSnapshot,
     Summary,
     Taxonomy,
@@ -43,6 +44,8 @@ from papersteward.core.enums import (
     ReviewResolution,
     ReviewStatus,
     RunStatus,
+    SpecialBucketKind,
+    SpecialNominationStatus,
 )
 from papersteward.core.errors import InvariantViolation
 from papersteward.core.invariants import (
@@ -87,6 +90,8 @@ from papersteward.storage.mappers import (
     run_to_row,
     score_snapshot_from_row,
     score_snapshot_to_row,
+    special_nomination_from_row,
+    special_nomination_to_row,
     static_score_snapshot_from_row,
     static_score_snapshot_to_row,
     summary_from_row,
@@ -108,6 +113,7 @@ from papersteward.storage.models import (
     ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    SpecialNominationRow,
     StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
@@ -523,6 +529,124 @@ class ReviewRepository(_Repository):
             setattr(row, field, getattr(mapped, field))
         self._flush()
         return item
+
+
+class SpecialNominationRepository(_Repository):
+    """特殊桶提名与人工决策。
+
+    ``upsert`` 只刷新待审提名；已接受/已拒绝的决策不会被 process 重跑覆盖。
+    """
+
+    def get(self, nomination_id: str) -> SpecialNominationRecord | None:
+        row = self._session.get(SpecialNominationRow, nomination_id)
+        return None if row is None else special_nomination_from_row(row)
+
+    def list_for_paper(self, paper_id: str) -> list[SpecialNominationRecord]:
+        statement = (
+            select(SpecialNominationRow)
+            .where(SpecialNominationRow.paper_id == paper_id)
+            .order_by(SpecialNominationRow.kind, SpecialNominationRow.id)
+        )
+        return [special_nomination_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def list_pending(
+        self,
+        *,
+        kind: SpecialBucketKind | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[SpecialNominationRecord], int]:
+        statement = select(SpecialNominationRow).where(
+            SpecialNominationRow.status == SpecialNominationStatus.PENDING.value
+        )
+        if kind is not None:
+            statement = statement.where(SpecialNominationRow.kind == kind.value)
+        statement = (
+            statement.order_by(
+                SpecialNominationRow.nominated_at.desc(),
+                SpecialNominationRow.paper_id,
+                SpecialNominationRow.kind,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        items = [special_nomination_from_row(row) for row in self._session.scalars(statement).all()]
+        count = (
+            select(func.count())
+            .select_from(SpecialNominationRow)
+            .where(SpecialNominationRow.status == SpecialNominationStatus.PENDING.value)
+        )
+        if kind is not None:
+            count = count.where(SpecialNominationRow.kind == kind.value)
+        return items, self._session.scalar(count) or 0
+
+    def has_pending(self, paper_id: str) -> bool:
+        statement = (
+            select(SpecialNominationRow.id)
+            .where(
+                SpecialNominationRow.paper_id == paper_id,
+                SpecialNominationRow.status == SpecialNominationStatus.PENDING.value,
+            )
+            .limit(1)
+        )
+        return self._session.scalar(statement) is not None
+
+    def upsert(self, item: SpecialNominationRecord) -> SpecialNominationRecord:
+        """按 paper_id+kind 幂等写入；已决策行保持原状。"""
+        row = self._session.scalar(
+            select(SpecialNominationRow).where(
+                SpecialNominationRow.paper_id == item.paper_id,
+                SpecialNominationRow.kind == item.kind.value,
+            )
+        )
+        if row is None:
+            self._session.add(special_nomination_to_row(item))
+            self._flush()
+            return item
+        existing = special_nomination_from_row(row)
+        if existing.status is not SpecialNominationStatus.PENDING:
+            return existing
+        mapped = special_nomination_to_row(item)
+        for field in (
+            "confidence",
+            "reason",
+            "evidence_json",
+            "review_layers_json",
+            "classic_basis_json",
+            "bridge_memo_json",
+            "reasons_json",
+            "provenance_model",
+            "provenance_prompt_version",
+            "provenance_generated_at",
+            "provenance_input_hash",
+            "nominated_at",
+        ):
+            setattr(row, field, getattr(mapped, field))
+        self._flush()
+        return special_nomination_from_row(row)
+
+    def decide(
+        self,
+        nomination_id: str,
+        *,
+        status: SpecialNominationStatus,
+        decided_by: str,
+        note: str | None,
+        now: datetime,
+    ) -> SpecialNominationRecord:
+        if status is SpecialNominationStatus.PENDING:
+            raise InvariantViolation("special_nomination.status", "决策不能回到待审")
+        row = self._session.get(SpecialNominationRow, nomination_id)
+        if row is None:
+            raise InvariantViolation("special_nomination", "提名不存在")
+        if row.status != SpecialNominationStatus.PENDING.value:
+            raise InvariantViolation("special_nomination.status", "提名已决策")
+        row.status = status.value
+        row.decided_at = now
+        row.decided_by = decided_by
+        row.decision_note = note
+        self._flush()
+        return special_nomination_from_row(row)
 
 
 class EventRepository(_Repository):

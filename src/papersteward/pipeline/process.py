@@ -1,4 +1,4 @@
-"""P4 离线处理编排：enrichment → R → 摘要 → 分类 → 特殊桶 → 静态分 → 审核队列。
+"""离线处理编排：enrichment → R → 摘要 → 分类 → 特殊桶提名落库 → 静态分 → 审核队列。
 
 只处理已 screened 的文献；所有写入在同一事务内由调用方提交。不调用真实网络；
 LLM 由显式注入的 gateway 提供。
@@ -35,6 +35,7 @@ from papersteward.pipeline.embeddings import EmbeddingProvider
 from papersteward.pipeline.enrich_service import persist_enrichment
 from papersteward.pipeline.relevance import RelevanceResult, evaluate_relevance
 from papersteward.pipeline.review import open_review
+from papersteward.pipeline.shelf import persist_nominations
 from papersteward.pipeline.special import SpecialNominationResult, nominate_special
 from papersteward.pipeline.summarize import (
     SummaryError,
@@ -173,8 +174,8 @@ def _review_reasons(
     summary: SummaryResult | None,
     summary_reason: str | None,
     classification: ClassificationResult,
-    special: SpecialNominationResult,
 ) -> tuple[str, ...]:
+    """只收集文献级审核原因；特殊桶提名由 shelf 队列单独审核。"""
     reasons: list[str] = []
     if relevance.needs_review:
         reasons.extend(f"relevance:{reason}" for reason in relevance.reasons)
@@ -184,9 +185,6 @@ def _review_reasons(
         reasons.extend(f"summary:{reason}" for reason in summary.reasons)
     if classification.needs_review:
         reasons.extend(f"classification:{reason}" for reason in classification.reasons)
-    for nomination in special.nominations:
-        reasons.append(f"special:nomination:{nomination.kind.value}")
-    reasons.extend(f"special:{reason}" for reason in special.reasons)
     return tuple(dict.fromkeys(reasons))
 
 
@@ -319,6 +317,7 @@ def process_paper(
     classification = classify_paper(paper, taxonomy, topic_buckets, gateway)
     persist_classification(session, classification)
     special = nominate_special(paper, profile, gateway)
+    persist_nominations(session, special, now=now)
     static = _static_snapshot(
         session,
         paper,
@@ -333,7 +332,7 @@ def process_paper(
         reproducibility=reproducibility,
         rigor=rigor,
     )
-    reasons = _review_reasons(relevance, summary, summary_reason, classification, special)
+    reasons = _review_reasons(relevance, summary, summary_reason, classification)
     needs_review = bool(reasons)
     payload = {
         "taxonomy_id": taxonomy.id,

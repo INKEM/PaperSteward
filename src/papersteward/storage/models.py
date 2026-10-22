@@ -27,6 +27,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -515,6 +516,49 @@ class ReviewItemRow(Base):
     resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SpecialNominationRow(Base):
+    """特殊桶提名与人工决策；每篇文献每个特殊类型一行。"""
+
+    __tablename__ = "special_nomination"
+    __table_args__ = (
+        CheckConstraint("kind IN ('review', 'distant', 'classic')", name="kind_values"),
+        CheckConstraint("status IN ('pending', 'accepted', 'rejected')", name="status_values"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="confidence_range"),
+        CheckConstraint(
+            "(status = 'pending' AND decided_at IS NULL AND decided_by IS NULL) "
+            "OR (status IN ('accepted', 'rejected') AND decided_at IS NOT NULL "
+            "AND decided_by IS NOT NULL)",
+            name="decided_fields",
+        ),
+        UniqueConstraint("paper_id", "kind", name="uq_special_nomination_paper_kind"),
+        Index("ix_special_nomination_status_kind", "status", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    review_layers_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    classic_basis_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    bridge_memo_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    provenance_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    provenance_prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance_generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    provenance_input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    nominated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EventRow(Base):

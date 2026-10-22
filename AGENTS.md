@@ -5,10 +5,10 @@
 
 ## 1. 当前阶段
 
-- 当前：**P6 日报推送、阅读反馈与归档（S1–S7 实现、Docker/CI 通过；首次独立验收 F1/F2 已返工，N1–N4 已处理，独立复验通过，P6 可以关闭；用户首份真实日报审阅与 P6 tag 待发布流程）**；
-- 下一阶段：**P7 特殊桶、自定义排序与权重治理**；P6 已可关闭，P7 可开始；先让用户审阅真实首日报。P4/P5/P6 已独立验收，P2–P6 tag 待发布流程，P1 F5 保留；
+- 当前：**P7 特殊桶、自定义排序与权重治理（S1 特殊桶数据模型/提名审核完成；S2–S6 待开始）**；
+- 下一阶段：**P7-S2 档位 rubric/配额/轮换**；P6 已关闭，P4/P5/P6 已独立验收，P2–P6 tag 待发布流程，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
-- 当前 head 为 `0010`（0009日报/投递、0010完整归档内容）；G4 前禁止入队/推送/归档。
+- 当前 head 为 `0011`（0009日报/投递、0010完整归档内容、0011特殊桶提名/决策）；G4 前禁止入队/推送/归档。
 
 ## 2. 开工前必读
 
@@ -25,7 +25,8 @@
 9. `docs/phases/P5-ranking.md`、`docs/priority-queue.md` 与 `docs/adr/0015-priority-arithmetic.md`（P5冻结契约、舍入与P6交接）；
 10. `docs/phases/P5-acceptance.md`（P5 独立验收结论、证据与限制）；
 11. `docs/phases/P6-delivery.md`、`docs/phases/P6-acceptance.md`、`docs/phases/P6-acceptance-independent.md`、`docs/phases/P6-acceptance-rework.md`、`docs/delivery-cli.md` 与 ADR0016/0017（P6 执行、本地验证、独立验收、返工证据、投递/归档与本地 HTMX 契约）；
-12. 本文件。
+12. `docs/phases/P7-shelves.md`（P7 执行卡、S1 提名/决策契约与 S2 交接）；
+13. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。
 

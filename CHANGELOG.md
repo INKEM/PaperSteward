@@ -22,6 +22,14 @@
 
 ### Added
 
+- **P7-S1**：特殊桶提名持久化与人工审核。迁移 `0011` 新增 `special_nomination`
+  （逐字证据、review layers、classic basis、bridge memo、LLM 溯源与决策记录），
+  每篇每个特殊类型一行；`process` 落库提名但不再混入普通 `review_item`，新增
+  `papersteward shelf review|accept|reject`，接受时写特殊 Filing、转 `shelved`、
+  追加 `paper.bucket_moved`/`paper.shelved` 并作废其他待审提名，拒绝保留主题归属。
+  待审提名以 `pending_special_nomination` 排除P快照；档位/配额/轮换/视图/权重治理
+  未在本卡实现。`make check` 950 passed / 4 deselected，mypy 122 源文件。
+
 - **P6-S7**：显式周度U API/CLI任务、每周幂等Run报告、评分数据/覆盖率检查；复用P5
   算术，只给未读候选追加新日快照。偏好历史优先投影阅读时元数据/标签，不查询备注。
   收尾校正清库存排序按首次入队自然日，补充完整阶段验证与P7 handoff。
