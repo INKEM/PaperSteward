@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1 完成并通过本地阶段门；P4-S2–S8 未开始。**
+> 状态：**P4-S1–S2 完成并通过本地阶段门；P4-S3–S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -40,10 +40,11 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 - 风险/回滚：真实调用可能产生费用和隐私外发；默认 fake + `--live` 授权 + 不提交 key。
   回滚删除 provider/配置/CLI 分支即可，无 schema 变更；P4 阶段门不依赖已删除的密钥。
 
-### P4-S2：富化信号持久化与中性值
+### P4-S2：富化信号持久化与中性值（完成）
 
 - 目标：把 `EnrichmentSignals` 持久化到独立表，保留 confidence/source/provenance；
-- 输出：新增迁移、实体/仓储/映射、幂等 upsert、中性值回填；不调用真实 LLM；
+- 输出：迁移 `0006`、`Enrichment`/`EnrichmentSignals`、ORM/映射/仓储、幂等 upsert、
+  中性值回填；不调用真实 LLM；
 - 验收：迁移 up/down、缺失字段中性值、来源可追溯、重复运行幂等；
 - 范围外：R/摘要/分类；预估 1–2 天。
 
@@ -128,7 +129,7 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 
 ### 不能做什么
 
-- 未持久化富化信号（P4-S2）；未实现 R/摘要/分类/特殊桶/静态分；
+- P4-S1 本身未持久化富化信号（P4-S2 已补齐）；未实现 R/摘要/分类/特殊桶/静态分；
 - 未实现流式输出、function calling、embedding、多 provider 路由、每日成本硬上限；
 - 未进行真实模型质量/价格/限流验收；默认不自动调度真实 LLM；
 - 不读取备注，不把论文文本当指令执行。
@@ -144,7 +145,8 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 
 ### 回滚
 
-- 撤销 P4-S1 代码/配置/文档即可；无 schema/依赖/数据变更；head 仍为 `0005`；
+- P4-S1 回滚：撤销代码/配置/文档即可；当时无 schema/依赖/数据变更；
+- P4-S2 回滚：`alembic downgrade 0005` 删除 `enrichment` 表；先备份已有富化结果；
 - 已配置的真实 key 留在用户 `.env`/环境中，不由代码删除；撤销后默认回到 FakeLLM。
 
 ### 规模说明
@@ -152,6 +154,66 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 P4-S1 超过“≤8 文件/≤400 行”指引：真实 provider（网络/认证/超时/成本/错误边界）、
 配置校验、CLI 双模式、富化中性契约、ADR 与离线测试/文档共同构成本次竖切；
 未实现 P4-S2 的持久化或任何 R/摘要/分类/评分逻辑。
+
+## P4-S2 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s2-make-check'`：
+  ruff format/check（166 文件）、strict mypy（**84 源文件**）通过；
+  **757 passed / 4 e2e excluded**（P4-S1 后基线 753，新增 4 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s2-integration'`：
+  **237 passed**（P4-S1 后基线 233）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s2-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → **0006** → base → 0006 通过，
+  包含 upgrade/downgrade 往返。
+- `make demo DEMO_PORT=8057`：临时库自动升级到 0006，`/health`、`/papers` 正常。
+- `make secret-scan`、`git diff --check` 通过；无真实 LLM/厂商调用。
+
+### 数据与行为
+
+- 新增 `enrichment` 表（每篇一条，PK `paper_id`，FK 级联删除）：
+  teams/experiment_quality JSON、venue_level、citation_count/velocity、code_url/data_url、
+  oa_status、confidence、source、created_at/updated_at，以及四列 all-or-none provenance；
+- DB 约束覆盖 confidence 0–1、引用数/速度非负、OA 枚举、provenance 全空或全非空；
+- `Enrichment`/`EnrichmentSignals` 移入 `core.entities`，校验保持中性值语义；
+- `EnrichmentRepository.save` 幂等：同内容重复保存不推进 `updated_at`；内容变化时保留
+  `created_at`、只前进 `updated_at`，不自行 commit；
+- `persist_enrichment` 用 `NeutralEnricher` 完成第一次中性值回填，不调用网络/LLM；
+- 无 `enrichment` 的存量文献不伪造行；由后续处理阶段按需生成。
+
+### 能做什么
+
+- 对已存在 `Paper` 幂等写入/更新中性或明确来源的富化信号；
+- 读取单篇/按 paper_id 稳定排序列出富化结果；
+- 保留 confidence/source 与可选 LLM provenance，供 P4-S3+ 评分/审计使用；
+- 缺失论文、非法信号或 provenance 不完整时由 FK/CHECK/领域校验拒绝。
+
+### 不能做什么
+
+- 不自动为全部 screened 文献批量回填，也不改变 `PaperStatus`；
+- 不判断 R/摘要/分类，不做真实论文页面/API 富化；
+- 未实现 enrichment 删除/版本历史（每篇保留最新一条）；
+- 不调用真实 LLM；真实富化 provider 仍需显式授权。
+
+### P4-S3 输入与开工约束
+
+- 输入：`Enrichment`/`EnrichmentSignals`、`EnrichmentRepository.get/list`、screened 文献；
+- R 计算应只读取已确认 profile/taxonomy/config 的精确版本，证据缺失转人工/降级；
+- embedding provider 选型需单独 ADR，测试用 fake/cassette，不访问真实网络；
+- 新字段/表继续新增迁移（当前 0006），不要重写 0005/0006；
+- 建议输出：`pipeline/relevance.py`、rubric prompt/schema、golden fixtures。
+
+### 回滚
+
+- `alembic downgrade 0005` 只删除 `enrichment` 表；先备份已有富化结果；
+- 撤销 P4-S2 代码/映射/仓储即可回到 P4-S1 状态；`Paper`/`Run`/采集数据不变；
+- 不自动删除用户 `.env` 中的真实 LLM 配置。
+
+### 规模说明
+
+P4-S2 超过 8 文件指引：领域实体、迁移、ORM/映射/仓储、中性值服务、CLI/迁移测试与
+文档共同构成持久化竖切；没有实现 P4-S3 的 R、embedding 或任何摘要/分类/评分逻辑。
 
 ## 与 P5 的边界
 

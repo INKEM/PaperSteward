@@ -2,12 +2,13 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P4 富化、摘要、分类与静态评分（S1 完成）**：P0/P1 的配置、API、
+当前处于 **P4 富化、摘要、分类与静态评分（S1–S2 完成）**：P0/P1 的配置、API、
 CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与确认门已通过；P3
 已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与可审计运行报告；
 P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权、脱敏 provider
-与富化输入契约。P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
-非阻断债务。下一阶段为 P4-S2 富化信号持久化与中性值。
+与富化输入契约；P4-S2 新增 `enrichment` 持久化、中性值回填与幂等 upsert。
+P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
+非阻断债务。下一阶段为 P4-S3 相关度 R（embedding + rubric + 证据）。
 详细契约见 [P4 阶段记录](docs/phases/P4-enrichment.md)、[P3 阶段记录](docs/phases/P3-ingestion.md)
 与 [P3 验收报告](docs/phases/P3-acceptance.md)。
 
@@ -51,8 +52,8 @@ P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权�
 - 结构化日志、`X-Request-ID`、统一错误响应；
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
-- 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source 表
-  （head `0005`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
+- 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
+  （head `0006`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
@@ -60,7 +61,7 @@ P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权�
   P4-S1 新增 OpenAI-compatible 真实 provider（显式 `--live`、HTTPS/超时/脱敏）；
 - P3：确定性查询生成、三来源离线适配器、带预算/限流/大小上限的 HTTP 边界、
   canonicalization/五类保守去重、硬过滤、来源版本与 Run 报告；
-- P4-S1：中性富化信号、`EnrichmentProvider` 协议与确定性降级；
+- P4-S1–S2：中性富化信号、`EnrichmentProvider` 协议、确定性降级与 enrichment 幂等持久化；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 初始化链路演示
@@ -354,7 +355,7 @@ docs/             # 设计与阶段文档
 - [P2 独立验收报告](docs/phases/P2-independent-acceptance.md)
 - [P3 阶段记录与 P4 交接](docs/phases/P3-ingestion.md)
 - [P3 独立验收报告](docs/phases/P3-acceptance.md)
-- [P4 阶段记录与 P4-S2 交接](docs/phases/P4-enrichment.md)
+- [P4 阶段记录与 P4-S3 交接](docs/phases/P4-enrichment.md)
 - [LLM provider 配置指南](docs/llm-provider.md)
 - [初始化 CLI 操作指南](docs/onboarding-cli.md)
 - [采集 CLI 操作指南](docs/ingestion-cli.md)

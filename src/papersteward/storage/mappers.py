@@ -13,6 +13,8 @@ from papersteward.core.entities import (
     ArchiveSnapshot,
     Bucket,
     Config,
+    Enrichment,
+    EnrichmentSignals,
     Event,
     Paper,
     PaperBucket,
@@ -46,6 +48,7 @@ from papersteward.storage.models import (
     ArchiveSnapshotRow,
     BucketRow,
     ConfigRow,
+    EnrichmentRow,
     EventRow,
     PaperBucketRow,
     PaperRow,
@@ -216,6 +219,52 @@ def summary_from_row(row: SummaryRow) -> Summary:
         limitation=row.limitation,
         evidence=tuple(row.evidence_json or ()),
         validation_status=SummaryValidationStatus(row.validation_status),
+        provenance=_provenance_from_columns(
+            row.provenance_model,
+            row.provenance_prompt_version,
+            row.provenance_generated_at,
+            row.provenance_input_hash,
+        ),
+    )
+
+
+def enrichment_to_row(enrichment: Enrichment) -> EnrichmentRow:
+    signals = enrichment.signals
+    return EnrichmentRow(
+        paper_id=enrichment.paper_id,
+        teams_json=list(signals.teams),
+        venue_level=signals.venue_level,
+        citation_count=signals.citation_count,
+        citation_velocity=signals.citation_velocity,
+        code_url=signals.code_url,
+        data_url=signals.data_url,
+        oa_status=signals.oa_status.value,
+        experiment_quality_json=list(signals.experiment_quality),
+        confidence=signals.confidence,
+        source=signals.source,
+        created_at=enrichment.created_at,
+        updated_at=enrichment.updated_at,
+        **_provenance_columns(enrichment.provenance),
+    )
+
+
+def enrichment_from_row(row: EnrichmentRow) -> Enrichment:
+    return Enrichment(
+        paper_id=row.paper_id,
+        signals=EnrichmentSignals(
+            teams=tuple(row.teams_json or ()),
+            venue_level=row.venue_level,
+            citation_count=row.citation_count,
+            citation_velocity=row.citation_velocity,
+            code_url=row.code_url,
+            data_url=row.data_url,
+            oa_status=OaStatus(row.oa_status),
+            experiment_quality=tuple(row.experiment_quality_json or ()),
+            confidence=row.confidence,
+            source=row.source,
+        ),
+        created_at=as_utc(row.created_at),
+        updated_at=as_utc(row.updated_at),
         provenance=_provenance_from_columns(
             row.provenance_model,
             row.provenance_prompt_version,

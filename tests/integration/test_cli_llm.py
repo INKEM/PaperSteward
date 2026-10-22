@@ -72,6 +72,8 @@ def test_llm_ping_live_reports_missing_model(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("PAPERSTEWARD_LLM_PROVIDER", "openai_compatible")
+    # 覆盖宿主机 .env 中可能已配置的真实模型，保证测试不读取用户真实配置。
+    monkeypatch.setenv("PAPERSTEWARD_LLM_MODEL", " ")
 
     code = main(["llm", "ping", "--live"])
     captured = capsys.readouterr()

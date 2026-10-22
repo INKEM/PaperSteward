@@ -21,6 +21,7 @@ from papersteward.core.entities import (
     ArchiveSnapshot,
     Bucket,
     Config,
+    Enrichment,
     Event,
     Paper,
     PaperBucket,
@@ -55,6 +56,8 @@ from papersteward.storage.mappers import (
     bucket_to_row,
     config_from_row,
     config_to_row,
+    enrichment_from_row,
+    enrichment_to_row,
     event_from_row,
     event_to_row,
     paper_bucket_from_row,
@@ -80,6 +83,7 @@ from papersteward.storage.models import (
     ArchiveSnapshotRow,
     BucketRow,
     ConfigRow,
+    EnrichmentRow,
     EventRow,
     PaperBucketRow,
     PaperRow,
@@ -257,6 +261,55 @@ class SummaryRepository(_Repository):
     def get(self, paper_id: str) -> Summary | None:
         row = self._session.get(SummaryRow, paper_id)
         return None if row is None else summary_from_row(row)
+
+
+class EnrichmentRepository(_Repository):
+    """每篇文献一条富化结果；相同内容重复保存不改变 updated_at。"""
+
+    _DATA_FIELDS = (
+        "teams_json",
+        "venue_level",
+        "citation_count",
+        "citation_velocity",
+        "code_url",
+        "data_url",
+        "oa_status",
+        "experiment_quality_json",
+        "confidence",
+        "source",
+        "provenance_model",
+        "provenance_prompt_version",
+        "provenance_generated_at",
+        "provenance_input_hash",
+    )
+
+    def save(self, enrichment: Enrichment) -> tuple[Enrichment, bool]:
+        """新增或更新；返回 ``(实际保存值, 是否发生变化)``，不提交事务。"""
+        row = self._session.get(EnrichmentRow, enrichment.paper_id)
+        if row is None:
+            self._session.add(enrichment_to_row(enrichment))
+            self._flush()
+            return enrichment, True
+        existing = enrichment_from_row(row)
+        if existing.signals == enrichment.signals and existing.provenance == enrichment.provenance:
+            return existing, False
+        mapped = enrichment_to_row(enrichment)
+        for field in self._DATA_FIELDS:
+            setattr(row, field, getattr(mapped, field))
+        # created_at 保持首次写入；时间戳只前进，不回退。
+        row.updated_at = max(existing.updated_at, enrichment.updated_at)
+        self._flush()
+        return enrichment_from_row(row), True
+
+    def get(self, paper_id: str) -> Enrichment | None:
+        row = self._session.get(EnrichmentRow, paper_id)
+        return None if row is None else enrichment_from_row(row)
+
+    def list(self, *, limit: int | None = None, offset: int = 0) -> list[Enrichment]:
+        statement = select(EnrichmentRow).order_by(EnrichmentRow.paper_id).offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
+        return [enrichment_from_row(row) for row in self._session.scalars(statement).all()]
 
 
 class ScoreSnapshotRepository(_Repository):
@@ -536,6 +589,7 @@ __all__ = [
     "ArchiveSnapshotRepository",
     "BucketRepository",
     "ConfigRepository",
+    "EnrichmentRepository",
     "EventRepository",
     "PaperBucketRepository",
     "PaperRepository",

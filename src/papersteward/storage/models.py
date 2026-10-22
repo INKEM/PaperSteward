@@ -353,6 +353,52 @@ class SummaryRow(Base):
     provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class EnrichmentRow(Base):
+    """每篇文献一条富化信号；缺失字段保持中性值，来源与置信度可审计。"""
+
+    __tablename__ = "enrichment"
+    __table_args__ = (
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="confidence_range"),
+        CheckConstraint(
+            "citation_count IS NULL OR citation_count >= 0", name="citation_count_non_negative"
+        ),
+        CheckConstraint(
+            "citation_velocity IS NULL OR citation_velocity >= 0.0",
+            name="citation_velocity_non_negative",
+        ),
+        CheckConstraint("oa_status IN ('open', 'closed', 'unknown')", name="oa_status_values"),
+        CheckConstraint(
+            "(provenance_model IS NULL AND provenance_prompt_version IS NULL "
+            "AND provenance_generated_at IS NULL AND provenance_input_hash IS NULL) "
+            "OR (provenance_model IS NOT NULL AND provenance_prompt_version IS NOT NULL "
+            "AND provenance_generated_at IS NOT NULL AND provenance_input_hash IS NOT NULL)",
+            name="provenance_all_or_none",
+        ),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    teams_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    venue_level: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citation_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    citation_velocity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    code_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    oa_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    experiment_quality_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="neutral")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provenance_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provenance_prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance_generated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    provenance_input_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class ScoreSnapshotRow(Base):
     """每日评分快照；主键保证同一天只有一条。"""
 

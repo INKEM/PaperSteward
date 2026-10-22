@@ -6,6 +6,9 @@
 
 ### Added
 
+- **P4-S2**：新增迁移 `0006` 与 `enrichment` 表，持久化每篇文献的富化信号、
+  confidence/source 与可选 provenance；提供幂等 upsert、中性值回填和稳定读取。
+  缺失字段保持 None/()/unknown，重复保存不推进 `updated_at`；无新依赖、无真实 LLM 调用。
 - **P4-S1**：真实 LLM 入口：`PAPERSTEWARD_LLM_*` 配置、OpenAI-compatible
   `chat/completions` provider、显式 `llm ping --live` 授权、`SecretStr` 密钥、
   HTTPS/超时/响应上限/脱敏错误与网关按 `retryable` 重试；新增中性
