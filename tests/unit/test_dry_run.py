@@ -34,7 +34,7 @@ def test_digest_golden_and_preserves_fixture_order():
         ("quiet_end", None),
         ("quiet_start", "07:00"),
         ("paused", "false"),
-        ("channel", "smtp"),
+        ("channel", "webhook"),
         ("share_notes", True),
         ("external_model_data", "notes"),
         ("target_shares", {"T01": 0.5}),

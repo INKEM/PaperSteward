@@ -597,6 +597,35 @@ class RunRow(Base):
     cost_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class DigestRow(Base):
+    __tablename__ = "digest"
+
+    digest_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DeliveryRow(Base):
+    __tablename__ = "delivery"
+    __table_args__ = (
+        CheckConstraint("channel IN ('local_markdown', 'smtp')", name="channel_values"),
+        CheckConstraint(
+            "status IN ('reserved', 'sent', 'failed', 'uncertain')", name="status_values"
+        ),
+    )
+
+    digest_date: Mapped[date] = mapped_column(
+        Date, ForeignKey("digest.digest_date"), primary_key=True
+    )
+    channel: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    destination_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ArchiveSnapshotRow(Base):
     """不可变归档快照；仓储只提供 insert/get。"""
 

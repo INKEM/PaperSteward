@@ -47,3 +47,15 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
 - make check：888 passed / 4 deselected，ruff/mypy 104源文件通过；secret-scan/diff通过。
   新增3项渲染/注入测试；无网络。能渲染，不能发送；无迁移，撤销代码即可回滚。
 - S1净407行略超400指引（七卡/ADR同交）；S2较大golden含完整解释JSON，未推进S3。
+
+### S3（2026-10-22）
+
+- 0009新增digest/delivery，日期唯一正文与渠道唯一预约。生成调用P5快照，发送前独立提交
+  预约、复核G4/暂停/安静/本地今日/push_time/渠道；仅queued推进pushed。
+- API/CLI/SMTP配置见[delivery-cli.md](../delivery-cli.md)；SMTP只在G4明确smtp时启用。
+  本地文件0600、原子不覆盖；SMTP异常留uncertain且不自动重试，文件仍可独立成功。
+- make check：900 passed / 4 deselected，ruff/mypy109源文件；integration275通过；
+  migrate-check base↔0009通过；secret-scan/diff通过。新增10集成+2单元，未调用真实邮件。
+- 能做：生成、审阅、手动投递和文件恢复；不能做：阅读操作、完整归档、常驻调度。
+- 超8文件/400行：迁移/预约事务/两渠道/配置门禁/API/CLI及12项失败回归组成完整竖切；
+  旧SMTP非法值测试改为webhook，doctor/head断言随迁移更新，无无关重构。回滚见ADR0016。

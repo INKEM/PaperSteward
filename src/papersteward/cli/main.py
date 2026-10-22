@@ -18,6 +18,8 @@ from papersteward.cli.config import (
     run_schema_validate,
     schema_names,
 )
+from papersteward.cli.delivery import add_commands as add_delivery_commands
+from papersteward.cli.delivery import run as run_delivery
 from papersteward.cli.demo import seed_demo_data
 from papersteward.cli.doctor import DoctorReport, run_doctor
 from papersteward.cli.documents import (
@@ -68,6 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
     add_ranking_commands(subparsers)
+    add_delivery_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -175,6 +178,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "digest":
+            return run_delivery(args)
         if args.command in {"ingest", "runs"}:
             return run_ingestion(args)
         if args.command == "onboarding":

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from sqlalchemy.engine import Engine
 
 from papersteward import __version__
+from papersteward.api.delivery import router as delivery_router
 from papersteward.api.errors import install_error_handlers
 from papersteward.api.middleware import RequestIdMiddleware
 from papersteward.api.onboarding import router as onboarding_router
@@ -52,6 +53,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(onboarding_router)
     app.include_router(review_router)
     app.include_router(queue_router)
+    app.include_router(delivery_router)
     return app
 
 

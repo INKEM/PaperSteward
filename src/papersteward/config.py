@@ -62,6 +62,29 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, ge=1, le=65535)
     timezone: str = "Asia/Shanghai"
     semantic_scholar_api_key: SecretStr | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_to: str | None = None
+    smtp_security: Literal["ssl", "starttls"] = "ssl"
+    smtp_timeout_s: float = Field(default=15, gt=0, le=120, allow_inf_nan=False)
+
+    @field_validator(
+        "smtp_host", "smtp_username", "smtp_from", "smtp_to", "smtp_password", mode="before"
+    )
+    @classmethod
+    def _empty_smtp(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("smtp_host", "smtp_username", "smtp_from", "smtp_to")
+    @classmethod
+    def _smtp_single_line(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or any(ord(c) < 32 for c in value)):
+            raise ValueError("必须为非空单行文本")
+        return None if value is None else value.strip()
+
     llm_provider: LLMProviderKind = LLMProviderKind.FAKE
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: SecretStr | None = None
