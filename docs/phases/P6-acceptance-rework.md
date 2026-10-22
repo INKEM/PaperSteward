@@ -81,15 +81,30 @@ git diff --check
 
 ## 6. 尚未执行 / 限制
 
-- 全新 clone 验证见下节；独立复验与远程 CI 需要验收方在返工提交后执行。本记录不声称
-  独立复验已通过。
+- 全新 clone 验证见下节；远程 CI 需要推送返工提交后由 CI 执行，独立复验也需要由
+  未参与实现的验收者执行。本记录不声称独立复验已通过。
 - 首次真实日报审阅、真实 SMTP 厂商 TLS/送达质量仍未验收。
 - P6 tag 未创建；P2–P5 tag 与 P1 F5/F3 债务保持原状。
 - 返工不改变 P7 范围：特殊桶完整规则、自定义视图、权重治理仍不开始。
 
 ## 7. 全新 clone
 
-待执行。
+在 `a6fbe58` 执行 `git clone --no-hardlinks . /dev/shm/p6-rework-clone`，用系统
+Python **3.14.7** 走 `make bootstrap`（全新 `.venv`、安装运行/开发依赖、迁移临时库），
+再执行阶段门：
+
+| 检查 | 结果 |
+|---|---|
+| `make bootstrap` | **通过**：新 venv、依赖安装、Alembic 升级到 0010 |
+| `make check` | **944 passed / 4 deselected**；ruff、strict mypy **120** 源文件通过 |
+| `make test-integration` | **302 passed** |
+| `make migrate-check` | **通过**：base→0010→base→0010 |
+| `make e2e` | **4 passed**（真实 Uvicorn + 子进程 CLI） |
+| `make secret-scan` | **通过** |
+| `git status --short` | 空 |
+
+克隆位于临时 tmpfs，验证后未保留；未使用工作区的 `.venv`、`.env` 或 `var` 数据库。
+最终提交只在本记录追加 clone 证据，不改变代码或测试。
 
 ## 8. 回滚
 
