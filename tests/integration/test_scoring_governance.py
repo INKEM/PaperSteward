@@ -24,6 +24,14 @@ from papersteward.storage.repositories import (
 OVERRIDES = {"static.relevance": 0.50, "static.extra_value": 0.30}
 
 
+@pytest.fixture(autouse=True)
+def governance_clock(monkeypatch):
+    """Keep confirmation events before the fixed late-process/promotion timestamps."""
+    monkeypatch.setattr("papersteward.api.governance.utc_now", lambda: NOW)
+    monkeypatch.setattr("papersteward.scoring.governance.utc_now", lambda: NOW)
+    monkeypatch.setattr("papersteward.cli.config.utc_now", lambda: NOW)
+
+
 def _session(migrated_engine):
     return session_scope(create_session_factory(migrated_engine))
 
