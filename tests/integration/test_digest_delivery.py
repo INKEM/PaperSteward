@@ -6,6 +6,7 @@ from test_api_dry_run import client as client
 from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
+import papersteward.delivery.service as delivery_service
 from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import PaperStatus
@@ -147,6 +148,44 @@ def test_smtp_reservation_committed_before_io_and_repeat_does_not_send(
     assert not deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")["existing"]
     assert deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")["existing"]
     assert calls == [1]
+
+
+def test_second_preflight_failure_is_not_uncertain_and_never_sends(
+    client, migrated_engine, monkeypatch
+):
+    """F2：复核失败发生在SMTP I/O之前，不得写成“送达结果未知”。"""
+    factory = prepared(client, migrated_engine, channel="smtp")
+    settings = Settings(
+        _env_file=None, smtp_host="example.org", smtp_from="a@example.org", smtp_to="b@example.org"
+    )
+    real = delivery_service._preflight
+    calls = []
+    sends = []
+
+    def flaky(session, digest, channel, now):
+        calls.append(1)
+        if len(calls) == 2:
+            raise InvariantViolation("delivery.items", "条目状态已变化")
+        return real(session, digest, channel, now)
+
+    monkeypatch.setattr(delivery_service, "_preflight", flaky)
+    monkeypatch.setattr(delivery_service, "send_smtp", lambda *args: sends.append(1))
+    with pytest.raises(InvariantViolation, match="复核失败") as error:
+        deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")
+    assert "条目状态已变化" in str(error.value)
+    assert sends == []
+    with session_scope(factory) as session:
+        row = session.get(DeliveryRow, (DAY, "smtp"))
+        assert row is not None
+        assert row.status == "failed" and "未尝试投递" in (row.error or "")
+        assert row.finished_at is None
+    # 复核未发生I/O，修正后同一预约可重试；只发送一次。
+    monkeypatch.setattr(delivery_service, "_preflight", real)
+    result = deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")
+    assert result == {"status": "sent", "existing": False, "date": str(DAY), "channel": "smtp"}
+    assert sends == [1]
+    with session_scope(factory) as session:
+        assert session.get(DeliveryRow, (DAY, "smtp")).status == "sent"
 
 
 def test_digest_audit_failure_rolls_back_when_caller_catches(client, migrated_engine, monkeypatch):
