@@ -87,8 +87,8 @@ curl -s localhost:8000/shelves/review/p001
   pending activation 补写生效日新版本快照。下一次日快照即可把文献纳入 P 排序。
 - 提升不会改写历史 P 快照；主题桶→特殊桶的手动降级尚未提供独立命令，当前仍通过
   `shelf accept`（仅 classified 阶段）完成。
-- 人工 `shelf tier` 现在持久化 `reviewed_by`；`shelf show --json` 的
-  `tier_reviewed_by` 与 `shelf tier --json` 的 `reviewed_by` 可用于审计。
+- 人工 `shelf tier` 现在持久化 `reviewed_by`；`shelf show --json`、`GET /shelves/*`
+  的 `tier_reviewed_by` 与 `shelf tier --json` 的 `reviewed_by` 可用于审计。
 
 ## 边界与回滚
 

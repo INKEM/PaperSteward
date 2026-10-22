@@ -389,8 +389,16 @@ def _build_impact(
     rows: list[tuple[Any, float, float, dict[str, Any]]] = []
     for item in queue_items:
         scores = {key: item.explanation.components[key].score for key in COMPONENTS}
-        static_new = round(math.fsum(scores[key] * new_weights[key] for key in ("R", "A", "E")), 1)
-        dynamic_new = round(math.fsum(scores[key] * new_weights[key] for key in ("F", "H")), 1)
+        static_new = round(
+            scores["R"] * proposed.static.relevance
+            + scores["A"] * proposed.static.authority
+            + scores["E"] * proposed.static.extra_value,
+            1,
+        )
+        dynamic_new = round(
+            scores["F"] * proposed.dynamic.freshness + scores["H"] * proposed.dynamic.hunger,
+            1,
+        )
         priority = compute_priority(
             static_new,
             dynamic_new,

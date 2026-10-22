@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from test_api_dry_run import client as client
 from test_custom_views import DAY, NOW, _prepare, _seed
 
@@ -40,7 +41,17 @@ def test_preview_confirm_activate_and_queue_uses_new_config(client, migrated_eng
     assert change["config_version"] == "1.0.1"
     assert change["preview"]["items"][0]["paper_id"] == "high-e"
     assert change["preview"]["changed"] == 2
-    assert "new_rank_score" in change["preview"]["items"][0]
+    top = change["preview"]["items"][0]
+    assert "new_rank_score" in top
+    scores = {key: value["score"] for key, value in top["components"].items()}
+    expected_static = scores["R"] * 0.50 + scores["A"] * 0.20 + scores["E"] * 0.30
+    expected_dynamic = scores["F"] * 0.60 + scores["H"] * 0.40
+    expected_priority = round(
+        expected_static * 0.70 + expected_dynamic * 0.20 + scores["U"] * 0.10,
+        1,
+    )
+    assert top["new_priority"] == pytest.approx(expected_priority, abs=0.11)
+    assert top["new_rank_score"] == pytest.approx(expected_priority, abs=0.11)
 
     with _session(migrated_engine) as session:
         assert ConfigRepository(session).get("scoring", "1.0.1") is None
@@ -85,6 +96,15 @@ def test_preview_confirm_activate_and_queue_uses_new_config(client, migrated_eng
     assert old_queue["items"][0]["paper_id"] == "high-r"
     new_queue = client.get(f"/queue?date={effective}").json()
     assert new_queue["items"][0]["paper_id"] == "high-e"
+    preview_items = {item["paper_id"]: item for item in change["preview"]["items"]}
+    queue_items = {item["paper_id"]: item for item in new_queue["items"]}
+    for paper_id in ("high-r", "high-e"):
+        assert preview_items[paper_id]["new_priority"] == pytest.approx(
+            queue_items[paper_id]["priority"], abs=0.11
+        )
+        assert preview_items[paper_id]["new_rank_score"] == pytest.approx(
+            queue_items[paper_id]["rank_score"], abs=0.11
+        )
 
     duplicate = client.post(
         f"/config/scoring/changes/{change['id']}/confirm",
@@ -495,3 +515,47 @@ def test_late_promotion_after_confirmation_gets_effective_snapshot(
 
 
 from papersteward.scoring.queue import create_snapshots, read_queue  # noqa: E402
+
+
+def test_default_preview_day_uses_runtime_timezone(client, migrated_engine, monkeypatch):
+    _prepare(client, migrated_engine, monkeypatch)
+    moment = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
+    monkeypatch.setattr("papersteward.api.governance.utc_now", lambda: moment)
+    response = client.post(
+        "/config/scoring/preview",
+        json={"overrides": OVERRIDES},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["preview_day"] == "2026-10-22"
+    assert body["effective_on"] == "2026-10-23"
+
+
+def test_cli_default_preview_day_uses_runtime_timezone(
+    client, migrated_engine, monkeypatch, capsys
+):
+    _prepare(client, migrated_engine, monkeypatch)
+    moment = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
+    monkeypatch.setenv("PAPERSTEWARD_DATABASE_URL", str(migrated_engine.url))
+    monkeypatch.setattr("papersteward.cli.config.utc_now", lambda: moment)
+    get_settings.cache_clear()
+    try:
+        assert (
+            main(
+                [
+                    "config",
+                    "preview",
+                    "--set",
+                    "static.relevance=0.50",
+                    "--set",
+                    "static.extra_value=0.30",
+                    "--json",
+                ]
+            )
+            == 0
+        )
+        body = json.loads(capsys.readouterr().out)
+        assert body["preview_day"] == "2026-10-22"
+        assert body["effective_on"] == "2026-10-23"
+    finally:
+        get_settings.cache_clear()

@@ -57,6 +57,7 @@ class ShelfItemRead(BaseModel):
     assessed_by: str | None
     assessed_at: datetime | None
     tier_note: str | None
+    tier_reviewed_by: str | None
     nomination_id: str | None
 
 

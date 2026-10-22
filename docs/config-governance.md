@@ -28,7 +28,7 @@ P7-S5 管理全局评分配置（scoring.yaml）的变更。**保存/导入新�
   `dynamic.weight/freshness/hunger`、`quasi_dynamic.weight`。`gates`、`stability`、
   `dynamic.half_life_days`、`quasi_dynamic` 子权重等非权重字段一律 400 拒绝；
   完整配置文件预览也会比较非权重字段，不允许借治理入口改候选集/EMA/日报/U 算法。
-- 预览日 `--date` 缺省今天；生效日 `--effective-on` 缺省预览日 +1 天。生效日必须
+- 预览日 `--date` 缺省 runtime timezone 的今天（API/CLI 均同）；生效日 `--effective-on` 缺省预览日 +1 天。生效日必须
   晚于预览日，且晚于所有已有静态快照日期。
 - 预览记录保存完整 proposed 配置、旧/新组件权重、逐篇旧/新名次与优先级、Top-N 明细
   和 `preview_hash`；**不写评分配置、不写静态快照、不激活**。

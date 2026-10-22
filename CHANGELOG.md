@@ -22,6 +22,12 @@
 
 ### Added
 
+- **P7 N4/N3 二次返工**：修正权重预览把层权重重复相乘（static/dynamic 改用未展开
+  子权重，再 compute_priority），新增 preview 与生效日队列 priority/rank_score 数值
+  对照；API/CLI config preview 缺省日期改用 runtime local day；API 暴露
+  `tier_reviewed_by`。`make check` 1017 passed、integration 338、e2e 4。
+  再次独立复验未执行，P7 仍 Not Accepted，tag/Beta/P8 阻塞。
+
 - **P7 独立验收返工**：F1 治理 allowlist（仅 8 个线性权重，非权重字段 400）；
   F2 确认后处理/提升的文献补写生效日静态快照；F3 `shelf reopen` 受控重开 rejected
   提名并审计。N1 changes 全量 total；N2 迁移 `0015` 持久化档位 `reviewed_by`；
