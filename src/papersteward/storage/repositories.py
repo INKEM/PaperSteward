@@ -36,6 +36,7 @@ from papersteward.core.entities import (
     StaticScoreSnapshot,
     Summary,
     Taxonomy,
+    ViewConfig,
     utc_now,
 )
 from papersteward.core.enums import (
@@ -101,6 +102,8 @@ from papersteward.storage.mappers import (
     summary_to_row,
     taxonomy_from_row,
     taxonomy_to_row,
+    view_config_from_row,
+    view_config_to_row,
 )
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
@@ -121,6 +124,7 @@ from papersteward.storage.models import (
     StaticScoreSnapshotRow,
     SummaryRow,
     TaxonomyRow,
+    ViewConfigRow,
 )
 from papersteward.storage.onboarding import ensure_active
 
@@ -804,6 +808,41 @@ class ConfigRepository(_Repository):
             .order_by(ConfigRow.updated_at, ConfigRow.version)
         )
         return [config_from_row(row) for row in self._session.scalars(statement).all()]
+
+
+class ViewConfigRepository(_Repository):
+    """自定义排序视图；名称大小写不敏感唯一，视图不改全局配置。"""
+
+    def get(self, view_id: str) -> ViewConfig | None:
+        row = self._session.get(ViewConfigRow, view_id)
+        return None if row is None else view_config_from_row(row)
+
+    def find_by_name(self, name: str) -> ViewConfig | None:
+        normalized = name.strip().casefold()
+        if not normalized:
+            return None
+        statement = select(ViewConfigRow).where(func.lower(ViewConfigRow.name) == normalized)
+        row = self._session.scalar(statement)
+        return None if row is None else view_config_from_row(row)
+
+    def list(self) -> list[ViewConfig]:
+        statement = select(ViewConfigRow).order_by(func.lower(ViewConfigRow.name), ViewConfigRow.id)
+        return [view_config_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def add(self, view: ViewConfig) -> ViewConfig:
+        if self.find_by_name(view.name) is not None:
+            raise InvariantViolation("view.name", "模板名已存在")
+        self._session.add(view_config_to_row(view))
+        self._flush()
+        return view
+
+    def delete(self, view_id: str) -> bool:
+        row = self._session.get(ViewConfigRow, view_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
 
 
 class RunRepository(_Repository):

@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from papersteward.core.enums import (
+    VIEW_COMPONENT_ORDER,
     AssignedBy,
     BucketRole,
     BucketType,
@@ -1003,6 +1004,47 @@ class Config:
 
 
 @dataclass(frozen=True, slots=True)
+class ViewConfig:
+    """用户保存的自定义排序视图；只影响当前排序，不改全局评分配置。"""
+
+    id: str
+    name: str
+    weights: Mapping[str, float]
+    created_at: datetime
+    preset: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "view.id"))
+        name = _require_text(self.name, "view.name")
+        if len(name) > 128:
+            raise DomainValidationError("view.name", "不能超过 128 个字符")
+        object.__setattr__(self, "name", name)
+        if not isinstance(self.weights, Mapping) or set(self.weights) != set(VIEW_COMPONENT_ORDER):
+            raise DomainValidationError(
+                "view.weights", "必须包含 " + ", ".join(VIEW_COMPONENT_ORDER)
+            )
+        weights = {
+            key: _require_ratio(self.weights[key], f"view.weights.{key}")
+            for key in VIEW_COMPONENT_ORDER
+        }
+        if not any(value > 0 for value in weights.values()):
+            raise DomainValidationError("view.weights", "至少需要一个正权重")
+        if not math.isclose(math.fsum(weights.values()), 1.0, abs_tol=1e-6):
+            raise DomainValidationError("view.weights", "权重之和必须为 1")
+        object.__setattr__(self, "weights", weights)
+        preset = _optional_text(self.preset, "view.preset")
+        if preset is not None and len(preset) > 32:
+            raise DomainValidationError("view.preset", "不能超过 32 个字符")
+        object.__setattr__(self, "preset", preset)
+        description = _optional_text(self.description, "view.description")
+        if description is not None and len(description) > 2000:
+            raise DomainValidationError("view.description", "不能超过 2000 个字符")
+        object.__setattr__(self, "description", description)
+        object.__setattr__(self, "created_at", _require_aware(self.created_at, "view.created_at"))
+
+
+@dataclass(frozen=True, slots=True)
 class Run:
     """一次任务运行记录；终态必须有结束时间。"""
 
@@ -1123,5 +1165,7 @@ __all__ = [
     "Summary",
     "Tag",
     "Taxonomy",
+    "VIEW_COMPONENT_ORDER",
+    "ViewConfig",
     "utc_now",
 ]

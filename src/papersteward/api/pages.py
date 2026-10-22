@@ -4,17 +4,17 @@ import json
 from datetime import date
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import utc_now
+from papersteward.core.entities import ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.delivery.actions import apply_action
@@ -34,6 +34,13 @@ from papersteward.delivery.shelf_view import (
 from papersteward.errors import AppError, NotFoundError
 from papersteward.scoring.contracts import QueueItem
 from papersteward.scoring.queue import _context, explain_score, read_queue
+from papersteward.scoring.views import (
+    ViewPreview,
+    get_view_config,
+    list_presets,
+    list_view_configs,
+    preview_view,
+)
 from papersteward.storage.delivery import read_digest
 from papersteward.storage.repositories import PaperRepository, SummaryRepository
 
@@ -69,7 +76,7 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<header><a class="brand" href="/ui/today">PaperSteward</a>'
         '<nav aria-label="主导航"><a href="/ui/today">今日</a>'
         '<a href="/ui/queue">阅读队列</a><a href="/ui/shelves">特殊桶</a>'
-        '<a href="/ui/archive">归档</a></nav></header>'
+        '<a href="/ui/views">视图</a><a href="/ui/archive">归档</a></nav></header>'
         f"<main><h1>{escape(title)}</h1>{body}</main>"
         "<footer>阅读反馈保存在本地。备注不会发送到外部模型。</footer></body></html>",
         headers=HEADERS,
@@ -242,6 +249,87 @@ def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | No
     if next_url is not None:
         body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
     return body + "</section>"
+
+
+def _view_table(preview: ViewPreview) -> str:
+    headers = "".join(f"<th>{key}</th>" for key in ("R", "A", "E", "F", "H", "U"))
+    rows = ""
+    for item in preview.items:
+        moved = (
+            "—"
+            if item.delta_rank == 0
+            else (f"↑{item.delta_rank}" if item.delta_rank > 0 else f"↓{-item.delta_rank}")
+        )
+        cells = "".join(
+            f"<td>{item.components[key].score:.0f}</td>" for key in ("R", "A", "E", "F", "H", "U")
+        )
+        rows += (
+            f"<tr><td>{item.rank}</td><td>{item.default_rank}</td><td>{moved}</td>"
+            f'<td><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
+            f"{escape(item.title)}</a></td><td>{item.view_score:.1f}</td>{cells}</tr>"
+        )
+    if not rows:
+        return '<p class="muted">当前合格候选为空；先生成当日快照或检查日期。</p>'
+    return (
+        "<table><thead><tr><th>#</th><th>默认</th><th>变化</th><th>标题</th>"
+        f"<th>视图分</th>{headers}</tr></thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None) -> str:
+    date_part = f"&date={day.isoformat()}" if day is not None else ""
+    links = "<p>预设："
+    parts = []
+    for preset in list_presets():
+        parts.append(
+            f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
+        )
+    links += " · ".join(parts) + "</p>"
+    links += "<p>已保存："
+    if saved:
+        parts = []
+        for config in saved:
+            parts.append(
+                f'<a href="/ui/views?name={quote(config.name)}{date_part}">'
+                f"{escape(config.name)}</a>"
+            )
+        links += " · ".join(parts)
+    else:
+        links += '<span class="muted">尚无；用 papersteward view save 保存。</span>'
+    links += "</p>"
+    formula_text = preview.view.as_json()["formula"]
+    links += (
+        f'<p class="muted">当前视图：{escape(preview.view.label)} · '
+        f"公式：{escape(formula_text)} · 候选 {preview.candidate_total} 篇 · "
+        f"{preview.changed} 篇名次变化。视图只重排当前队列，不改变全局权重与快照。</p>"
+    )
+    return links
+
+
+@router.get("/views")
+def views(
+    session: SessionDep,
+    preset: str | None = None,
+    name: str | None = None,
+    score_date: Annotated[date | None, Query(alias="date")] = None,
+    limit: int = 20,
+) -> HTMLResponse:
+    try:
+        saved = list_view_configs(session)
+        view_id = None
+        if name is not None:
+            view_id = get_view_config(session, name).id
+        preview = preview_view(
+            session,
+            score_date or utc_now().date(),
+            preset=preset,
+            view_id=view_id,
+            limit=limit,
+        )
+        body = _view_links(preview, saved, score_date) + _view_table(preview)
+        return _page("自定义排序", body)
+    except (DomainError, AppError) as exc:
+        return _page("自定义排序", f'<p role="alert">{escape(exc.message)}</p>')
 
 
 @router.get("/static/htmx.js")

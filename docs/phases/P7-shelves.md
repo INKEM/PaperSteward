@@ -1,6 +1,6 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S3 实现（2026-10-22）；S4–S6 待开始。**
+> 状态：**P7-S4 实现（2026-10-22）；S5–S6 待开始。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -147,10 +147,49 @@
 - 已知限制：页面每桶最多 50 条并提供“查看更多”；API 支持 limit/offset；页面只提供
   kind 过滤，tier 过滤走 API/CLI。已归档特殊桶走归档页，不在 shelf 视图重复展示。
 
+## S4 契约（2026-10-22）
+
+- 迁移 `0013` 新增 `view_config`：保存个人组件权重视图（名称大小写不敏感唯一、
+  归一化权重、可选来源 preset/说明、创建时间）；内置预设是代码常量，不建行。
+- 预设（组件权重合计 100）：balanced 45/15/10/12/8/10；frontier 35/10/10/25/10/10；
+  beginner 45/25/10/10/5/5；reproducible 35/10/40/10/5/0（R/A/E/F/H/U）。
+- 权重输入支持任意非负百分比/相对值，至少一个正数，自动归一化；未知组件、重复组件、
+  非有限/负值、全零一律拒绝。`P_view = Σ w_i·component_i` 保留一位小数。
+- 预览只读当前合格队列（P5 `read_queue`）：不扩大候选集、R 门槛仍生效、特殊桶仍排除；
+  按 view score 重排，同分沿用 R→出版日→A→标题→paper_id 的稳定顺序；返回默认名次与
+  名次变化。预览不写 `score_snapshot`、不改全局配置。
+- CLI：`view presets`、`view preview`（preset/name/view-id/weights 任选）、
+  `view save`、`view list`、`view show`、`view delete`；API：`GET /views/presets`、
+  `GET/POST /views`、`GET/DELETE /views/{id}`、`POST /views/preview`；页面
+  `/ui/views` 只读预览，导航“视图”。保存/删除走 CLI/API。
+- 视图与全局配置隔离：保存只写 `view_config`，删除只删该行；同名大小写不敏感冲突、
+  与内置 preset 同名冲突；不支持原地覆盖。
+- 本卡只支持 R/A/E/F/H/U 组件级权重，不提供静态/动态/准动态整组勾选；不做权重影响
+  预览/配置版本/确认（S5）、权重滑块 UI、多用户权限或自动调参。
+
+## S4 执行记录（2026-10-22）
+
+- 已完成：`view_config` 迁移/实体/仓储、预设与归一化、当前队列重排、保存/加载/删除、
+  API、CLI、`/ui/views` 页面与导航/表格样式。
+- 新增 11 项测试：6 项单元（预设权重/归一化/公式/view score/非法输入/实体校验）；
+  5 项集成（API save/load/delete、预览重排与只读、错误路径、CLI、页面与保存视图）。
+- 完整本地门：`make check` **1003 passed / 4 deselected**，ruff 262 文件、strict mypy
+  **129** 源文件通过；`make test-integration` **327 passed**；`make migrate-check`
+  0012↔0013 upgrade/downgrade/upgrade 通过；`make e2e` **4 passed**；`make demo`
+  health/papers 通过；`make secret-scan` OK。测试仅用 FakeLLM/临时 SQLite，无新依赖。
+- 能做：预设/自定义权重重排当前队列、保存/加载/删除视图并查看公式/名次变化；不能做：
+  全局权重预览/激活/版本、权重滑块 UI、视图内特殊桶混排或扩大候选集。
+- 规模说明：本卡超过 8 文件/400 行指引，原因是迁移、实体/仓储、权重服务、API、CLI、
+  页面和安全/只读/重排回归共同构成完整竖切；未提前实现 S5–S6。
+- 回滚：`alembic downgrade 0012` 删除已保存视图；内置预设是代码常量。历史 P 快照、
+  全局配置、特殊桶档位/Filing 均不受影响。
+- 已知限制：预览日期缺省 UTC；同日快照不可重写；视图只排序当前队列，不生成持久化
+  视图分数；同名保存需先删除或另起名称。
+
 ## P7 Handoff（后续卡）
 
-- S3 的 `shelf_view`/API 只读契约已冻结；S4 自定义视图不得复用特殊桶 Filing 绕过
-  `excluded_from_priority`，也不得把 V 当 P 或改写档位历史。
-- S4/S5 不得写全局配置或特殊桶 Filing；自定义视图只影响当前排序，权重变更仍需
-  预览/确认/版本。S6 e2e 消费 S3 的 `/shelves` 与 `/ui/shelves`。
+- S4 的 `view_config`/API 只影响当前排序；S5 全局权重预览/激活必须独立于视图表，
+  不得把保存视图当配置版本，也不得静默改写全局配置。
+- S5 权重变更仍需影响预览、确认、版本与静默回滚边界；S6 e2e 同时消费
+  `/shelves`、`/ui/shelves`、`/views/preview` 与 `/ui/views`。
 - S6 完成后再更新 Beta 验收与 CHANGELOG；P7 tag 待发布流程，不提前宣称 Beta。

@@ -2,11 +2,11 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P7 特殊桶、自定义排序与权重治理（S1 提名审核、S2 档位/配额/轮换、S3 特殊桶只读视图完成；S4–S6 待开始）**。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S4 完成；S5–S6 待开始）**。
 P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
-日报/投递/阅读反馈/归档。P7新增特殊桶提名持久化/人工决策、五维档位 rubric 与人工覆盖、
-周配额与每日两槽轮换计划，以及特殊桶只读 API/CLI/页面；迁移head为0012，无新增Python依赖。
-自定义视图/预设与全局权重治理尚未实现。
+日报/投递/阅读反馈/归档。P7新增特殊桶提名/档位/配额/轮换、特殊桶只读视图，以及
+组件级自定义排序预设/保存/预览；迁移head为0013，无新增Python依赖。
+全局权重影响预览/版本/确认尚未实现。
 P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
 
 ```bash
@@ -17,6 +17,8 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 .venv/bin/papersteward shelf plan --date 2026-10-22 --json
 .venv/bin/papersteward shelf list --kind distant --explain
 .venv/bin/papersteward shelf show p001 --json
+.venv/bin/papersteward view preview --preset reproducible --date 2026-10-22
+.venv/bin/papersteward view save --name "my-repro" --weights R:35,E:40,F:15,A:10
 .venv/bin/papersteward digest --date 2026-10-22 --out out/digest.md --json
 .venv/bin/papersteward done p001 --mode deep --score 4 --note "阅读反馈" --request-id read-p001
 .venv/bin/papersteward archive export --format bibtex --out out/archive.bib
@@ -24,10 +26,10 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 ```
 
 先完成初始化、process与审核。特殊归属桶排除P/rank，待审提名同样不会进入P快照；
-主队列只包含合格主题候选。页面从 `/ui/today` 开始，提供今日/队列/特殊桶/详情/归档。
+主队列只包含合格主题候选。页面从 `/ui/today` 开始，提供今日/队列/特殊桶/视图/详情/归档。
 SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存。
 操作见[日报与归档指南](docs/delivery-cli.md)、[特殊桶视图指南](docs/shelves.md)、
-[P7阶段卡片](docs/phases/P7-shelves.md)、
+[自定义排序视图指南](docs/views.md)、[P7阶段卡片](docs/phases/P7-shelves.md)、
 [P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
 [P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
 [P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
@@ -45,6 +47,9 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 - `GET /shelves`、`GET /shelves/{kind}`、`GET /shelves/{kind}/{paper_id}` 与
   `/ui/shelves`：只读展示三桶档位/理由/证据/桥接假设/覆盖层级/经典依据；
   不返回 V/P/rank，空桶不占位，未评估项提示 `shelf assess`；
+- `papersteward view presets|preview|save|list|show|delete`、`GET/POST /views`、
+  `POST /views/preview` 与 `/ui/views`：R/A/E/F/H/U 组件权重自动归一化，内置
+  均衡/前沿/入门/复现预设；只重排当前合格队列，保存模板不改全局配置或 P 快照；
 - `GET/POST /digests`、阅读操作 `/papers/{id}/actions`、`GET /archive`及导出；
 - `/ui/today|queue|papers/{id}|archive`：本地HTMX阅读闭环，`POST /jobs/preference/weekly`：显式周任务；
 - `GET /queue`、`GET /scores/{id}/explain`、`POST /scores/snapshot`：日队列、分项解释与快照；
@@ -91,7 +96,7 @@ SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存�
 - 纯领域层 `core/`：稳定枚举、不可变实体、文献/文档/运行状态机、分类/桶/评分/
   追加写等不变量；
 - 正式领域表与仓储：P1 的 14 张表 + onboarding/calibration/paper_source/enrichment 表
-  （head `0012`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
+  （head `0013`）；部分唯一索引/CHECK/FK、事件/评分快照/归档追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
 - Agent 输出 JSON schema：分类、相关度、摘要、特殊桶提名、评分快照、事件（正反例校验）；

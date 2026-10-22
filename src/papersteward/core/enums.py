@@ -95,6 +95,10 @@ SPECIAL_BUCKET_PRIORITY: Final[Mapping[SpecialBucketKind, int]] = MappingProxyTy
 )
 
 
+# 自定义排序视图的组件顺序；权重按此顺序展示/归一化。
+VIEW_COMPONENT_ORDER: Final = ("R", "A", "E", "F", "H", "U")
+
+
 class AssignedBy(StrEnum):
     """标签、桶与配置的写入来源。"""
 
@@ -254,4 +258,5 @@ __all__ = [
     "SummaryValidationStatus",
     "TagLevel",
     "TagRole",
+    "VIEW_COMPONENT_ORDER",
 ]

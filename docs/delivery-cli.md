@@ -30,10 +30,10 @@ SMTP配置：HOST、PORT（默认465）、FROM、TO、SECURITY（ssl/starttls）
 未配置时不发邮件；真实测试只手动运行，CI使用替身。旧G4只确认本地渠道的部署不能
 直接切到SMTP；需未来再协商流程或在全新初始化G4时明确选择smtp，不手改确认快照。
 
-数据库head0012（P7-S2）：0009新增digest/delivery，0010扩展归档content_json，
-0011新增special_nomination，0012新增special_tier_snapshot；停服务备份后降0011
-只删除档位历史，降0010删除特殊桶提名，降0009删除完整归档内容列，降0008删除
-日报与投递记录。
+数据库head0013（P7-S4）：0009新增digest/delivery，0010扩展归档content_json，
+0011新增special_nomination，0012新增special_tier_snapshot，0013新增view_config；
+停服务备份后降0012只删除自定义视图，降0011删除档位历史，降0010删除特殊桶提名，
+降0009删除完整归档内容列，降0008删除日报与投递记录。
 事件/文献状态不会自动撤销，完整回滚使用操作前备份；删除投递记录可能导致重发，禁止
 将降迁移作为重试方法。
 

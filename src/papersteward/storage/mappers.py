@@ -32,6 +32,7 @@ from papersteward.core.entities import (
     Summary,
     Tag,
     Taxonomy,
+    ViewConfig,
 )
 from papersteward.core.enums import (
     AssignedBy,
@@ -72,6 +73,7 @@ from papersteward.storage.models import (
     SummaryRow,
     TagRow,
     TaxonomyRow,
+    ViewConfigRow,
 )
 
 
@@ -499,6 +501,28 @@ def special_tier_from_row(row: SpecialTierSnapshotRow) -> SpecialTierSnapshot:
     )
 
 
+def view_config_to_row(view: ViewConfig) -> ViewConfigRow:
+    return ViewConfigRow(
+        id=view.id,
+        name=view.name,
+        weights_json=dict(view.weights),
+        preset=view.preset,
+        description=view.description,
+        created_at=view.created_at,
+    )
+
+
+def view_config_from_row(row: ViewConfigRow) -> ViewConfig:
+    return ViewConfig(
+        id=row.id,
+        name=row.name,
+        weights={str(key): float(value) for key, value in (row.weights_json or {}).items()},
+        preset=row.preset,
+        description=row.description,
+        created_at=as_utc(row.created_at),
+    )
+
+
 def event_to_row(event: Event) -> EventRow:
     return EventRow(
         id=event.id,
@@ -791,4 +815,6 @@ __all__ = [
     "tag_to_row",
     "taxonomy_from_row",
     "taxonomy_to_row",
+    "view_config_from_row",
+    "view_config_to_row",
 ]

@@ -47,6 +47,8 @@ from papersteward.cli.reading import add_commands as add_reading_commands
 from papersteward.cli.reading import run as run_reading
 from papersteward.cli.shelf import add_commands as add_shelf_commands
 from papersteward.cli.shelf import run as run_shelf
+from papersteward.cli.views import add_commands as add_view_commands
+from papersteward.cli.views import run as run_views
 from papersteward.config import format_settings_error
 
 
@@ -78,6 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
     add_shelf_commands(subparsers)
+    add_view_commands(subparsers)
     add_ranking_commands(subparsers)
     add_delivery_commands(subparsers)
     add_reading_commands(subparsers)
@@ -208,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_processing(args)
         if args.command == "shelf":
             return run_shelf(args)
+        if args.command == "view":
+            return run_views(args)
         if args.command == "doctor":
             return _run_doctor()
         if args.command == "demo" and getattr(args, "demo_command", None) == "seed":

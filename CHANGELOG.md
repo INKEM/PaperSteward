@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7-S4**：自定义排序视图。新增迁移 `0013` 的 `view_config`、四个内置预设
+  （balanced/frontier/beginner/reproducible）、R/A/E/F/H/U 权重归一化、当前合格
+  队列的只读重排与名次变化预览；`view presets|preview|save|list|show|delete` CLI、
+  `/views` API 与 `/ui/views` 页面。保存只写视图表，不改全局配置、不生成新 P/日快照。
+  非法/全零/未知权重拒绝；无新依赖；`make check` 1003 passed、integration 327 passed、
+  mypy 129 源文件。
+
 - **P7-S3**：特殊桶只读视图。新增 `/shelves`、`/shelves/{kind}`、
   `/shelves/{kind}/{paper_id}` API，`shelf list|distant|classic|show` CLI 与
   `/ui/shelves` 页面；展示档位、理由、逐字证据、review 覆盖层级、classic 依据、

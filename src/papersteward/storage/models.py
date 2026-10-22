@@ -598,6 +598,20 @@ class SpecialTierSnapshotRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ViewConfigRow(Base):
+    """用户保存的自定义排序视图；不影响全局评分配置。"""
+
+    __tablename__ = "view_config"
+    __table_args__ = (UniqueConstraint("name", name="uq_view_config_name"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    weights_json: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    preset: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EventRow(Base):
     """追加写事件日志；仓储层不提供 update/delete。"""
 
