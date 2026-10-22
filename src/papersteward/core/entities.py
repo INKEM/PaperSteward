@@ -32,6 +32,7 @@ from papersteward.core.enums import (
     ReviewStatus,
     RunStatus,
     ScoreTier,
+    ScoringChangeStatus,
     SpecialBucketKind,
     SpecialNominationStatus,
     SummaryValidationStatus,
@@ -1045,6 +1046,82 @@ class ViewConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ScoringChange:
+    """全局权重变更的预览/确认记录；只有 confirmed 会激活新配置版本。"""
+
+    id: str
+    status: ScoringChangeStatus
+    base_version: str
+    config_version: str
+    preview_day: date
+    effective_on: date
+    proposed_json: Mapping[str, Any]
+    preview_json: Mapping[str, Any]
+    preview_hash: str
+    created_at: datetime
+    confirmed_at: datetime | None = None
+    confirmed_by: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "scoring_change.id"))
+        if not isinstance(self.status, ScoringChangeStatus):
+            raise DomainValidationError("scoring_change.status", "必须是 ScoringChangeStatus")
+        base = _require_text(self.base_version, "scoring_change.base_version")
+        target = _require_text(self.config_version, "scoring_change.config_version")
+        if base == target:
+            raise DomainValidationError("scoring_change.config_version", "必须提升版本号")
+        object.__setattr__(self, "base_version", base)
+        object.__setattr__(self, "config_version", target)
+        if isinstance(self.preview_day, datetime) or not isinstance(self.preview_day, date):
+            raise DomainValidationError("scoring_change.preview_day", "必须是 date")
+        if isinstance(self.effective_on, datetime) or not isinstance(self.effective_on, date):
+            raise DomainValidationError("scoring_change.effective_on", "必须是 date")
+        if self.effective_on <= self.preview_day:
+            raise DomainValidationError("scoring_change.effective_on", "必须晚于预览日")
+        object.__setattr__(
+            self,
+            "proposed_json",
+            _require_mapping(self.proposed_json, "scoring_change.proposed_json"),
+        )
+        object.__setattr__(
+            self,
+            "preview_json",
+            _require_mapping(self.preview_json, "scoring_change.preview_json"),
+        )
+        object.__setattr__(
+            self,
+            "preview_hash",
+            _require_hash(self.preview_hash, "scoring_change.preview_hash"),
+        )
+        object.__setattr__(
+            self, "created_at", _require_aware(self.created_at, "scoring_change.created_at")
+        )
+        if self.status is ScoringChangeStatus.PREVIEWED:
+            if any(
+                value is not None for value in (self.confirmed_at, self.confirmed_by, self.note)
+            ):
+                raise DomainValidationError("scoring_change.confirmed", "未确认变更不能有确认字段")
+        else:
+            if self.confirmed_at is None or self.confirmed_by is None:
+                raise DomainValidationError(
+                    "scoring_change.confirmed", "已确认变更必须记录时间和确认人"
+                )
+            assert self.confirmed_at is not None
+            object.__setattr__(
+                self,
+                "confirmed_at",
+                _require_aware(self.confirmed_at, "scoring_change.confirmed_at"),
+            )
+            object.__setattr__(
+                self,
+                "confirmed_by",
+                _require_text(self.confirmed_by, "scoring_change.confirmed_by"),
+            )
+        object.__setattr__(self, "note", _optional_text(self.note, "scoring_change.note"))
+
+
+@dataclass(frozen=True, slots=True)
 class Run:
     """一次任务运行记录；终态必须有结束时间。"""
 
@@ -1159,6 +1236,7 @@ __all__ = [
     "ReviewItem",
     "Run",
     "ScoreSnapshot",
+    "ScoringChange",
     "SpecialNominationRecord",
     "SpecialTierSnapshot",
     "StaticScoreSnapshot",

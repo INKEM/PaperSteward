@@ -89,7 +89,7 @@ def _fixture_provider(path: str) -> FakeLLM:
 def _processor_context(
     session: Session, now: datetime
 ) -> tuple[ResearchProfile, Taxonomy, ScoringConfig, dict[str, Bucket]]:
-    profile, binding = bound_context(session, now, action="process")
+    profile, binding = bound_context(session, now, action="process", day=now.date())
     taxonomy = TaxonomyRepository(session).get(binding["taxonomy_id"], binding["taxonomy_version"])
     if taxonomy is None:
         raise InvalidRequestError("选定分类法不存在")

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -31,6 +31,7 @@ from papersteward.core.entities import (
     ReviewItem,
     Run,
     ScoreSnapshot,
+    ScoringChange,
     SpecialNominationRecord,
     SpecialTierSnapshot,
     StaticScoreSnapshot,
@@ -46,6 +47,7 @@ from papersteward.core.enums import (
     ReviewResolution,
     ReviewStatus,
     RunStatus,
+    ScoringChangeStatus,
     SpecialBucketKind,
     SpecialNominationStatus,
 )
@@ -92,6 +94,8 @@ from papersteward.storage.mappers import (
     run_to_row,
     score_snapshot_from_row,
     score_snapshot_to_row,
+    scoring_change_from_row,
+    scoring_change_to_row,
     special_nomination_from_row,
     special_nomination_to_row,
     special_tier_from_row,
@@ -119,6 +123,7 @@ from papersteward.storage.models import (
     ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    ScoringChangeRow,
     SpecialNominationRow,
     SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
@@ -808,6 +813,77 @@ class ConfigRepository(_Repository):
             .order_by(ConfigRow.updated_at, ConfigRow.version)
         )
         return [config_from_row(row) for row in self._session.scalars(statement).all()]
+
+
+class ScoringChangeRepository(_Repository):
+    """全局权重变更预览/确认；确认行按 effective_on 激活后续快照配置。"""
+
+    def add(self, change: ScoringChange) -> ScoringChange:
+        self._session.add(scoring_change_to_row(change))
+        self._flush()
+        return change
+
+    def get(self, change_id: str) -> ScoringChange | None:
+        row = self._session.get(ScoringChangeRow, change_id)
+        return None if row is None else scoring_change_from_row(row)
+
+    def list(self, *, limit: int = 50, offset: int = 0) -> list[ScoringChange]:
+        statement = (
+            select(ScoringChangeRow)
+            .order_by(ScoringChangeRow.created_at.desc(), ScoringChangeRow.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [scoring_change_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def active_for(self, day: date) -> ScoringChange | None:
+        statement = (
+            select(ScoringChangeRow)
+            .where(
+                ScoringChangeRow.status == ScoringChangeStatus.CONFIRMED.value,
+                ScoringChangeRow.effective_on <= day,
+            )
+            .order_by(
+                ScoringChangeRow.effective_on.desc(),
+                ScoringChangeRow.confirmed_at.desc(),
+                ScoringChangeRow.id.desc(),
+            )
+            .limit(1)
+        )
+        row = self._session.scalar(statement)
+        return None if row is None else scoring_change_from_row(row)
+
+    def confirmed_for_version(self, version: str) -> ScoringChange | None:
+        statement = (
+            select(ScoringChangeRow)
+            .where(
+                ScoringChangeRow.status == ScoringChangeStatus.CONFIRMED.value,
+                ScoringChangeRow.config_version == version,
+            )
+            .limit(1)
+        )
+        row = self._session.scalar(statement)
+        return None if row is None else scoring_change_from_row(row)
+
+    def confirm(
+        self,
+        change_id: str,
+        *,
+        confirmed_by: str,
+        note: str | None,
+        now: datetime,
+    ) -> ScoringChange:
+        row = self._session.get(ScoringChangeRow, change_id)
+        if row is None:
+            raise InvariantViolation("scoring_change", "变更记录不存在")
+        if row.status != ScoringChangeStatus.PREVIEWED.value:
+            raise InvariantViolation("scoring_change.status", "变更已确认")
+        row.status = ScoringChangeStatus.CONFIRMED.value
+        row.confirmed_at = now
+        row.confirmed_by = confirmed_by
+        row.note = note
+        self._flush()
+        return scoring_change_from_row(row)
 
 
 class ViewConfigRepository(_Repository):

@@ -6,7 +6,7 @@ import json
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,9 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from papersteward.config import format_settings_error
+from papersteward.core.entities import ScoringChange, utc_now
 from papersteward.core.errors import DomainError
+from papersteward.errors import AppError
 from papersteward.schemas import (
     SCHEMA_MODELS,
     SchemaError,
@@ -26,6 +28,14 @@ from papersteward.scoring import (
     ConfigError,
     import_scoring_config,
     load_scoring_config_file,
+    validate_scoring_config,
+)
+from papersteward.scoring.governance import (
+    confirm_weight_change,
+    get_change,
+    list_changes,
+    preview_from_config,
+    preview_from_overrides,
 )
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
 
@@ -112,6 +122,181 @@ def run_config_import(path: str, *, at: str | None) -> int:
     return 0
 
 
+def _parse_override(text: str) -> tuple[str, Any]:
+    path, separator, raw = text.partition("=")
+    if not separator or not path.strip():
+        raise ValueError("--set 格式必须为 PATH=VALUE，例如 static.relevance=0.60")
+    path = path.strip()
+    if path == "version" or path.startswith("version."):
+        raise ValueError("版本号请使用 --version，不要在 --set 中修改")
+    raw = raw.strip()
+    try:
+        value: Any = json.loads(raw)
+    except json.JSONDecodeError:
+        value = raw
+    return path, value
+
+
+def _change_json(change: ScoringChange) -> dict[str, Any]:
+    return {
+        "id": change.id,
+        "status": change.status.value,
+        "base_version": change.base_version,
+        "config_version": change.config_version,
+        "preview_day": change.preview_day.isoformat(),
+        "effective_on": change.effective_on.isoformat(),
+        "preview_hash": change.preview_hash,
+        "proposed": dict(change.proposed_json),
+        "preview": dict(change.preview_json),
+        "created_at": change.created_at.isoformat(),
+        "confirmed_at": change.confirmed_at.isoformat() if change.confirmed_at else None,
+        "confirmed_by": change.confirmed_by,
+        "note": change.note,
+    }
+
+
+def _print_change(change: ScoringChange) -> None:
+    print(
+        f"{change.id} [{change.status.value}] {change.base_version} → "
+        f"{change.config_version}，生效 {change.effective_on}"
+    )
+    print(f"预览 hash：{change.preview_hash}")
+    preview = change.preview_json
+    print(f"候选 {preview.get('total', 0)} 篇，名次变化 {preview.get('changed', 0)} 篇")
+    for item in preview.get("items", [])[:20]:
+        print(
+            f"  #{item['old_rank']}→#{item['new_rank']} {item['paper_id']} "
+            f"P {item['old_priority']:.1f}→{item['new_priority']:.1f} {item['title']}"
+        )
+    if change.status.value == "previewed":
+        print(f'确认：papersteward config confirm {change.id} --by <user> --note "确认理由"')
+
+
+def run_config_preview(
+    *,
+    path: str | None,
+    overrides: list[str],
+    version: str | None,
+    at: date | None,
+    effective_on: date | None,
+    limit: int,
+    json_output: bool,
+) -> int:
+    try:
+        parsed = dict(_parse_override(item) for item in overrides)
+        preview_day = at or utc_now().date()
+        effective = effective_on or preview_day + timedelta(days=1)
+        with _session() as session:
+            if path is not None:
+                proposed = load_scoring_config_file(path)
+                if version is not None:
+                    proposed = proposed.model_copy(update={"version": version})
+                validate_scoring_config(proposed, source=f"config-preview:{path}")
+                change = preview_from_config(
+                    session,
+                    proposed,
+                    preview_day=preview_day,
+                    effective_on=effective,
+                    limit=limit,
+                )
+            else:
+                change = preview_from_overrides(
+                    session,
+                    parsed,
+                    version=version,
+                    preview_day=preview_day,
+                    effective_on=effective,
+                    limit=limit,
+                )
+    except (ConfigError, ValidationError, AppError, DomainError) as exc:
+        _print_error(exc)
+        return 1
+    except (OSError, ValueError) as exc:
+        _print_error(exc)
+        return 1
+    except SQLAlchemyError:
+        _print_error(ValueError(_MIGRATION_HINT))
+        return 1
+    if json_output:
+        print(json.dumps(_change_json(change), ensure_ascii=False, indent=2))
+    else:
+        _print_change(change)
+    return 0
+
+
+def run_config_confirm(change_id: str, *, by: str, note: str | None, json_output: bool) -> int:
+    try:
+        with _session() as session:
+            change, recomputed = confirm_weight_change(
+                session, change_id, confirmed_by=by, note=note
+            )
+    except (ConfigError, ValidationError, AppError, DomainError) as exc:
+        _print_error(exc)
+        return 1
+    except (OSError, ValueError) as exc:
+        _print_error(exc)
+        return 1
+    except SQLAlchemyError:
+        _print_error(ValueError(_MIGRATION_HINT))
+        return 1
+    if json_output:
+        payload = _change_json(change)
+        payload["static_recomputed"] = recomputed
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"已激活 {change.config_version}（生效 {change.effective_on}，"
+            f"静态快照重算 {recomputed} 篇）"
+        )
+    return 0
+
+
+def run_config_changes(*, limit: int, json_output: bool) -> int:
+    try:
+        with _session() as session:
+            changes = list_changes(session, limit=limit)
+    except SQLAlchemyError:
+        _print_error(ValueError(_MIGRATION_HINT))
+        return 1
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "items": [_change_json(item) for item in changes],
+                    "total": len(changes),
+                    "limit": limit,
+                    "offset": 0,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        for change in changes:
+            print(
+                f"{change.id} [{change.status.value}] {change.base_version} → "
+                f"{change.config_version}，生效 {change.effective_on}"
+            )
+    return 0
+
+
+def run_config_show(change_id: str, *, json_output: bool) -> int:
+    try:
+        with _session() as session:
+            change = get_change(session, change_id)
+    except (AppError, DomainError) as exc:
+        _print_error(exc)
+        return 1
+    except SQLAlchemyError:
+        _print_error(ValueError(_MIGRATION_HINT))
+        return 1
+    if json_output:
+        print(json.dumps(_change_json(change), ensure_ascii=False, indent=2))
+    else:
+        _print_change(change)
+    return 0
+
+
 def run_schema_show(name: str) -> int:
     try:
         schema = schema_for(name)
@@ -139,7 +324,11 @@ def schema_names() -> tuple[str, ...]:
 
 
 __all__ = [
+    "run_config_changes",
+    "run_config_confirm",
     "run_config_import",
+    "run_config_preview",
+    "run_config_show",
     "run_config_validate",
     "run_schema_show",
     "run_schema_validate",

@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7-S5**：全局权重治理。新增迁移 `0014` 的 `scoring_change`、Top-N 影响预览、
+  preview hash、版本自动提升、显式确认、按生效日激活与已有静态分重算；
+  `config preview|confirm|changes|show` CLI 与 `/config/scoring/*` API。
+  预览只写 previewed 记录，不写配置/静态快照；确认后生效日及之后使用新版本，
+  旧日快照不变。`config import` 仍不自动激活，自定义视图与全局配置隔离。
+  无新依赖；`make check` 1009 passed、integration 330 passed、mypy 131 源文件。
+
 - **P7-S4**：自定义排序视图。新增迁移 `0013` 的 `view_config`、四个内置预设
   （balanced/frontier/beginner/reproducible）、R/A/E/F/H/U 权重归一化、当前合格
   队列的只读重排与名次变化预览；`view presets|preview|save|list|show|delete` CLI、

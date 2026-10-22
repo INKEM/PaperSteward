@@ -598,6 +598,37 @@ class SpecialTierSnapshotRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ScoringChangeRow(Base):
+    """全局权重变更预览/确认；只有 confirmed 行参与后续快照配置选择。"""
+
+    __tablename__ = "scoring_change"
+    __table_args__ = (
+        CheckConstraint("status IN ('previewed', 'confirmed')", name="status_values"),
+        CheckConstraint(
+            "(status = 'previewed' AND confirmed_at IS NULL AND confirmed_by IS NULL) "
+            "OR (status = 'confirmed' AND confirmed_at IS NOT NULL "
+            "AND confirmed_by IS NOT NULL)",
+            name="confirmed_fields",
+        ),
+        Index("ix_scoring_change_status_effective", "status", "effective_on"),
+        Index("ix_scoring_change_config_version", "config_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    base_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    preview_day: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_on: Mapped[date] = mapped_column(Date, nullable=False)
+    proposed_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    preview_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    preview_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ViewConfigRow(Base):
     """用户保存的自定义排序视图；不影响全局评分配置。"""
 

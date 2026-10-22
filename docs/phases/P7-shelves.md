@@ -1,6 +1,6 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S4 实现（2026-10-22）；S5–S6 待开始。**
+> 状态：**P7-S5 实现（2026-10-22）；S6 待开始。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -186,10 +186,51 @@
 - 已知限制：预览日期缺省 UTC；同日快照不可重写；视图只排序当前队列，不生成持久化
   视图分数；同名保存需先删除或另起名称。
 
+## S5 契约（2026-10-22）
+
+- 迁移 `0014` 新增 `scoring_change`：previewed/confirmed 状态、base/config version、
+  预览日、生效日、完整 proposed 配置、影响预览 JSON、preview hash、确认人/时间/备注。
+  预览只追加 previewed 行；确认在原行记录 confirmed 字段，历史不删除。
+- 预览：`config preview --set/--file` 或 `POST /config/scoring/preview`。先验证 G4 与
+  当前激活配置，再按 R/A/E/F/H/U 六组件重排当前合格队列；保存旧/新组件权重、逐篇
+  旧/新名次与优先级、Top-N 明细和 hash。预览不写配置版本、不写静态快照、不激活。
+- 确认：`config confirm <id>` 或 `POST /config/scoring/changes/{id}/confirm`。重算影响并
+  核对 hash（队列/基线变化则 409 重新预览）；校验版本不存在、生效日晚于所有已有静态
+  快照；确认人在新配置版本、`config.activated` 事件和生效日静态快照写入后记录。
+- 激活：`bound_context(day)` 取 `effective_on≤day` 的最新 confirmed 变更；否则用 G4
+  原始评分版本。G4 原始配置仍复核，防止初始化证据漂移。生效日前队列继续用旧配置；
+  生效日及以后使用新配置。确认时为生效日重算已有静态快照：
+  `S_new = R·wR' + A·wA' + E·wE'`，不重新调用 LLM，不改写历史快照。
+- 版本：`config import` 仍只保存版本不激活；自定义视图 `view_config` 与全局配置隔离，
+  不能作为激活版本。预览/确认不修改归档、阅读历史或特殊桶 Filing。
+- 生效日/预览日缺省今天/+1 天；必须晚于所有已有静态快照。同一变更不能重复确认；
+  不做自动调参、自动确认、权重滑块 UI 或多用户权限。
+
+## S5 执行记录（2026-10-22）
+
+- 已完成：`scoring_change` 迁移/实体/仓储、影响预览/hash、确认激活、按日选择配置、
+  生效日静态分重算、`config preview|confirm|changes|show` CLI 与 `/config/scoring`
+  API、组件权重展开/覆盖工具。
+- 新增 6 项测试：3 项单元（分层权重展开、版本提升、覆盖/交叉校验）；3 项集成
+  （预览不改配置/快照、确认激活与生效日队列重排、CLI/API 错误与历史）。
+- 完整本地门：`make check` **1009 passed / 4 deselected**，ruff 267 文件、strict mypy
+  **131** 源文件通过；`make test-integration` **330 passed**；`make migrate-check`
+  0013↔0014 upgrade/downgrade/upgrade 通过；`make e2e` **4 passed**；`make demo`
+  health/papers 通过；`make secret-scan` OK。测试仅用 FakeLLM/临时 SQLite，无新依赖。
+- 能做：预览 Top-N 影响、自动提升版本、显式确认、按生效日激活并在生效日使用新权重；
+  不能做：自动调参/自动确认、UI 滑块、原地覆盖版本、跨日重写历史快照或撤销已激活版本。
+- 规模说明：本卡超过 8 文件/400 行指引，原因是迁移、治理记录、影响计算、按日绑定、
+  静态重算、API/CLI 与并发/过期/错误路径共同构成完整竖切；未提前实现 S6。
+- 回滚：`alembic downgrade 0013` 删除变更记录；已保存配置版本/静态快照不回退。撤销
+  激活需新建更高版本重新预览/确认，不删除历史。旧代码不认识 activation 时继续使用
+  G4 版本，但需先备份/导出变更记录。
+- 已知限制：预览 hash 以完整当前队列为输入，队列变化会使确认失败并需重新预览；
+  静态重算只覆盖已有静态快照的未归档文献；治理没有独立页面（CLI/API）。
+
 ## P7 Handoff（后续卡）
 
-- S4 的 `view_config`/API 只影响当前排序；S5 全局权重预览/激活必须独立于视图表，
-  不得把保存视图当配置版本，也不得静默改写全局配置。
-- S5 权重变更仍需影响预览、确认、版本与静默回滚边界；S6 e2e 同时消费
-  `/shelves`、`/ui/shelves`、`/views/preview` 与 `/ui/views`。
+- S5 的 `scoring_change` 与按日激活已冻结；S6 e2e 必须覆盖“预览→确认→生效日队列”
+  以及旧的 preview_day 仍用旧配置。视图仍不得写全局配置/激活版本。
+- S6 同时消费 `/shelves`、`/ui/shelves`、`/views/preview`、`/ui/views` 与
+  `/config/scoring/*`；完成后更新 Beta 验收与 CHANGELOG，P7 tag 仍待发布流程。
 - S6 完成后再更新 Beta 验收与 CHANGELOG；P7 tag 待发布流程，不提前宣称 Beta。

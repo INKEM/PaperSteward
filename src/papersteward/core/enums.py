@@ -153,6 +153,13 @@ class ReviewResolution(StrEnum):
     RELABELED = "relabeled"
 
 
+class ScoringChangeStatus(StrEnum):
+    """全局权重变更的预览/确认状态；只有 confirmed 会影响后续快照。"""
+
+    PREVIEWED = "previewed"
+    CONFIRMED = "confirmed"
+
+
 class ScoreTier(StrEnum):
     """特殊桶内部档位；主题桶使用 P 排序，不使用档位。"""
 
@@ -206,6 +213,7 @@ class EventType(StrEnum):
     TAXONOMY_CONFIRMED = "taxonomy.confirmed"
     TAXONOMY_ARCHIVED = "taxonomy.archived"
     CONFIG_UPDATED = "config.updated"
+    CONFIG_ACTIVATED = "config.activated"
     DIGEST_CREATED = "digest.created"
     DELIVERY_RESERVED = "delivery.reserved"
     DELIVERY_SENT = "delivery.sent"
@@ -253,6 +261,7 @@ __all__ = [
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",
+    "ScoringChangeStatus",
     "SpecialBucketKind",
     "SpecialNominationStatus",
     "SummaryValidationStatus",

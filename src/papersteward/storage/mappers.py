@@ -26,6 +26,7 @@ from papersteward.core.entities import (
     ReviewItem,
     Run,
     ScoreSnapshot,
+    ScoringChange,
     SpecialNominationRecord,
     SpecialTierSnapshot,
     StaticScoreSnapshot,
@@ -47,6 +48,7 @@ from papersteward.core.enums import (
     ReviewStatus,
     RunStatus,
     ScoreTier,
+    ScoringChangeStatus,
     SpecialBucketKind,
     SpecialNominationStatus,
     SummaryValidationStatus,
@@ -67,6 +69,7 @@ from papersteward.storage.models import (
     ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
+    ScoringChangeRow,
     SpecialNominationRow,
     SpecialTierSnapshotRow,
     StaticScoreSnapshotRow,
@@ -501,6 +504,42 @@ def special_tier_from_row(row: SpecialTierSnapshotRow) -> SpecialTierSnapshot:
     )
 
 
+def scoring_change_to_row(change: ScoringChange) -> ScoringChangeRow:
+    return ScoringChangeRow(
+        id=change.id,
+        status=change.status.value,
+        base_version=change.base_version,
+        config_version=change.config_version,
+        preview_day=change.preview_day,
+        effective_on=change.effective_on,
+        proposed_json=dict(change.proposed_json),
+        preview_json=dict(change.preview_json),
+        preview_hash=change.preview_hash,
+        created_at=change.created_at,
+        confirmed_at=change.confirmed_at,
+        confirmed_by=change.confirmed_by,
+        note=change.note,
+    )
+
+
+def scoring_change_from_row(row: ScoringChangeRow) -> ScoringChange:
+    return ScoringChange(
+        id=row.id,
+        status=ScoringChangeStatus(row.status),
+        base_version=row.base_version,
+        config_version=row.config_version,
+        preview_day=row.preview_day,
+        effective_on=row.effective_on,
+        proposed_json=dict(row.proposed_json or {}),
+        preview_json=dict(row.preview_json or {}),
+        preview_hash=row.preview_hash,
+        created_at=as_utc(row.created_at),
+        confirmed_at=optional_utc(row.confirmed_at),
+        confirmed_by=row.confirmed_by,
+        note=row.note,
+    )
+
+
 def view_config_to_row(view: ViewConfig) -> ViewConfigRow:
     return ViewConfigRow(
         id=view.id,
@@ -804,6 +843,8 @@ __all__ = [
     "run_to_row",
     "score_snapshot_from_row",
     "score_snapshot_to_row",
+    "scoring_change_from_row",
+    "scoring_change_to_row",
     "special_nomination_from_row",
     "special_nomination_to_row",
     "special_tier_from_row",
