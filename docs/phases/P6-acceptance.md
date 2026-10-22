@@ -1,7 +1,8 @@
 # P6 本地实现验证记录
 
 日期：2026-10-22。范围：P6-S1→S7，严格顺序、每卡单独分支/提交后才开始下一卡。
-本记录由实现方整理，**不是独立验收结论**；远程PR/CI、独立验收与阶段tag尚未执行。
+本记录由实现方整理，**不是独立验收结论**；远程 CI、Docker 与 PR #8 已通过/合并，
+但独立验收未通过（F1/F2），见[P6 独立验收报告](P6-acceptance-independent.md)。
 本地阶段门全部通过；逐卡基线见[P6执行文档](P6-delivery.md)。
 
 ## 交付与冻结契约
@@ -39,8 +40,8 @@ QueueItem/ScoreExplanation/RankConfig保持不变。无新Python运行依赖；�
 | make secret-scan / git diff --check | 通过；最终提交前已核对 |
 | wheel | 隔离构建通过；ZIP核对含HTMX/0BSD许可证/CSS，脚本SHA384匹配官方SRI |
 | 浏览器 | 独立E2E库副本：选择4分、填写备注、HTMX完成后归档列表可见；临时标签/服务已关闭 |
-| Docker | **未验证**：docker.sock权限拒绝；已有sudo被no-new-privileges阻止，未修改权限/安全设置 |
-| 远程CI/独立验收/tag | **未执行**，不借用P5的Docker/CI证据声称本阶段通过 |
+| Docker | 当时本地权限受限未验证；后续本地 Docker 与 CI docker smoke 均已通过（见独立报告） |
+| 远程CI/独立验收/tag | 后续：PR #8/CI/Docker 已通过；独立验收未通过（F1/F2）；P6 tag 未创建 |
 
 所有测试SQLite均为pytest tmp_path或mktemp独立临时库（/dev/shm），未触碰用户var数据库。
 无真实来源、LLM、SMTP测试；浏览器用合成数据。首轮/tmp SQLite fsync停滞已中止并改用

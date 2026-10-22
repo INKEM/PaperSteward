@@ -786,7 +786,9 @@ papersteward archive export --format bibtex --out out/archive.bib
 
 > 2026-10-22：S1→S7按顺序实现/逐卡验证与本地提交；完整证据、范围限制与回滚见
 > [P6执行/handoff](phases/P6-delivery.md)与[P6本地验证记录](phases/P6-acceptance.md)。
-> 本地Docker权限受限；远程PR/CI、独立验收、用户首日报审阅与发布/tag待执行，不代表Alpha已发布。
+> PR #8已合并、Docker/CI通过；独立验收未通过（F1周任务漏PUSHED、F2二次preflight假uncertain），
+> 返工/复验、用户首日报审阅与P6 tag待执行，不代表Alpha已发布。详见
+> [P6独立验收](phases/P6-acceptance-independent.md)。
 
 **验收标准**：
 
