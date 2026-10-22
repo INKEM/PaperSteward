@@ -69,3 +69,15 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
   新增8单元+7集成，覆盖G4/非法状态/幂等冲突/修订历史/延期与skip/回滚/真实CLI。
 - 无迁移；完整撤销需恢复操作前备份。超8文件/400行：输入校验、服务/API/CLI、审计
   失败和投递衔接回归共同构成S4，未开始S5内容冻结或导出。
+
+### S5（2026-10-22）
+
+- 0010新增archive_snapshot.content_json；done/Rating/完整内容/hash/archived同事务。
+  阅读时元数据/四槽摘要证据/标签桶与徽章/建议实际阅读方式/完整评分及模型版本冻结。
+  修订仅追加Rating/事件；查询并列显示初始与最新反馈及历史，不回写已归档P。
+- 归档API/CLI筛选、BibTeX/CSV/Markdown/JSON导出完成；已有P1空内容历史明确标记缺失。
+  导出链接/标签/评分/备注/修订齐全，CSV防公式注入，文件0600不覆盖。
+- make check：923 passed / 4 deselected，ruff/mypy116源文件；22项定向回归通过，
+  migrate-check base↔0010、secret-scan/diff通过。新增4unit+4integration；无真实外部调用。
+- 能完成API/CLI阅读归档闭环；不能做网页/周任务/归档删除。超8文件/400行：归档内容
+  迁移/映射、事务接入、查询/多格式导出/API/CLI与golden共同构成S5。回滚见ADR0016。

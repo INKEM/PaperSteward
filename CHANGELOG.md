@@ -15,6 +15,10 @@
 
 ### Added
 
+- **P6-S5**：done同事务立即归档；迁移0010冻结阅读时元数据/摘要/标签桶/实际与建议阅读方式/
+  完整评分解释与版本。新增归档筛选、BibTeX/CSV/Markdown/JSON导出；修订反馈追加历史，
+  不覆盖初始快照，CSV防公式注入、导出文件不覆盖。
+
 - **P6-S4**：done/score/note/snooze/skip/reject API与CLI，严格字段/状态校验、请求ID幂等、
   Rating和事件原子追加；3/7/14天延期到期恢复，skip冷却7天，备注不进入任何模型。
 

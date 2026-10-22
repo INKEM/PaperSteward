@@ -31,7 +31,7 @@ def test_actions_api_gate_done_idempotency_and_revisions(client, migrated_engine
     factory = prepared(client, migrated_engine)
     monkeypatch.setattr("papersteward.api.actions.utc_now", lambda: NOW)
     first = client.post("/papers/p/actions", json=body)
-    assert first.status_code == 200 and first.json()["status"] == "done"
+    assert first.status_code == 200 and first.json()["status"] == "archived"
     assert client.post("/papers/p/actions", json=body).json() == first.json()
     assert client.post("/papers/p/actions", json={**body, "score": 5}).status_code == 409
     assert client.post("/papers/p/actions", json={**body, "score": True}).status_code == 422
@@ -161,6 +161,6 @@ def test_prequeue_cannot_be_done_and_cli_can_read(client, migrated_engine, monke
             )
             == 0
         )
-        assert '"status": "done"' in capsys.readouterr().out
+        assert '"status": "archived"' in capsys.readouterr().out
     finally:
         get_settings.cache_clear()

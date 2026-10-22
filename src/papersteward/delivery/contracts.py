@@ -1,6 +1,6 @@
 """P6 冻结的日报与动作输入；内容保存时使用JSON副本。"""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -67,3 +67,19 @@ class Action(InputModel):
         if self.kind == "reject" and not self.note:
             raise ValueError("不相关操作须填写原因")
         return self
+
+
+class ArchiveRecord(InputModel):
+    paper_id: str
+    archived_at: datetime
+    primary_tag: str
+    secondary_tags: list[str]
+    filing_bucket_id: str
+    content_hash: str
+    content: dict[str, Any]
+    initial_score: int | None
+    initial_note: str | None
+    score: int | None
+    note: str | None
+    revision_history: list[dict[str, Any]]
+    content_available: bool

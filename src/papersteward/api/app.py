@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 
 from papersteward import __version__
 from papersteward.api.actions import router as actions_router
+from papersteward.api.archive import router as archive_router
 from papersteward.api.delivery import router as delivery_router
 from papersteward.api.errors import install_error_handlers
 from papersteward.api.middleware import RequestIdMiddleware
@@ -56,6 +57,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(queue_router)
     app.include_router(delivery_router)
     app.include_router(actions_router)
+    app.include_router(archive_router)
     return app
 
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from papersteward.core.entities import Event, Rating
 from papersteward.core.enums import EventType, PaperStatus, TagRole
 from papersteward.core.errors import InvariantViolation
+from papersteward.delivery.archive import archive_done
 from papersteward.delivery.contracts import Action
 from papersteward.errors import NotFoundError
 from papersteward.onboarding.service import _atomic
@@ -92,6 +93,7 @@ def apply_action(
                         now,
                     )
                 )
+                archive_done(session, paper_id, now=now)
             elif action.kind in {"score", "note"}:
                 if paper.status not in {PaperStatus.DONE, PaperStatus.ARCHIVED} or last is None:
                     raise InvariantViolation("action.feedback", "只能修订已完成文献的反馈")

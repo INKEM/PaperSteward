@@ -27,7 +27,8 @@ SMTP配置：HOST、PORT（默认465）、FROM、TO、SECURITY（ssl/starttls）
 未配置时不发邮件；真实测试只手动运行，CI使用替身。旧G4只确认本地渠道的部署不能
 直接切到SMTP；需未来再协商流程或在全新初始化G4时明确选择smtp，不手改确认快照。
 
-数据库head0009：digest与delivery为新增表；停服务备份后降0008会删除日报与投递记录。
+数据库head0010：0009新增digest/delivery，0010扩展归档content_json；停服务备份后
+降0009只删除完整归档内容列，降0008删除日报与投递记录。
 事件/文献状态不会自动撤销，完整回滚使用操作前备份；删除投递记录可能导致重发，禁止
 将降迁移作为重试方法。
 
@@ -49,4 +50,21 @@ POST /papers/{id}/actions 接收request_id和kind。done必填mode，可选score
 不改初始Rating。done只允许已入队/已推送/阅读中且摘要/审核/分类/快照就绪的条目。
 用户主动完成队列文献会沿状态机写user_read触发，paper.pushed不表示发过邮件。
 阅读操作只需要G4、不受暂停影响；发送已生成但随后被跳过/拒绝/完成的条目会拒绝。
-S4暂落DONE和Rating；S5再加入同事务完整归档，不声称当前中间版本已完成Alpha闭环。
+S5已加入同事务即时归档；归档写入失败将撤销done、Rating和事件。返回status=archived。
+
+## 归档查询与导出（S5）
+
+```bash
+papersteward archive list --tag T01 --min-score 4 --query 检索 --json
+papersteward archive export --format bibtex --out out/archive.bib
+papersteward archive export --format csv --out out/archive.csv
+papersteward archive export --format markdown --out out/archive.md
+```
+
+GET /archive 支持limit/offset、tag、min_score、query、bucket；GET /archive/{id}显示冻结
+内容、初始反馈、最新反馈及全部修订；GET /archive/export?format=bibtex|csv|markdown|json
+导出全部记录，包含标签/主观分/备注/链接与反馈历史。不存在删除或修改冻结内容入口。
+查询按完成时间倒序；搜索标题/作者/标签/最新备注。缺少完整内容的P1历史快照明确标记
+content_available=false，不从当前Paper伪造历史内容。hash不匹配则拒绝读取，保留数据待查。
+CSV文本防公式执行；BibTeX与Markdown对不可信字段转义。导出0600、不覆盖不同内容。
+删除归档不在P6范围；修订note/score仅追加Rating/事件，不改初始归档和旧优先级。

@@ -857,8 +857,12 @@ class ArchiveSnapshot:
     note: str | None = None
     score_date: date | None = None
     priority: float | None = None
+    content_json: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "content_json", _require_mapping(self.content_json, "archive.content_json")
+        )
         object.__setattr__(self, "paper_id", _require_text(self.paper_id, "archive.paper_id"))
         object.__setattr__(
             self,

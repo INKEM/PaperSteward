@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from papersteward import __version__
+from papersteward.cli.archive import add_commands as add_archive_commands
+from papersteward.cli.archive import run as run_archive_command
 from papersteward.cli.config import (
     run_config_import,
     run_config_validate,
@@ -74,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_ranking_commands(subparsers)
     add_delivery_commands(subparsers)
     add_reading_commands(subparsers)
+    add_archive_commands(subparsers)
     _add_document_commands(subparsers, "profile")
     _add_document_commands(subparsers, "taxonomy")
 
@@ -183,6 +186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "digest":
             return run_delivery(args)
+        if args.command == "archive":
+            return run_archive_command(args)
         if args.command in {"done", "reading"}:
             return run_reading(args)
         if args.command in {"ingest", "runs"}:

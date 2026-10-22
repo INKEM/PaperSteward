@@ -648,6 +648,9 @@ class ArchiveSnapshotRow(Base):
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_version: Mapped[str] = mapped_column(String(32), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
     secondary_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
