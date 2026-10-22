@@ -18,7 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from papersteward.core.enums import EventType, ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainValidationError
 
-SchemaName = Literal["classification", "summary", "scoring", "special_scoring", "event"]
+SchemaName = Literal[
+    "classification", "relevance", "summary", "scoring", "special_scoring", "event"
+]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
 
@@ -84,6 +86,21 @@ class SummaryOutput(_OutputModel):
         if count > 100:
             raise ValueError(f"summary_100 不能超过 100 个非空白字符，实际 {count}")
         return self
+
+
+class RelevanceEvidenceOutput(_OutputModel):
+    dimension: Literal["problem", "method", "domain", "actionability"]
+    quote: str = Field(min_length=1, max_length=500)
+
+
+class RelevanceOutput(_OutputModel):
+    problem: int = Field(ge=0, le=5)
+    method: int = Field(ge=0, le=5)
+    domain: int = Field(ge=0, le=5)
+    actionability: int = Field(ge=0, le=5)
+    evidence: list[RelevanceEvidenceOutput] = Field(min_length=1, max_length=12)
+    confidence: float = Field(ge=0.0, le=1.0)
+    boundary_note: str | None = None
 
 
 class StaticScoreOutput(_OutputModel):
@@ -158,6 +175,7 @@ class EventEnvelope(_OutputModel):
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
+        "relevance": RelevanceOutput,
         "summary": SummaryOutput,
         "scoring": ScoreSnapshotOutput,
         "special_scoring": SpecialScoreSnapshotOutput,
@@ -219,6 +237,8 @@ __all__ = [
     "EvidenceItem",
     "PriorityScoreOutput",
     "QuasiScoreOutput",
+    "RelevanceEvidenceOutput",
+    "RelevanceOutput",
     "SCHEMA_MODELS",
     "SchemaError",
     "SchemaName",

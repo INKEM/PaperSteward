@@ -1,0 +1,13 @@
+{
+  "problem": 5,
+  "method": 4,
+  "domain": 5,
+  "actionability": 4,
+  "evidence": [
+    {"dimension": "problem", "quote": "long-document retrieval"},
+    {"dimension": "method", "quote": "cross-encoder reranking"},
+    {"dimension": "domain", "quote": "long-document QA benchmarks"},
+    {"dimension": "actionability", "quote": "improve retrieval"}
+  ],
+  "confidence": 0.5
+}

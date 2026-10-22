@@ -4,6 +4,7 @@ import pytest
 
 from papersteward.llm import (
     CLASSIFICATION_V1,
+    RELEVANCE_V1,
     PromptRegistryError,
     PromptRenderError,
     PromptTemplate,
@@ -14,9 +15,10 @@ from papersteward.llm import (
 def test_default_registry_is_versioned() -> None:
     registry = default_registry()
 
-    assert registry.names() == ("classification", "summary", "repair")
+    assert registry.names() == ("classification", "summary", "relevance", "repair")
     assert registry.versions("classification") == ("classification/v1",)
     assert registry.get("classification") == CLASSIFICATION_V1
+    assert registry.get("relevance") == RELEVANCE_V1
 
 
 def test_latest_and_explicit_version_lookup() -> None:

@@ -119,6 +119,14 @@ class ReadMode(StrEnum):
     SKIM = "skim"
 
 
+class RelevanceBand(StrEnum):
+    """P4 相关度 R 的入队区间；不直接改变文献状态。"""
+
+    BELOW_THRESHOLD = "below_threshold"
+    LOW = "low"
+    NORMAL = "normal"
+
+
 class ScoreTier(StrEnum):
     """特殊桶内部档位；主题桶使用 P 排序，不使用档位。"""
 
@@ -206,6 +214,7 @@ __all__ = [
     "PaperStatus",
     "ReadMode",
     "RecalculationTrigger",
+    "RelevanceBand",
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",

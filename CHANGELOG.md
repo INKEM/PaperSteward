@@ -6,6 +6,9 @@
 
 ### Added
 
+- **P4-S3**：相关度 R 管线：离线哈希 embedding、profile facet 提取、rubric prompt/
+  `relevance` schema、逐字标题/摘要证据校验、55/65 band 与 `needs_review`。缺失/伪造
+  证据用中性 2.5 降级；默认未校准（`calibrated=False`），不持久化/不改变状态。
 - **P4-S2**：新增迁移 `0006` 与 `enrichment` 表，持久化每篇文献的富化信号、
   confidence/source 与可选 provenance；提供幂等 upsert、中性值回填和稳定读取。
   缺失字段保持 None/()/unknown，重复保存不推进 `updated_at`；无新依赖、无真实 LLM 调用。

@@ -1,0 +1,11 @@
+{
+  "semantic": 0.8,
+  "rubric": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4
+  },
+  "weighted_rubric": 4.6,
+  "expected_r": 87.2
+}

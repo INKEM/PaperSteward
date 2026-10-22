@@ -292,10 +292,11 @@ make secret-scan
 未重跑 Docker/CI，因此不把本轮说成新的 Docker/CI 验收。P3 验收报告中的 Docker/CI
 证据仍对应 `a93d96a`（main `9fe91dc`）。回滚方式见上。
 
-## P4 handoff（P4-S1–S2 已完成）
+## P4 handoff（P4-S1–S3 已完成）
 
-- P4-S1–S2 已完成真实 OpenAI-compatible provider/配置入口、富化输入契约与
-  `enrichment` 持久化，见 [P4-enrichment.md](P4-enrichment.md)；P4-S3 相关度 R 待开始。
+- P4-S1–S3 已完成真实 OpenAI-compatible provider/配置入口、富化输入契约、
+  `enrichment` 持久化与相关度 R，见 [P4-enrichment.md](P4-enrichment.md)；
+  P4-S4 摘要待开始。
 - 输入：SourceAdapter/QuerySpec/PaperCandidate、三个来源cassette、canonicalization/
   DedupeGroup、screened候选池、paper_source原始记录/候选JSON、run报告与选定文档/配置绑定。
 - P4 已拆 8 张卡；继续使用FakeLLM/cassette，不因ACTIVE擅自调用真实模型。

@@ -2,13 +2,14 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P4 富化、摘要、分类与静态评分（S1–S2 完成）**：P0/P1 的配置、API、
+当前处于 **P4 富化、摘要、分类与静态评分（S1–S3 完成）**：P0/P1 的配置、API、
 CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与确认门已通过；P3
 已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与可审计运行报告；
 P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权、脱敏 provider
-与富化输入契约；P4-S2 新增 `enrichment` 持久化、中性值回填与幂等 upsert。
+与富化输入契约；P4-S2 新增 `enrichment` 持久化、中性值回填与幂等 upsert；
+P4-S3 新增相关度 R（离线哈希 embedding + rubric 证据校验 + 55/65 分 band）。
 P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
-非阻断债务。下一阶段为 P4-S3 相关度 R（embedding + rubric + 证据）。
+非阻断债务。下一阶段为 P4-S4 100 字概括与三槽校验。
 详细契约见 [P4 阶段记录](docs/phases/P4-enrichment.md)、[P3 阶段记录](docs/phases/P3-ingestion.md)
 与 [P3 验收报告](docs/phases/P3-acceptance.md)。
 
@@ -56,12 +57,12 @@ P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍
   （head `0006`）；部分唯一索引/CHECK/FK、事件与评分快照追加写；G4 前拒绝入队/推送/归档；
 - profile/taxonomy：Markdown + YAML front matter 校验、版本确认/归档、实体 diff；
 - scoring.yaml：权重和、策略下限/上限、gates 与 stability 校验；配置版本追加写；
-- Agent 输出 JSON schema：分类、摘要、评分快照、事件（正反例校验）；
+- Agent 输出 JSON schema：分类、相关度、摘要、评分快照、事件（正反例校验）；
 - LLM：provider 协议、FakeLLM、版本化 prompt、schema 修复重试、usage/成本；
   P4-S1 新增 OpenAI-compatible 真实 provider（显式 `--live`、HTTPS/超时/脱敏）；
 - P3：确定性查询生成、三来源离线适配器、带预算/限流/大小上限的 HTTP 边界、
   canonicalization/五类保守去重、硬过滤、来源版本与 Run 报告；
-- P4-S1–S2：中性富化信号、`EnrichmentProvider` 协议、确定性降级与 enrichment 幂等持久化；
+- P4-S1–S3：中性富化信号、enrichment 幂等持久化、离线 embedding 与相关度 R/rubric 证据；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 初始化链路演示
@@ -183,6 +184,7 @@ papersteward doc diff profile 1.0 1.1 --id demo-profile
 papersteward config validate tests/fixtures/configs/scoring.yaml
 papersteward config import tests/fixtures/configs/scoring.yaml --at 2026-10-21T09:00:00Z
 papersteward schema show classification
+papersteward schema show relevance
 papersteward schema validate classification /tmp/classification.json
 
 papersteward llm ping --fake
@@ -197,7 +199,7 @@ papersteward llm ping --live
   `confirm/archive` 经状态机并写事件；
 - `doc diff` 支持两个文件，或 `--id` + 两个数据库版本；`--json` 输出机器可读结果；
 - `config validate` 不写库；`config import` 追加版本并写 `config.updated` 事件；
-- `schema show/validate` 输出或校验分类/摘要/评分/事件 JSON schema；
+- `schema show/validate` 输出或校验分类/相关度/摘要/评分/事件 JSON schema；
 - `llm ping --fake` 使用确定性 FakeLLM，离线；`--live` 必须显式指定并读取
   `PAPERSTEWARD_LLM_*`，不会隐式联网；配置见 [LLM provider 指南](docs/llm-provider.md)；
 - P1 contract freeze 覆盖枚举/表/迁移/schema/prompt/CLI；端到端测试覆盖
@@ -355,7 +357,7 @@ docs/             # 设计与阶段文档
 - [P2 独立验收报告](docs/phases/P2-independent-acceptance.md)
 - [P3 阶段记录与 P4 交接](docs/phases/P3-ingestion.md)
 - [P3 独立验收报告](docs/phases/P3-acceptance.md)
-- [P4 阶段记录与 P4-S3 交接](docs/phases/P4-enrichment.md)
+- [P4 阶段记录与 P4-S4 交接](docs/phases/P4-enrichment.md)
 - [LLM provider 配置指南](docs/llm-provider.md)
 - [初始化 CLI 操作指南](docs/onboarding-cli.md)
 - [采集 CLI 操作指南](docs/ingestion-cli.md)

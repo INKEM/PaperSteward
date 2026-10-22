@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S2 完成并通过本地阶段门；P4-S3–S8 未开始。**
+> 状态：**P4-S1–S3 完成并通过本地阶段门；P4-S4–S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -48,10 +48,11 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 - 验收：迁移 up/down、缺失字段中性值、来源可追溯、重复运行幂等；
 - 范围外：R/摘要/分类；预估 1–2 天。
 
-### P4-S3：相关度 R（embedding + rubric + 证据）
+### P4-S3：相关度 R（embedding + rubric + 证据）（完成）
 
 - 目标：按设计 §10.2 计算 R，证据缺失降级/转人工；先接离线/Fake embedding；
-- 输出：`pipeline/relevance.py`、rubric prompt/schema、golden fixtures；
+- 输出：`pipeline/embeddings.py`、`pipeline/relevance.py`、`relevance` prompt/schema、
+  golden/正反例 fixtures；
 - 范围外：真实 embedding 供应商选择（需单独 ADR）；预估 2–3 天。
 
 ### P4-S4：100 字概括与三槽校验
@@ -214,6 +215,77 @@ P4-S1 超过“≤8 文件/≤400 行”指引：真实 provider（网络/认证
 
 P4-S2 超过 8 文件指引：领域实体、迁移、ORM/映射/仓储、中性值服务、CLI/迁移测试与
 文档共同构成持久化竖切；没有实现 P4-S3 的 R、embedding 或任何摘要/分类/评分逻辑。
+
+## P4-S3 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s3-make-check'`：
+  ruff format/check（170 文件）、strict mypy（**86 源文件**）通过；
+  **780 passed / 4 e2e excluded**（P4-S2 后基线 757，新增 23 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s3-integration'`：
+  **237 passed**（无新增集成用例；本阶段为纯计算/prompt）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s3-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → 0006 → base → 0006 通过（无新迁移）。
+- `make demo DEMO_PORT=8058`：`/health`、`/papers` 正常；head 仍为 0006。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 embedding/LLM。
+- 离线演示：basic profile + 合成论文 + `FakeLLM` + 哈希 embedding 得到
+  `R=79.6`、`band=normal`、四维证据全部有效、`needs_review=false`（仅记录
+  `uncalibrated_similarity`）。
+
+### 实现
+
+- `pipeline/embeddings.py`：`EmbeddingProvider` 协议 + `HashingEmbeddingProvider`
+  （英文词/中文单字的确定性有符号哈希 + L2）与余弦；不访问网络。
+- `pipeline/relevance.py`：profile facet 提取、语义 max/top2、rubric 证据校验、
+  R 计算、55/65 band、`needs_review` 原因；只接受 confirmed profile。
+- `schemas`：新增 `relevance` 输出 schema（四维 0–5 整数、逐维证据、confidence）；
+  prompt registry 新增 `relevance/v1`。
+- fixtures：有效 rubric、缺失证据、伪造证据、低置信度、R golden。
+
+### 关键规则
+
+- `sem = 0.7·max_sim + 0.3·mean_top2_sim`（负余弦按 0）；
+- `rubric = 0.35·problem + 0.25·method + 0.25·domain + 0.15·actionability`；
+- `R = 100·(0.40·sem + 0.60·rubric/5)`，四舍五入 1 位小数；
+- 每个维度必须有逐字出现在标题/摘要中的证据；缺失/伪造证据用中性 2.5，并标记
+  `missing_evidence:<dim>`/`invalid_evidence`；
+- rubric confidence < 0.6、缺摘要也进入 review；R 仍计算，不静默丢弃；
+- `R < 55` below_threshold、`55–65` low、`>=65` normal；不改变 `PaperStatus`；
+  `uncalibrated_similarity` 只作为审计提示，不单独强制 review。
+
+### 能做什么
+
+- 对已确认 profile + 文献计算可复现 R、band、rubric 分项与证据有效性；
+- 用 FakeLLM/离线哈希 embedding 做确定性测试和 golden 回归；
+- 把 LLM rubric 结果、evidence 与 provenance 交给后续静态分/审核队列；
+- 通过 `calibrator` 注入未来真实分位数/isotonic 校准。
+
+### 不能做什么
+
+- 哈希 embedding 只是词法重合，不是语义模型；默认 `calibrated=False`，未做历史标注校准；
+- 未选择/调用真实 embedding 供应商（需单独 ADR）；
+- 未持久化 R/score_snapshot，未改变状态、入队或推送；
+- 只使用标题/摘要，不解析全文；venue/作者等权威信号不参与 R；
+- `relevance` prompt 的真实 LLM 调用仍需显式 `--live`/调用方授权，测试只用 FakeLLM。
+
+### P4-S4 输入与开工约束
+
+- 输入：`RelevanceResult`（含 `needs_review`/reasons）、`SummaryOutput`/summary prompt、
+  confirmed profile/taxonomy 精确版本；
+- 摘要生成失败/证据不足应保留元数据并进入 review，不推送；
+- 继续使用 FakeLLM/golden fixtures；真实 LLM 需显式授权；
+- 新字段/表继续新增迁移（当前 0006），不要重写 0006。
+
+### 回滚
+
+- 无迁移；撤销 embeddings/relevance 模块、relevance schema/prompt/fixtures 即可；
+- 已配置的真实 LLM 环境不受影响；不删除用户 `.env`。
+
+### 规模说明
+
+P4-S3 超过 8 文件指引：embedding 协议/实现、R 管线、schema/prompt、contract freeze
+更新、golden/正反例与文档共同构成本次竖切；未实现 P4-S4 摘要或任何持久化/入队逻辑。
 
 ## 与 P5 的边界
 

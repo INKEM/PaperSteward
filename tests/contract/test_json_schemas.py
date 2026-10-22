@@ -51,6 +51,22 @@ def _summary() -> dict[str, object]:
     }
 
 
+def _relevance() -> dict[str, object]:
+    return {
+        "problem": 5,
+        "method": 4,
+        "domain": 5,
+        "actionability": 4,
+        "evidence": [
+            {"dimension": "problem", "quote": "long-document retrieval"},
+            {"dimension": "method", "quote": "cross-encoder reranking"},
+            {"dimension": "domain", "quote": "long-document QA benchmarks"},
+            {"dimension": "actionability", "quote": "improve retrieval"},
+        ],
+        "confidence": 0.86,
+    }
+
+
 def _scoring() -> dict[str, object]:
     return {
         "paper_id": "p001",
@@ -85,6 +101,7 @@ def _event() -> dict[str, object]:
 def test_schema_registry_and_generated_json_schema() -> None:
     assert set(SCHEMA_MODELS) == {
         "classification",
+        "relevance",
         "summary",
         "scoring",
         "special_scoring",
@@ -105,6 +122,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
     ("name", "payload"),
     [
         ("classification", _classification()),
+        ("relevance", _relevance()),
         ("summary", _summary()),
         ("scoring", _scoring()),
         ("special_scoring", _special_scoring()),
@@ -219,3 +237,17 @@ def test_validate_json_text_handles_syntax_and_type_errors() -> None:
         validate_json_text("classification", "{not-json", source="bad.json")
     with pytest.raises(SchemaError, match="根节点"):
         validate_json_text("classification", "[]", source="bad.json")
+
+
+def test_relevance_rejects_out_of_range_and_missing_evidence() -> None:
+    payload = _relevance()
+    payload["problem"] = 6
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("relevance", payload)
+    assert exc_info.value.field == "schema.relevance.problem"
+
+    payload = _relevance()
+    payload["evidence"] = []
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("relevance", payload)
+    assert exc_info.value.field == "schema.relevance.evidence"

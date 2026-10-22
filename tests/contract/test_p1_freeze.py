@@ -94,6 +94,7 @@ def test_migration_revision_freeze() -> None:
 def test_schema_registry_freeze() -> None:
     assert set(SCHEMA_MODELS) == {
         "classification",
+        "relevance",
         "summary",
         "scoring",
         "special_scoring",
@@ -140,9 +141,10 @@ def test_schema_registry_freeze() -> None:
 
 def test_prompt_registry_and_fake_provider_freeze() -> None:
     registry = default_registry()
-    assert registry.names() == ("classification", "summary", "repair")
+    assert registry.names() == ("classification", "summary", "relevance", "repair")
     assert registry.get("classification").version == "classification/v1"
     assert registry.get("summary").schema == "summary"
+    assert registry.get("relevance").schema == "relevance"
     assert registry.get("repair").schema is None
 
     provider = FakeLLM()
