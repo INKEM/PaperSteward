@@ -27,6 +27,8 @@ from papersteward.core.enums import (
     OaStatus,
     PaperStatus,
     ReadMode,
+    ReviewResolution,
+    ReviewStatus,
     RunStatus,
     ScoreTier,
     SpecialBucketKind,
@@ -674,6 +676,55 @@ class StaticScoreSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewItem:
+    """人工审核项；每篇文献一条，处理低置信度/边界/特殊提名。"""
+
+    paper_id: str
+    status: ReviewStatus
+    reasons: tuple[str, ...]
+    payload_json: Mapping[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+    resolution: ReviewResolution | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "review.paper_id"))
+        if not isinstance(self.status, ReviewStatus):
+            raise DomainValidationError("review.status", "必须是 ReviewStatus")
+        if not isinstance(self.reasons, tuple | list) or not self.reasons:
+            raise DomainValidationError("review.reasons", "至少需要一个审核原因")
+        reasons = tuple(_require_text(item, "review.reasons[]") for item in self.reasons)
+        object.__setattr__(self, "reasons", reasons)
+        object.__setattr__(
+            self, "payload_json", _require_mapping(self.payload_json, "review.payload_json")
+        )
+        object.__setattr__(self, "created_at", _require_aware(self.created_at, "review.created_at"))
+        object.__setattr__(self, "updated_at", _require_aware(self.updated_at, "review.updated_at"))
+        if self.updated_at < self.created_at:
+            raise DomainValidationError("review.updated_at", "不能早于 created_at")
+        resolved = (self.resolved_at, self.resolved_by, self.resolution)
+        if self.status is ReviewStatus.OPEN:
+            if any(value is not None for value in resolved):
+                raise DomainValidationError("review.resolved", "开放项不能有处理结果")
+        else:
+            if any(value is None for value in resolved):
+                raise DomainValidationError("review.resolved", "已处理项必须记录时间/处理人/方式")
+            assert self.resolved_at is not None
+            object.__setattr__(
+                self, "resolved_at", _require_aware(self.resolved_at, "review.resolved_at")
+            )
+            object.__setattr__(
+                self, "resolved_by", _require_text(self.resolved_by, "review.resolved_by")
+            )
+            if not isinstance(self.resolution, ReviewResolution):
+                raise DomainValidationError("review.resolution", "必须是 ReviewResolution")
+        object.__setattr__(self, "note", _optional_text(self.note, "review.note"))
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """追加写事件；``paper_id`` 为空表示文档/配置级事件。"""
 
@@ -863,6 +914,7 @@ __all__ = [
     "Provenance",
     "Rating",
     "ResearchProfile",
+    "ReviewItem",
     "Run",
     "ScoreSnapshot",
     "StaticScoreSnapshot",

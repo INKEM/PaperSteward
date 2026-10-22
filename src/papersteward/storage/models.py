@@ -485,6 +485,38 @@ class StaticScoreSnapshotRow(Base):
     )
 
 
+class ReviewItemRow(Base):
+    """人工审核项；每篇一条，开放/已处理状态可复用。"""
+
+    __tablename__ = "review_item"
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'resolved')", name="status_values"),
+        CheckConstraint(
+            "resolution IS NULL OR resolution IN ('approved', 'relabeled')",
+            name="resolution_values",
+        ),
+        CheckConstraint(
+            "(status = 'open' AND resolved_at IS NULL AND resolved_by IS NULL "
+            "AND resolution IS NULL) OR (status = 'resolved' AND resolved_at IS NOT NULL "
+            "AND resolved_by IS NOT NULL AND resolution IS NOT NULL)",
+            name="resolved_fields",
+        ),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class EventRow(Base):
     """追加写事件日志；仓储层不提供 update/delete。"""
 

@@ -127,6 +127,20 @@ class RelevanceBand(StrEnum):
     NORMAL = "normal"
 
 
+class ReviewStatus(StrEnum):
+    """人工审核项状态；开放项可批准或改标签后关闭。"""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class ReviewResolution(StrEnum):
+    """审核关闭方式。"""
+
+    APPROVED = "approved"
+    RELABELED = "relabeled"
+
+
 class ScoreTier(StrEnum):
     """特殊桶内部档位；主题桶使用 P 排序，不使用档位。"""
 
@@ -215,6 +229,8 @@ __all__ = [
     "ReadMode",
     "RecalculationTrigger",
     "RelevanceBand",
+    "ReviewResolution",
+    "ReviewStatus",
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
     "ScoreTier",

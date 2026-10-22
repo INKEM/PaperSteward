@@ -1,6 +1,6 @@
 # P3 采集与运行报告
 
-先按 [初始化 CLI](onboarding-cli.md) 完成 G1–G4，并显式迁移到最新 `head`（当前 `0007`）。采集始终复核
+先按 [初始化 CLI](onboarding-cli.md) 完成 G1–G4，并显式迁移到最新 `head`（当前 `0008`）。采集始终复核
 所选档案/分类法/校准与运行参数；暂停或安静时段会在来源调用前拒绝，不自动修改门禁。
 
 ```bash
@@ -76,5 +76,6 @@ arXiv team、Semantic Scholar 字段关注列表等尚不支持的查询会明�
 新文献最多到 screened/rejected；不分类、评分、入队、推送或归档。重跑时仍处
 discovered/deduped 且由 ingest 创建的文献会补齐到 screened，或按新的过滤原因进入
 rejected；归档/已拒绝/已评分/种子/校准文献不自动改写。来源 raw metadata 以内容指纹
-追加到 paper_source；已归档/已拒绝不恢复。完整撤销采集须恢复运行前备份；降级到 0006 只删 static_score_snapshot，
-再降 0005 只删 enrichment，再降 0004 只删来源表，均不撤销 paper/run/event。
+追加到 paper_source；已归档/已拒绝不恢复。完整撤销采集须恢复运行前备份；降级到 0007 只删 review_item，
+再降 0006 只删 static_score_snapshot，再降 0005 只删 enrichment，再降 0004 只删来源表，
+均不撤销 paper/run/event。

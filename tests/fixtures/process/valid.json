@@ -1,0 +1,70 @@
+{
+  "relevance": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4,
+    "evidence": [
+      {
+        "dimension": "problem",
+        "quote": "long-document retrieval"
+      },
+      {
+        "dimension": "method",
+        "quote": "cross-encoder reranking"
+      },
+      {
+        "dimension": "domain",
+        "quote": "long-document QA benchmarks"
+      },
+      {
+        "dimension": "actionability",
+        "quote": "improve retrieval"
+      }
+    ],
+    "confidence": 0.86,
+    "boundary_note": "Synthetic offline rubric fixture."
+  },
+  "summary": {
+    "summary_100": "针对长文档问答提出层次化检索与跨段重排；先段落聚类召回，再用跨层注意力重排；三个基准 EM 提升 2–4 点，但离线聚类带来较高延迟。",
+    "what": "长文档问答的检索与重排",
+    "how": "段落聚类召回 + 跨层注意力重排",
+    "finding": "三个基准 EM 提升 2–4 点",
+    "limitation": "离线聚类带来较高延迟",
+    "evidence": [
+      {
+        "field": "what",
+        "quote": "hierarchical retrieval for long-document QA"
+      },
+      {
+        "field": "how",
+        "quote": "Paragraph clustering recall and cross-layer attention reranking"
+      },
+      {
+        "field": "finding",
+        "quote": "improves EM by 2–4 points"
+      },
+      {
+        "field": "limitation",
+        "quote": "offline clustering adds latency"
+      }
+    ]
+  },
+  "classification": {
+    "primary_tag": "T02",
+    "primary_confidence": 0.5,
+    "runner_up_tag": "T01",
+    "runner_up_confidence": 0.4,
+    "secondary_tags": [],
+    "special_candidates": [],
+    "evidence": [
+      {
+        "quote": "retrieval-augmented generation"
+      }
+    ],
+    "boundary_note": null
+  },
+  "special_nomination": {
+    "nominations": []
+  }
+}

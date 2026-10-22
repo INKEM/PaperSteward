@@ -6,6 +6,10 @@
 
 ### Added
 
+- **P4-S8**：`process` 离线编排（enrichment → R → 摘要 → 分类 → 特殊桶 → 静态分），
+  低置信度/边界/特殊提名写入 `review_item`；新增 review API/CLI（列表、批准、
+  人工改标签）、迁移 `0008` 与真实 Uvicorn process→review e2e。无新依赖，
+  测试仅用 FakeLLM/fixtures。
 - **P4-S7**：确定性静态分 A/E/S（venue/作者/引用、code/data/repro/rigor/open），
   confidence/中性值与分项 breakdown；迁移 `0007` 新增独立
   `static_score_snapshot`，同版本冻结、版本变化后按日期追加。完整每日

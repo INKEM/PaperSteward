@@ -22,6 +22,7 @@ from papersteward.core.entities import (
     Provenance,
     Rating,
     ResearchProfile,
+    ReviewItem,
     Run,
     ScoreSnapshot,
     StaticScoreSnapshot,
@@ -38,6 +39,8 @@ from papersteward.core.enums import (
     OaStatus,
     PaperStatus,
     ReadMode,
+    ReviewResolution,
+    ReviewStatus,
     RunStatus,
     ScoreTier,
     SpecialBucketKind,
@@ -56,6 +59,7 @@ from papersteward.storage.models import (
     PaperTagRow,
     RatingRow,
     ResearchProfileRow,
+    ReviewItemRow,
     RunRow,
     ScoreSnapshotRow,
     StaticScoreSnapshotRow,
@@ -358,6 +362,36 @@ def static_score_snapshot_from_row(row: StaticScoreSnapshotRow) -> StaticScoreSn
         input_hash=row.input_hash,
         breakdown_json=dict(row.breakdown_json or {}),
         created_at=as_utc(row.created_at),
+    )
+
+
+def review_item_to_row(item: ReviewItem) -> ReviewItemRow:
+    return ReviewItemRow(
+        paper_id=item.paper_id,
+        status=item.status.value,
+        reasons_json=list(item.reasons),
+        payload_json=dict(item.payload_json),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        resolved_at=item.resolved_at,
+        resolved_by=item.resolved_by,
+        resolution=item.resolution.value if item.resolution is not None else None,
+        note=item.note,
+    )
+
+
+def review_item_from_row(row: ReviewItemRow) -> ReviewItem:
+    return ReviewItem(
+        paper_id=row.paper_id,
+        status=ReviewStatus(row.status),
+        reasons=tuple(row.reasons_json or ()),
+        payload_json=dict(row.payload_json or {}),
+        created_at=as_utc(row.created_at),
+        updated_at=as_utc(row.updated_at),
+        resolved_at=optional_utc(row.resolved_at),
+        resolved_by=row.resolved_by,
+        resolution=ReviewResolution(row.resolution) if row.resolution is not None else None,
+        note=row.note,
     )
 
 

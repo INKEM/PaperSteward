@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S7 完成并通过本地阶段门；P4-S8 未开始。**
+> 状态：**P4-S1–S8 全部完成并通过本地阶段门；下一阶段 P5。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -9,6 +9,18 @@
 P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离线测试。原计划 P4-S1
 “富化数据模型与 provider”同时包含真实网络接入和 schema 变更，拆成两张卡以控制
 单卡规模：S1 冻结真实 LLM 配置/provider 与富化输入契约，S2 再落富化持久化。
+
+原计划 7 个工作包与当前 8 张卡的对应关系：
+
+| 原计划 | 当前编号 | 内容 |
+|---|---|---|
+| P4-S1 | P4-S1 + P4-S2 | provider/契约 + enrichment 持久化（拆分） |
+| P4-S2 | P4-S3 | 相关度 R |
+| P4-S3 | P4-S4 | 100 字摘要 |
+| P4-S4 | P4-S5 | 分类与标签/桶 |
+| P4-S5 | P4-S6 | 特殊桶提名 |
+| P4-S6 | P4-S7 | 静态分 A/E/S |
+| P4-S7 | P4-S8 | 审核队列 + process CLI e2e |
 
 ### P4-S1：真实 LLM provider、配置入口与富化输入契约（本次）
 
@@ -82,11 +94,12 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
 - 输出：`scoring/static.py`、A/E/S 分项解释、golden、迁移 `0007` 与静态快照仓储；
 - 范围外：动态分/排序（P5）；预估 1–2 天。
 
-### P4-S8：审核队列与 `process` CLI e2e
+### P4-S8：审核队列与 `process` CLI e2e（完成）
 
 - 目标：低置信度/特殊提名/边界案例可列出、通过、改标签；完整 process 离线 e2e；
-- 输出：review API/CLI、真实 Uvicorn e2e、操作文档；
-- 范围外：日报/推送（P6）；预估 1–2 天。
+- 输出：`review_item` 迁移 `0008`、review API/CLI、`process` CLI、真实 Uvicorn e2e、
+  操作文档；
+- 范围外：日报/推送（P6）、特殊桶最终配额/展示（P7）；预估 1–2 天。
 
 ## P4-S1 环境变量
 
@@ -545,6 +558,74 @@ P4-S6 超过 8 文件指引：schema/prompt、三类提名校验、bridge memo�
 
 P4-S7 超过 8 文件指引：A/E/S 公式、置信度/中性值、独立快照决策、迁移、行/映射/
 仓储、golden 与文档共同构成本次竖切；未提前实现 P5 动态分或 P4-S8 编排。
+
+## P4-S8 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s8-make-check'`：
+  ruff format/check（189 文件）、strict mypy（**94 源文件**）通过；
+  **827 passed / 4 e2e excluded**（P4-S7 后基线 822，新增 5 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s8-integration'`：
+  **248 passed**（P4-S7 后基线 243；新增 2 项 process/review + 3 项 review API）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s8-e2e'`：**4 passed**；
+  其中 onboarding e2e 已扩展为“G1–G4 → ingest → process → review list → API approve
+  → classified”，使用真实 Uvicorn 与子进程 CLI。
+- `TMPDIR=/dev/shm make migrate-check`：base → **0008** → base → 0008 通过。
+- `make demo DEMO_PORT=8063`：自动升级到 0008，`/health`、`/papers` 正常。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 LLM/真实来源。
+- process fixture：relevance/summary/classification/special_nomination 四段离线回放；
+  低置信度分类进入 review，批准后转为 classified。
+
+### 实现
+
+- 迁移 `0008` / `review_item`：每篇一条，保存开放/已处理、原因、payload、处理人/
+  时间/方式/备注；只追加历史由状态与时间保留。
+- `pipeline/process.py`：enrichment → R → summary → classification → special →
+  static；补齐缺失主题桶（`ensure_topic_buckets`），同版本静态快照复用，
+  汇总 needs_review 并打开审核项；事务由调用方控制。
+- `pipeline/review.py` + `storage/repositories.py`：
+  - 列出/批准/重新打开；批准后 `needs_review → classified`；
+  - relabel 用已确认分类法校验主/副标签，替换 `paper_tag` 与唯一 FILING 桶；
+  - 用户标签 `assigned_by=user`、confidence=1，不伪造 Agent 溯源。
+- API：`GET /review`、`POST /review/{paper_id}/approve`、
+  `POST /review/{paper_id}/relabel`；统一错误信封。
+- CLI：`papersteward process`（`--llm-fixture` 离线 / `--live` 显式真实）与
+  `papersteward review list|approve|relabel`。
+- 操作文档：[process-review-cli.md](../process-review-cli.md)。
+
+### 能做什么
+
+- 对 screened 文献一次完成 P4 富化/摘要/分类/特殊提名/静态分，并写标签/桶/快照；
+- 低置信度、边界、摘要证据问题、特殊提名进入可审计审核队列；
+- 人工批准或改主/副标签后，论文进入 classified，标签/归属桶原子替换；
+- 离线 fixture 回放与真实 Uvicorn e2e 均可复现。
+
+### 不能做什么
+
+- 不计算动态分/优先级、不写完整 `score_snapshot`，不排序/入队/推送；
+- 不处理日报、阅读反馈、归档（P6）；不实现特殊桶配额/展示（P7）；
+- 无鉴权/多用户；只允许本机单用户；
+- 审核队列每篇一条，不保留多次审核的完整事件史（仅当前状态+时间）；
+- 未调用真实 LLM/真实来源，准确率未做真实模型验收。
+
+### P5 交接
+
+- 输入：`PaperStatus.CLASSIFIED` 文献、`static_score_snapshot.latest`、R/A/E/S、
+  latest summary/classification/tags、review 已处理状态；
+- P5 负责 F/H/U/D/P、queue/priority/tier 与完整 `score_snapshot`；不得修改静态快照
+  历史，不得把 P4 review item 当作优先级；
+- 复用 `review_item` 仅用于 P4 质量门，不扩展为 P6 阅读反馈。
+
+### 回滚
+
+- `alembic downgrade 0007` 删除 `review_item`；先备份审核记录；
+- 撤销 process/review API/CLI/服务/测试/文档即可；paper/run/static snapshot 不受影响。
+
+### 规模说明
+
+P4-S8 超过 8 文件指引：审核表/仓储/服务/API/CLI、process 编排、桶补齐、真实 Uvicorn
+e2e、操作文档共同构成本次竖切；未提前实现 P5 动态分或 P6 推送。
 
 ## 与 P5 的边界
 

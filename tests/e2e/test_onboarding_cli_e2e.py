@@ -11,7 +11,14 @@ from test_onboarding_gates import server as server
 from test_walking_skeleton import BIN, ROOT
 
 from papersteward.storage import create_session_factory, session_scope
-from papersteward.storage.models import ArchiveSnapshotRow, ConfigRow, RatingRow, ScoreSnapshotRow
+from papersteward.storage.models import (
+    ArchiveSnapshotRow,
+    ConfigRow,
+    RatingRow,
+    ReviewItemRow,
+    ScoreSnapshotRow,
+    StaticScoreSnapshotRow,
+)
 
 pytestmark = pytest.mark.e2e
 FIXTURES = ROOT / "tests/fixtures"
@@ -185,11 +192,54 @@ def test_cli_g1_to_g4_and_stale_review(server, tmp_path: Path):
         timeout=15,
     )
     assert result.returncode == 0 and json.loads(result.stdout)["id"] == "cli-ingest-2"
-    assert any(
-        item["title"] == "Synthetic Retrieval Study"
-        for item in client.get("/papers?limit=200").json()["items"]
+    papers = client.get("/papers?limit=200").json()["items"]
+    paper = next(item for item in papers if item["title"] == "Synthetic Retrieval Study")
+    process = subprocess.run(
+        [
+            str(BIN / "papersteward"),
+            "process",
+            "--paper",
+            paper["id"],
+            "--llm-fixture",
+            str(FIXTURES / "process/e2e.json"),
+            "--json",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
+    assert process.returncode == 0, (process.stdout, process.stderr)
+    outcome = json.loads(process.stdout)[0]
+    assert outcome["status"] == "needs_review"
+    assert outcome["needs_review"] is True
+    assert "classification:low_primary_confidence" in outcome["reasons"]
+
+    review_list = subprocess.run(
+        [str(BIN / "papersteward"), "review", "list", "--json"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert review_list.returncode == 0, (review_list.stdout, review_list.stderr)
+    listing = json.loads(review_list.stdout)
+    assert listing["total"] == 1 and listing["items"][0]["paper_id"] == paper["id"]
+
+    approved = client.post(
+        f"/review/{paper['id']}/approve",
+        json={"reviewed_by": "fixture-user", "note": "端到端审核"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["paper_status"] == "classified"
+    refreshed = {item["id"]: item for item in client.get("/papers?limit=200").json()["items"]}
+    assert refreshed[paper["id"]]["status"] == "classified"
+    assert client.get("/review").json()["total"] == 0
     with session_scope(create_session_factory(engine)) as session:
         assert session.scalar(select(func.count()).select_from(ConfigRow)) == 2
         for table in (RatingRow, ScoreSnapshotRow, ArchiveSnapshotRow):
             assert session.scalar(select(func.count()).select_from(table)) == 0
+        assert session.scalar(select(func.count()).select_from(StaticScoreSnapshotRow)) == 1
+        assert session.scalar(select(func.count()).select_from(ReviewItemRow)) == 1
