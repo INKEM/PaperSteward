@@ -14,8 +14,9 @@ SMTP支持TLS、SecretStr密码，错误只保留固定信息；新增runtime sm
 
 动作携带客户端request_id；事件ID由请求ID确定，同请求同内容复用，冲突拒绝。
 状态沿用P1边：queued→pushed→reading→done→archived；用户主动读队列亦保留这些边，
-事件标记用户阅读而非真实渠道送达：写paper.pushed并在payload标记trigger=user_read，
-没有独立的user_read事件。skip回queued，snooze到期经显式恢复再评分。
+事件标记用户阅读而非真实渠道送达：queued→pushed时写paper.pushed并在payload标记
+trigger=user_read，已pushed不重复写；没有独立的user_read事件。skip回queued，
+snooze到期经显式恢复再评分。
 不扩张状态机，不把校准标注当阅读，不允许从needs_review等状态完成归档。
 
 归档扩展既有archive_snapshot，以新增JSON列保存完整阅读时内容；不更改P1字段语义。
@@ -24,8 +25,9 @@ P5反馈读取优先使用阅读时作者/venue/标签，避免当前元数据�
 周任务复用P5算术，以Run报告保存周截止和质量检查，不引入第二套偏好公式。
 周任务候选为未读合格主题集合加上已投递未读（PUSHED）；PUSHED不重新入队，避免改变
 投递历史。snooze到期的SNOOZED与日报一致地恢复为QUEUED。同日快照不可重写：若当日
-日报已生成快照，周报告复用该快照；建议在update_weekday 00:00截止后、当日日报前运行，
-否则同一周截止下的新快照从下一自然日生效。归档/特殊桶仍不产生新P。
+日报已生成快照，周报告复用该快照；建议按设计在update_weekday 20:00、当日日报投递后
+运行，确保当日PUSHED进入本次Run，U从下一自然日快照继续使用同一周截止。若提前到投递前
+运行，当日稍后变PUSHED的条目不进入本次Run，但仍由日报创建当日快照。归档/特殊桶仍不产生新P。
 
 UI使用本地HTML和HTMX薄层（无Node/Jinja依赖）；表单调用同一动作服务，禁跨域变更，
 所有不可信文本转义，URL仅http(s)，且拒绝带任何用户名或密码userinfo的URL。

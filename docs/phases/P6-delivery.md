@@ -119,10 +119,12 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
 - F2：第二次无副作用 preflight 与文件/SMTP I/O 分开捕获；复核失败记录 `failed` 和
   “未尝试投递”，不写 `uncertain`；SMTP 修正后同一预约可直接重试，文件仍用
   `--recover-file`。只有实际 I/O 异常才写 SMTP `uncertain`。
-- N1：文档明确同日快照不可重写；周任务建议在 update_weekday 00:00 截止后、当日日报前
-  运行，报告复用已有同日快照，补同周/同日回归。
+- N1：文档明确同日快照不可重写；按设计在 update_weekday 20:00、当日日报投递后运行，
+  报告复用已有同日快照，U 从下一自然日快照继续使用同一周截止。提前到投递前运行则当日
+  稍后变 PUSHED 的条目不进入本次 Run，但仍由日报创建当日快照。
 - N2：无日报页面的生成表单携带所选 `day`，生成后回到该日期。
-- N3：文档统一为写 `paper.pushed` 并在 payload 标记 `trigger=user_read`，无独立事件。
+- N3：文档统一为 `queued→pushed` 时写 `paper.pushed` 并在 payload 标记
+  `trigger=user_read`，已 pushed 不重复写，无独立事件。
 - N4：`safe_url` 拒绝任何 userinfo（含空用户名、空密码），补 URL 回归。
 - make check **944 passed / 4 deselected**、ruff/mypy **120**源文件；新增 5 项回归
   （F1 投递后周任务、snooze 恢复、同日快照、F2 二次 preflight、N2 日期表单），

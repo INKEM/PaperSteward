@@ -12,9 +12,9 @@
 |---|---|---|---|
 | F1 周任务漏 PUSHED | 阻断 | 已修复：周候选集合加入 PUSHED，报告查询同步；到期 snooze 同时恢复 | `test_weekly_includes_delivered_unread_candidates`、`test_weekly_resumes_due_snoozed_candidate` |
 | F2 二次 preflight 假 uncertain | 阻断 | 已修复：复核与 I/O 分开捕获；复核失败记 `failed` 且说明未尝试投递 | `test_second_preflight_failure_is_not_uncertain_and_never_sends` |
-| N1 同日快照语义 | 中 | 已明确并测试：同日快照不重写；建议周任务在截止后、日报前运行 | `test_weekly_same_day_snapshot_is_not_rewritten`；delivery-cli/ADR0016 |
+| N1 同日快照语义 | 中 | 已明确并测试：同日快照不重写；按设计在 20:00、当日日报投递后运行 | `test_weekly_same_day_snapshot_is_not_rewritten`；delivery-cli/ADR0016 |
 | N2 日期表单 | 低 | 已修复：生成表单携带所选日期并回到该日期 | `test_today_generate_form_uses_selected_day` |
-| N3 user_read 命名 | 低 | 已澄清文档：写 `paper.pushed` + `payload.trigger=user_read`，无独立事件 | delivery-cli/ADR0016 |
+| N3 user_read 命名 | 低 | 已澄清文档：`queued→pushed` 时写 `paper.pushed` + `payload.trigger=user_read`，已 pushed 不重复写，无独立事件 | delivery-cli/ADR0016 |
 | N4 userinfo URL | 低（安全） | 已修复：拒绝任何用户名或密码 | `test_untrusted_content_and_unsafe_urls`（新增空用户名/空密码用例） |
 
 ## 2. F1：周任务覆盖已投递未读
@@ -27,6 +27,8 @@
 - 回归流程：seed → 生成日报 → 本地投递（候选变 PUSHED）→ 阅读归档其中一篇 →
   `refresh_weekly`。断言未读 PUSHED 出现在报告并得到周日快照、状态保持 PUSHED；
   已归档文献不出现且既有快照不变。另断言到期 snooze 被恢复。
+- 已知非阻断限制：周任务会为全部历史 PUSHED 未读追加当日快照；长期积压时快照量随
+  未读存量和周数增长。当前符合“给未读候选更新U”的 P6 范围，窗口化留给 P7/P8 治理。
 
 ## 3. F2：复核失败不再伪造 uncertain
 
@@ -41,13 +43,15 @@
 
 ## 4. N1–N4
 
-- N1：同日快照保持不可变。周任务在日报之后运行时复用该快照并在报告中列出；文档建议
-  在 update_weekday 00:00 截止后、当日日报前运行，否则下一自然日快照生效。
-  `test_weekly_same_day_snapshot_is_not_rewritten` 断言 `created=0`、`existing>=1`、
-  历史快照逐条相等。
+- N1：同日快照保持不可变。按设计在 update_weekday 20:00、当日日报投递后运行周任务：
+  当日 PUSHED 进入候选，已有同日快照不被重写，报告复用该快照，下一自然日快照继续使用
+  同一周截止。若提前到投递前运行，当日稍后才变 PUSHED 的条目不进入本次 Run（同 run_id
+  幂等，不会事后补录），但仍由日报创建当日快照。`test_weekly_same_day_snapshot_is_not_rewritten`
+  断言 `created=0`、`existing>=1`、历史快照逐条相等。
 - N2：`/ui/today?day=...` 无日报页面的表单带 hidden `day`；`POST /ui/digests` 使用该
   日期，非今日时跳回 `/ui/today?day=...`。保留大小限制与非法日期拒绝。
-- N3：文档统一事件命名，代码未新增事件类型。
+- N3：文档统一事件命名为 `queued→pushed` 时写 `paper.pushed` 并标记
+  `payload.trigger=user_read`；已 pushed 不重复写，代码未新增独立事件类型。
 - N4：`safe_url` 用 `username is not None or password is not None` 拒绝全部 userinfo，
   覆盖 `https://u:pw@host`、`https://:pw@host`、`https://user:@host`。
 
@@ -81,8 +85,8 @@ git diff --check
 
 ## 6. 尚未执行 / 限制
 
-- 本轮返工 diff（`5684be0..HEAD`）为 18 文件 / 456 行（含文档），超过单卡
-  8 文件/400 行指引；原因是 F1/F2 两项跨 scoring/jobs/delivery/API 的阻断修复、
+- 本轮返工 diff（`5684be0..HEAD`）为 18 文件 / 521 行（467 新增 + 54 删除，含文档），
+  超过单卡 8 文件/400 行指引；原因是 F1/F2 两项跨 scoring/jobs/delivery/API 的阻断修复、
   N1–N4、5 项回归与返工/交接文档必须同交，未夹带 P7 或其他重构。
 - 全新 clone 验证见下节；远程 CI 需要推送返工提交后由 CI 执行，独立复验也需要由
   未参与实现的验收者执行。本记录不声称独立复验已通过。
@@ -107,7 +111,8 @@ Python **3.14.7** 走 `make bootstrap`（全新 `.venv`、安装运行/开发依
 | `git status --short` | 空 |
 
 克隆位于临时 tmpfs，验证后未保留；未使用工作区的 `.venv`、`.env` 或 `var` 数据库。
-clone 之后仅有本文档的补充提交，不改变代码或测试。
+clone 之后仅有本文档的补充提交，不改变代码或测试。**正式独立复验应固定在包含本记录的
+最终提交**；如验收方坚持复验 clone 时的代码，可 checkout `a6fbe58`（代码树相同）。
 
 ## 8. 回滚
 

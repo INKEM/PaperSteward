@@ -15,8 +15,8 @@
   push_time/暂停/安静/渠道门禁。SMTP预约先提交，未知结果不自动重试、跨日也保守去重。
   本地文件和邮件独立；旧G4本地授权不会隐式启用SMTP。
 - 阅读：done/score/note/snooze/skip/reject，严格整数、客户端全局请求ID回执、冲突拒绝；
-  用户主动阅读沿状态机写 `paper.pushed` 且 payload 标记 `trigger=user_read`，没有独立
-  `user_read` 事件，也绝不声称真正发送过邮件。
+  `queued→pushed` 时写 `paper.pushed` 且 payload 标记 `trigger=user_read`，已 `pushed`
+  不重复写；没有独立 `user_read` 事件，也绝不声称真正发送过邮件。
 - 归档：done、Rating、完整快照、archived和审计同事务；冻结元数据/摘要证据/标签桶与
   徽章/建议实际方式/完整S/D/U/P解释、配置/模型版本。方式覆盖有事件；评分备注修订追加。
 - 导出：BibTeX/CSV/Markdown/JSON包含标签、评分、备注、链接和修订；CSV防公式，文本转义。
