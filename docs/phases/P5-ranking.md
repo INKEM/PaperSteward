@@ -56,3 +56,15 @@
 - `make check`：858 passed，97源文件mypy；新增7项unit/integration；非法保存无配置/事件残留。
 - 无迁移/依赖；未实现P7全局权重预览/激活；生产仍读G4精确选定配置，import不自动激活。
 - 回滚代码即可；非默认扩展配置若已保存，回旧代码前先导出备份（旧schema不识别扩展）。
+
+## S5 完成（2026-10-22）
+
+- 完整日快照复用score_snapshot；rank/解释与舍入差额存breakdown_json，无迁移(head0008)。
+- 只消费G1/G2/G4选定版本；合格主题候选原子推进scored→queued；特殊归属无P/rank，徽章不排除。
+- API/CLI与操作指南见[priority-queue.md](../priority-queue.md)。读取不写库，允许暂停期间审阅；生成执行schedule门。
+- `make check`：864 passed，101源文件mypy；新增6项unit/integration，G4/排除/幂等/CLI/
+  原子失败/外层回滚/次日EMA/历史解释均通过；secret-scan/diff通过。
+- P4无review的历史R证据未持久化：明确标记unavailable、R置信度0，保留摘要证据，不伪造。
+- 规模超过8文件/400行：契约、可信上下文的只读选项、快照与状态事务、API/CLI、失败路径
+  集成测试和指南共同构成S5完整竖切；未开始S6/P6，无新依赖。
+- 回滚保留日快照/状态；完整撤销需恢复操作前备份。无推送/阅读写入/归档/特殊分档。

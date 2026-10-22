@@ -20,7 +20,7 @@ from papersteward.storage.repositories import ConfigRepository, TaxonomyReposito
 
 
 def bound_context(
-    session: Session, now: datetime, *, action: str = "ingest"
+    session: Session, now: datetime, *, action: str = "ingest", enforce_schedule: bool = True
 ) -> tuple[ResearchProfile, dict[str, Any]]:
     ensure_active(session, action=action)
     if now.tzinfo is None or now.utcoffset() is None:
@@ -68,7 +68,7 @@ def bound_context(
             and end
             and (start <= clock < end if start < end else clock >= start or clock < end)
         )
-        if runtime.paused or quiet:
+        if enforce_schedule and (runtime.paused or quiet):
             raise InvariantViolation(
                 "ingest.schedule", "当前处于暂停或安静时段，未执行处理；请稍后重试"
             )

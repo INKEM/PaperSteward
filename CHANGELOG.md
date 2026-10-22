@@ -15,6 +15,10 @@
 
 ### Added
 
+- **P5-S1–S5**：固定日期F/H/D、周度评分偏好U、分层P与EMA/单日变化限制、稳定并列排序；
+  配置有限数/权重护栏、按主标签半衰期/积压阻尼。新增日快照、queue/score explain/scores snapshot
+  API/CLI，精确绑定G1/G2/G4，特殊归属桶排除P/rank。无新迁移/依赖，详见docs/priority-queue.md。
+
 - **P4-S8**：`process` 离线编排（enrichment → R → 摘要 → 分类 → 特殊桶 → 静态分），
   低置信度/边界/特殊提名写入 `review_item`；新增 review API/CLI（列表、批准、
   人工改标签）、迁移 `0008` 与真实 Uvicorn process→review e2e。无新依赖，
