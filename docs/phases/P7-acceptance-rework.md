@@ -4,8 +4,9 @@
 > **基线**：独立验收 `docs/phases/P7-acceptance-independent.md`（对象 `6a877e9`，
 > 文档提交 `f70e0a0`）；返工分支 `fix/p7-acceptance-rework`，提交 `91d9255`
 > **日期**：2026-10-22（Asia/Shanghai）；二次返工分支 `fix/p7-rework-n4-n3`
-> **性质**：实现方返工与自检记录。**2026-10-22 独立复验结论：Not Accepted**，
-> 随后完成 N4/N3 二次返工（§11），但尚未再次独立复验；P7 tag/Beta/P8 继续阻塞。
+> **性质**：实现方返工与自检记录。第一轮复验 §10 为 Not Accepted；二次返工
+> （§11）后再次独立复验 §12 为 **Accepted（功能层面）**。P7 tag/Beta 与
+> merge/CI/Docker 发布门仍待完成。
 
 ## 1. 结论摘要
 
