@@ -13,6 +13,7 @@ from papersteward.sources.contracts import PaperCandidate, QuerySpec, SourceErro
 from papersteward.sources.http import SourceHTTP
 
 BASE = "https://api.openalex.org"
+IDENTITY_PAGE_SIZE = 100
 
 
 def _literal(value: str) -> str:
@@ -83,11 +84,19 @@ class OpenAlexAdapter:
     source = "openalex"
 
     def __init__(
-        self, http: SourceHTTP, *, now: Callable[[], datetime] = utc_now, page_size: int = 100
+        self,
+        http: SourceHTTP,
+        *,
+        now: Callable[[], datetime] = utc_now,
+        page_size: int = 100,
+        identity_max_pages: int = 3,
     ) -> None:
         if not 1 <= page_size <= 100:
             raise ValueError("page_size 必须在1–100之间")
+        if not 1 <= identity_max_pages <= 10:
+            raise ValueError("identity_max_pages 必须在1–10之间")
         self.http, self.now, self.page_size = http, now, page_size
+        self.identity_max_pages = identity_max_pages
 
     def _json(self, endpoint: str, params: dict[str, str | int]) -> dict[str, Any]:
         try:
@@ -97,6 +106,39 @@ class OpenAlexAdapter:
             return data
         except (ValueError, UnicodeError) as exc:
             raise SourceError(self.source, "invalid_response") from exc
+
+    def _identity_id(self, endpoint: str, prefix: str, name: str) -> str | None:
+        """完整分页核对精确名称；无法证明唯一时保守拒绝而不是猜人/机构。"""
+        matches: set[str] = set()
+        scanned = 0
+        total: int | None = None
+        for page in range(1, self.identity_max_pages + 1):
+            data = self._json(
+                "/" + endpoint,
+                {"search": name, "per_page": IDENTITY_PAGE_SIZE, "page": page},
+            )
+            meta = data.get("meta")
+            count = meta.get("count") if isinstance(meta, dict) else None
+            if type(count) is not int or count < 0:
+                raise SourceError(self.source, "invalid_response")
+            total = count
+            results = data["results"]
+            scanned += len(results)
+            for item in results:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("display_name", "")).casefold() == name.casefold()
+                    and re.fullmatch(rf"https://openalex.org/{prefix}\d+", str(item.get("id", "")))
+                ):
+                    matches.add(str(item["id"]))
+            if scanned >= total or len(results) < IDENTITY_PAGE_SIZE:
+                break
+        if total is not None and scanned >= total:
+            if len(matches) == 1:
+                return next(iter(matches))
+            if not matches:
+                return None
+        raise SourceError(self.source, "unsupported_query")
 
     def search(self, query: QuerySpec) -> list[PaperCandidate]:
         operation = " OR " if query.operator == "any" else " AND "
@@ -110,21 +152,10 @@ class OpenAlexAdapter:
                 "venue": ("sources", "primary_location.source.id", "S"),
                 "team": ("institutions", "authorships.institutions.id", "I"),
             }[query.field]
-            matches = self._json("/" + endpoint, {"search": query.keywords[0], "per_page": 100})[
-                "results"
-            ]
-            ids = {
-                item["id"]
-                for item in matches
-                if isinstance(item, dict)
-                and str(item.get("display_name", "")).casefold() == query.keywords[0].casefold()
-                and re.fullmatch(rf"https://openalex.org/{prefix}\d+", str(item.get("id", "")))
-            }
-            if not ids:
+            identifier = self._identity_id(endpoint, prefix, query.keywords[0])
+            if identifier is None:
                 return []
-            if len(ids) != 1:
-                raise SourceError(self.source, "unsupported_query")
-            filters.append(field + ":" + next(iter(ids)))
+            filters.append(field + ":" + identifier)
             expression = ""
         for term in query.exclude_keywords:
             expression += " NOT " + _literal(term)

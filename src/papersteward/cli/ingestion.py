@@ -30,6 +30,38 @@ from papersteward.storage.repositories import RunRepository
 SOURCES = ("arxiv", "openalex", "semantic_scholar", "fake")
 
 
+def _fixture_transport(path: Path) -> httpx.MockTransport:
+    """原始响应文件重复回放；`{"responses": [...]}` 按请求顺序回放多页响应。"""
+    body = path.read_bytes()
+    try:
+        cassette = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        cassette = None
+    if not (isinstance(cassette, dict) and isinstance(cassette.get("responses"), list)):
+        return httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    responses: list[bytes] = []
+    for item in cassette["responses"]:
+        if isinstance(item, str):
+            responses.append(item.encode("utf-8"))
+        elif isinstance(item, (dict, list)):
+            responses.append(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        else:
+            raise ValueError("fixture responses 只支持对象、数组或字符串")
+    if not responses:
+        raise ValueError("fixture responses 不能为空")
+    pending = iter(responses)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        try:
+            content = next(pending)
+        except StopIteration:
+            # 不重复最后一页，避免把分页耗尽伪装成可解析的重复候选。
+            return httpx.Response(400, content=b'{"error":"fixture responses exhausted"}')
+        return httpx.Response(200, content=content)
+
+    return httpx.MockTransport(handle)
+
+
 def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     command = subparsers.add_parser("ingest", help="采集候选并去重/硬过滤；需完成G4")
     command.add_argument("--source", choices=SOURCES, action="append", required=True)
@@ -74,12 +106,7 @@ def _adapters(
             continue
         if path is None and not args.live:
             raise ValueError("请提供--fixture；真实HTTP调用须显式--live")
-        transport = None
-        if path:
-            body = path.read_bytes()
-            transport = httpx.MockTransport(
-                lambda request, body=body: httpx.Response(200, content=body)
-            )
+        transport = _fixture_transport(path) if path else None
         client = SourceHTTP(
             source,
             transport=transport,
