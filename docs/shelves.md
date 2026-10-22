@@ -61,6 +61,21 @@ curl -s localhost:8000/shelves/review/p001
 标题、档位、理由、证据与专属解释；空桶显示“暂无内容（不占位）”。点击标题进入
 文献详情；特殊桶详情不再调用 P 解释，而是显示档位与证据。
 
+## 提升回主题桶
+
+```bash
+.venv/bin/papersteward shelf promote p001 --by local-user --note "人工确认可回主队列" --json
+```
+
+- 只允许 `shelved` 的特殊桶文献；文献必须有唯一主标签、对应激活主题桶和已通过
+  主队列相关度门槛（R≥max(55, min_relevance_for_push)）。否则返回冲突，不移动。
+- 把 filing 从特殊桶替换为主标签主题桶，状态 `shelved → classified`，写
+  `paper.classified` 与 `paper.bucket_moved` 事件；特殊桶档位/历史保留。
+- 若最近静态快照已匹配当前配置/档案/分类法版本，直接复用；否则用最近 R/A/E
+  按当前静态权重追加一条新日期快照。下一次日快照即可把文献纳入 P 排序。
+- 提升不会改写历史 P 快照；主题桶→特殊桶的手动降级尚未提供独立命令，当前仍通过
+  `shelf accept`（仅 classified 阶段）完成。
+
 ## 边界与回滚
 
 - 不实现特殊桶推送、日报特殊槽位、档位编辑/配额修改（分别属于后续卡/已有 CLI）。

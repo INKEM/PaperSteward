@@ -1,0 +1,121 @@
+{
+  "relevance": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4,
+    "evidence": [
+      {
+        "dimension": "problem",
+        "quote": "retrieval and generation evaluation"
+      },
+      {
+        "dimension": "method",
+        "quote": "Graph gating"
+      },
+      {
+        "dimension": "domain",
+        "quote": "long-document reranking"
+      },
+      {
+        "dimension": "actionability",
+        "quote": "falsifiable experiment"
+      }
+    ],
+    "confidence": 0.9,
+    "boundary_note": "P7 synthetic e2e fixture."
+  },
+  "summary": {
+    "summary_100": "跨层综述比较检索与生成评测的问题、方法与评测层，指出评测缺口；远邻图门控可迁移验证，经典基准工作奠定任务。",
+    "what": "检索与生成评测的跨层综述",
+    "how": "比较问题、方法与评测层",
+    "finding": "指出评测缺口",
+    "limitation": "仅合成示例",
+    "evidence": [
+      {
+        "field": "what",
+        "quote": "survey compares retrieval and generation evaluation"
+      },
+      {
+        "field": "how",
+        "quote": "problem, method, and evaluation layers"
+      },
+      {
+        "field": "finding",
+        "quote": "Graph gating may transfer"
+      },
+      {
+        "field": "limitation",
+        "quote": "P7 synthetic survey"
+      }
+    ]
+  },
+  "classification": {
+    "primary_tag": "T02",
+    "primary_confidence": 0.9,
+    "runner_up_tag": "T01",
+    "runner_up_confidence": 0.35,
+    "secondary_tags": [],
+    "special_candidates": [],
+    "evidence": [
+      {
+        "quote": "retrieval and generation evaluation"
+      }
+    ],
+    "boundary_note": null
+  },
+  "special_nomination": {
+    "nominations": [
+      {
+        "bucket": "review",
+        "confidence": 0.82,
+        "reason": "比较检索与生成评测的问题、方法、评测层级。",
+        "evidence": [
+          {
+            "quote": "retrieval and generation evaluation"
+          }
+        ],
+        "review_layers": [
+          "problem",
+          "method",
+          "evaluation"
+        ],
+        "classic_basis": [],
+        "bridge_memo": null
+      },
+      {
+        "bucket": "distant",
+        "confidence": 0.7,
+        "reason": "图门控可能迁移到长文档重排，并有可证伪实验。",
+        "evidence": [
+          {
+            "quote": "Graph gating"
+          }
+        ],
+        "review_layers": [],
+        "classic_basis": [],
+        "bridge_memo": {
+          "source_mechanism": "图门控缓解长文档信息稀释。",
+          "shared_structure": "跨段依赖可视为稀疏图消息传递。",
+          "transfer_experiment": "在重排器中加入门控并比较召回与延迟。",
+          "falsification_signal": "若提升仅来自参数量则不成立。"
+        }
+      },
+      {
+        "bucket": "classic",
+        "confidence": 0.7,
+        "reason": "奠基性基准工作确立了任务与评测。",
+        "evidence": [
+          {
+            "quote": "Foundational benchmark work"
+          }
+        ],
+        "review_layers": [],
+        "classic_basis": [
+          "foundational"
+        ],
+        "bridge_memo": null
+      }
+    ]
+  }
+}

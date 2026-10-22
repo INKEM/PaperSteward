@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from papersteward.core.entities import (
     PaperBucket,
     SpecialNominationRecord,
     SpecialTierSnapshot,
+    StaticScoreSnapshot,
     utc_now,
 )
 from papersteward.core.enums import (
@@ -36,7 +38,9 @@ from papersteward.core.enums import (
 )
 from papersteward.core.invariants import choose_special_filing_kind, ensure_shelvable
 from papersteward.errors import ConflictError, NotFoundError
+from papersteward.pipeline.context import bound_context
 from papersteward.pipeline.special import SpecialNominationResult
+from papersteward.scoring.service import read_scoring_config
 from papersteward.scoring.special import DEFAULT_SPECIAL_QUOTAS, assess_special
 from papersteward.storage.repositories import (
     BucketRepository,
@@ -46,6 +50,7 @@ from papersteward.storage.repositories import (
     PaperTagRepository,
     ReviewRepository,
     SpecialNominationRepository,
+    StaticScoreSnapshotRepository,
 )
 
 SPECIAL_BUCKETS: Final[dict[SpecialBucketKind, tuple[str, str]]] = {
@@ -53,6 +58,15 @@ SPECIAL_BUCKETS: Final[dict[SpecialBucketKind, tuple[str, str]]] = {
     SpecialBucketKind.DISTANT: ("b-special-distant", "远邻领域"),
     SpecialBucketKind.CLASSIC: ("b-special-classic", "经典/奠基"),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ShelfPromotion:
+    """特殊桶提升回主题桶的结果；``static`` 是当前或新追加的静态快照。"""
+
+    paper: Paper
+    bucket: Bucket
+    static: StaticScoreSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +321,140 @@ def accept_nomination(
     )
 
 
+def promote_to_topic(
+    session: Session,
+    paper_id: str,
+    *,
+    reviewed_by: str,
+    note: str | None = None,
+    now: datetime | None = None,
+) -> ShelfPromotion:
+    """把 shelved 特殊桶文献提升到主标签主题桶，并确保静态分可用。"""
+    if not reviewed_by.strip():
+        raise ConflictError("必须记录审核人")
+    timestamp = now or utc_now()
+    paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        raise NotFoundError("文献不存在")
+    if paper.status is not PaperStatus.SHELVED:
+        raise ConflictError("只有 shelved 特殊桶文献可以提升到主题桶")
+    filings = [
+        item
+        for item in PaperBucketRepository(session).list_for_paper(paper_id)
+        if item.role is BucketRole.FILING
+    ]
+    if len(filings) != 1:
+        raise ConflictError("文献缺少唯一归属桶")
+    current = BucketRepository(session).get(filings[0].bucket_id)
+    if current is None or current.bucket_type is not BucketType.SPECIAL:
+        raise ConflictError("文献当前未归属特殊桶")
+    tags = PaperTagRepository(session).list_for_paper(paper_id)
+    primary = [tag.tag_code for tag in tags if tag.role is TagRole.PRIMARY]
+    if len(primary) != 1:
+        raise ConflictError("文献缺少唯一主标签")
+    topic = next(
+        (
+            bucket
+            for bucket in BucketRepository(session).list(active_only=True)
+            if bucket.bucket_type is BucketType.TOPIC and bucket.tag_code == primary[0]
+        ),
+        None,
+    )
+    if topic is None:
+        raise ConflictError("主标签没有可用的激活主题桶")
+
+    _, binding = bound_context(
+        session,
+        timestamp,
+        action="shelf.promote",
+        enforce_schedule=False,
+        day=timestamp.date(),
+    )
+    config = read_scoring_config(session, version=binding["scoring_version"])
+    if config is None:
+        raise ConflictError("当前激活的评分配置不存在")
+    repository = StaticScoreSnapshotRepository(session)
+    latest = repository.latest(paper_id)
+    if latest is None:
+        raise ConflictError("文献缺少静态分快照，无法提升")
+    if latest.relevance < max(55.0, config.gates.min_relevance_for_push):
+        raise ConflictError("相关度低于主队列门槛，不能提升到主题桶")
+    versions = (config.version, binding["profile_version"], binding["taxonomy_version"])
+    if (latest.config_version, latest.profile_version, latest.taxonomy_version) != versions:
+        target = max(timestamp.date(), latest.score_date + timedelta(days=1))
+        static_score = round(
+            latest.relevance * config.static.relevance
+            + latest.authority * config.static.authority
+            + latest.extra_value * config.static.extra_value,
+            1,
+        )
+        breakdown = dict(latest.breakdown_json)
+        breakdown["promoted"] = {"from_input_hash": latest.input_hash}
+        static = repository.append(
+            StaticScoreSnapshot(
+                paper_id=paper_id,
+                score_date=target,
+                relevance=latest.relevance,
+                authority=latest.authority,
+                extra_value=latest.extra_value,
+                static_score=static_score,
+                confidence=latest.confidence,
+                config_version=config.version,
+                profile_version=binding["profile_version"],
+                taxonomy_version=binding["taxonomy_version"],
+                input_hash=hashlib.sha256(
+                    f"{latest.input_hash}:promote:{config.version}:{target.isoformat()}".encode()
+                ).hexdigest(),
+                breakdown_json=breakdown,
+                created_at=timestamp,
+            )
+        )
+    else:
+        static = latest
+
+    PaperBucketRepository(session).replace_filing(
+        paper_id,
+        PaperBucket(
+            paper_id=paper_id,
+            bucket_id=topic.id,
+            role=BucketRole.FILING,
+            assigned_by=AssignedBy.USER,
+            reason="promoted from special shelf",
+        ),
+    )
+    updated = PaperRepository(session).transition(
+        paper_id,
+        PaperStatus.CLASSIFIED,
+        event_id=uuid4().hex,
+        occurred_at=timestamp,
+        payload={
+            "stage": "shelf",
+            "action": "promote",
+            "from_bucket_id": current.id,
+            "to_bucket_id": topic.id,
+            "decided_by": reviewed_by.strip(),
+            "note": note,
+        },
+    )
+    if updated is None:  # pragma: no cover
+        raise NotFoundError("文献不存在")
+    EventRepository(session).append(
+        Event(
+            id=uuid4().hex,
+            event_type=EventType.PAPER_BUCKET_MOVED,
+            created_at=timestamp,
+            paper_id=paper_id,
+            payload_json={
+                "stage": "shelf",
+                "action": "promote",
+                "from_bucket_id": current.id,
+                "to_bucket_id": topic.id,
+            },
+        )
+    )
+    return ShelfPromotion(paper=updated, bucket=topic, static=static)
+
+
 def reject_nomination(
     session: Session,
     paper_id: str,
@@ -337,9 +485,11 @@ def reject_nomination(
 __all__ = [
     "SPECIAL_BUCKETS",
     "ShelfDecision",
+    "ShelfPromotion",
     "accept_nomination",
     "ensure_special_buckets",
     "list_pending_nominations",
     "persist_nominations",
+    "promote_to_topic",
     "reject_nomination",
 ]

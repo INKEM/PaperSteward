@@ -32,8 +32,10 @@ from papersteward.delivery.special import (
 from papersteward.errors import AppError, InvalidRequestError, NotFoundError
 from papersteward.pipeline.shelf import (
     ShelfDecision,
+    ShelfPromotion,
     accept_nomination,
     list_pending_nominations,
+    promote_to_topic,
     reject_nomination,
 )
 from papersteward.scoring.special import assess_special, override_special_tier
@@ -60,6 +62,12 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
         "--force", action="store_true", help="覆盖未通过校验的提名（必须同时提供 --note）"
     )
     accept.add_argument("--json", action="store_true")
+
+    promote = commands.add_parser("promote", help="把特殊桶文献提升回主标签主题桶")
+    promote.add_argument("paper_id")
+    promote.add_argument("--by", required=True, help="审核人")
+    promote.add_argument("--note")
+    promote.add_argument("--json", action="store_true")
 
     reject = commands.add_parser("reject", help="拒绝提名并保留主题归属")
     reject.add_argument("paper_id")
@@ -210,6 +218,28 @@ def _decision_json(decision: ShelfDecision) -> dict[str, Any]:
     return payload
 
 
+def _promotion_json(promotion: ShelfPromotion) -> dict[str, Any]:
+    return {
+        "paper_id": promotion.paper.id,
+        "title": promotion.paper.title,
+        "paper_status": promotion.paper.status.value,
+        "bucket_id": promotion.bucket.id,
+        "bucket_type": promotion.bucket.bucket_type.value,
+        "tag_code": promotion.bucket.tag_code,
+        "score_date": promotion.static.score_date.isoformat(),
+        "config_version": promotion.static.config_version,
+        "static_score": promotion.static.static_score,
+    }
+
+
+def _print_promotion(promotion: ShelfPromotion) -> None:
+    print(
+        f"{promotion.paper.id}: 已提升到 {promotion.bucket.id}"
+        f"（{promotion.paper.status.value}），静态分 {promotion.static.static_score:.1f}"
+        f" @ {promotion.static.score_date}"
+    )
+
+
 def _print_decision(decision: ShelfDecision) -> None:
     record = decision.nomination
     suffix = f" → {decision.bucket.id}" if decision.bucket is not None else ""
@@ -321,6 +351,18 @@ def _run(args: argparse.Namespace) -> int:
                     print(json.dumps(_decision_json(decision), ensure_ascii=False, indent=2))
                 else:
                     _print_decision(decision)
+                return 0
+            if args.shelf_command == "promote":
+                promotion = promote_to_topic(
+                    session,
+                    args.paper_id,
+                    reviewed_by=args.by,
+                    note=args.note,
+                )
+                if args.json:
+                    print(json.dumps(_promotion_json(promotion), ensure_ascii=False, indent=2))
+                else:
+                    _print_promotion(promotion)
                 return 0
             if args.shelf_command == "reject":
                 decision = reject_nomination(

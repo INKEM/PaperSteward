@@ -1,6 +1,6 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S5 实现（2026-10-22）；S6 待开始。**
+> 状态：**P7-S1–S6 本地实现与阶段门完成（2026-10-22）；独立验收/tag/Beta 未做。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -227,10 +227,45 @@
 - 已知限制：预览 hash 以完整当前队列为输入，队列变化会使确认失败并需重新预览；
   静态重算只覆盖已有静态快照的未归档文献；治理没有独立页面（CLI/API）。
 
-## P7 Handoff（后续卡）
+## S6 契约（2026-10-22）
 
-- S5 的 `scoring_change` 与按日激活已冻结；S6 e2e 必须覆盖“预览→确认→生效日队列”
-  以及旧的 preview_day 仍用旧配置。视图仍不得写全局配置/激活版本。
-- S6 同时消费 `/shelves`、`/ui/shelves`、`/views/preview`、`/ui/views` 与
-  `/config/scoring/*`；完成后更新 Beta 验收与 CHANGELOG，P7 tag 仍待发布流程。
-- S6 完成后再更新 Beta 验收与 CHANGELOG；P7 tag 待发布流程，不提前宣称 Beta。
+- 真实 Uvicorn + 真实 `papersteward` 子进程、固定时钟和临时 SQLite：一组 P7 合成来源
+  经 ingest/process 产生主题候选与待审特殊提名；逐篇 `shelf accept` 进入 review/distant/
+  classic，检查 `/shelves`、`/ui/shelves`、桥接假设、经典依据、档位/计划与“特殊桶不进
+  队列”；再生成日快照，验证特殊桶不占 P。
+- 自定义视图：`view preview --preset` 校验预设/公式；`--weights R:100` 重排当前队列，
+  `view save` 后按名称预览；`/ui/views` 可见 P_view；视图不写全局配置/激活版本。
+- 全局治理：`config preview` 预览 Top-N 影响且不写 1.0.1 配置；`config confirm` 写版本、
+  `config.activated` 与生效日静态快照；旧日队列仍用旧配置，生效日快照用新配置重排。
+- 特殊桶提升：新增 `shelf promote <paper> --by/--note`。只允许 shelved 特殊桶且主标签
+  主题桶存在、R 达到主队列门槛；替换 Filing、`shelved → classified`、写 bucket_moved
+  事件。静态快照版本匹配时复用，否则按当前 R/A/E 追加新日期快照；下一次日快照纳入 P，
+  历史 P/特殊桶档位不改。未提供主题桶→特殊桶的独立 demote 命令。
+- 失败路径：未 shelved/重复提升冲突、低 R 拒绝、无效视图权重/重复名称、过期 preview
+  hash、版本已存在、过期生效日；均由 unit/integration/CLI/API 覆盖。
+
+## S6 执行记录（2026-10-22）
+
+- E2E 在同一真实链路中新增 5 篇 P7 合成论文：2 篇主题（高 R / 高 E）、3 篇特殊提名；
+  9 条待审提名，分别接受 review/distant/classic；特殊桶按档位展示且队列只含主题候选。
+- 验证 `view presets/preview/save` + `/ui/views` 重排；`config preview/confirm` +
+  `/config/scoring/*`；用独立生效日时钟生成 2026-11-02 快照，证明旧日仍用旧配置、
+  生效日使用新版本且提升后的特殊文献回到主队列。
+- 新增 1 项集成测试（提升回主题桶、事件、静态复用、日快照后回到 P、重复提升冲突），
+  e2e 从 G1 串到 P7；新增 4 个合成 fixture（1 来源、3 process）。
+- 本地门：`make check` **1010 passed / 4 deselected**，ruff **268** 文件、strict mypy
+  **131** 源文件；`make test-integration` **331 passed**；`make e2e` **4 passed**；
+  `make migrate-check` 0013↔0014 通过；`make demo`、`make secret-scan` 通过。无新依赖。
+- 范围说明：S6 超过 8 文件/400 行指引，原因是最终 e2e、合成 fixture、提升补口与阶段
+  验收文档同交；未开始 P8，不声明 Beta 发布。
+
+## P7 Handoff（P8）
+
+- P7-S1–S6 本地实现完成，head 仍为 `0014`；S6 没有 schema 变更。分支
+  `feat/p7-s6-e2e` 从 S5 `b556a61` 建立。
+- 冻结契约：特殊桶无 P/rank；Filing 唯一；主标签保留；视图只重排当前队列且不得写
+  全局配置；全局权重必须 preview→confirm→版本→生效日；G4 原始证据仍复核。
+- 已知限制：主题桶→特殊桶独立 demote、提升 API（当前仅 CLI）、提升低 R 文献、
+  P7 独立验收/P7 tag/Beta 发布未做；P8 成本/性能/降级不在此阶段。
+- P8 开工前先读 `docs/phases/P7-acceptance.md` 与 P7 handoff；`make check` 当前
+  1010 passed，e2e 4 passed。

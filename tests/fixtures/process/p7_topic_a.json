@@ -1,0 +1,70 @@
+{
+  "relevance": {
+    "problem": 5,
+    "method": 4,
+    "domain": 5,
+    "actionability": 4,
+    "evidence": [
+      {
+        "dimension": "problem",
+        "quote": "long-document QA"
+      },
+      {
+        "dimension": "method",
+        "quote": "Sparse retrieval and cross-layer reranking"
+      },
+      {
+        "dimension": "domain",
+        "quote": "long-document QA"
+      },
+      {
+        "dimension": "actionability",
+        "quote": "improve grounding"
+      }
+    ],
+    "confidence": 0.9,
+    "boundary_note": "P7 synthetic e2e fixture."
+  },
+  "summary": {
+    "summary_100": "针对长文档问答结合稀疏检索与跨层重排，报告 2-4 点 EM 提升，但离线聚类增加延迟。",
+    "what": "长文档问答的检索与重排",
+    "how": "稀疏检索与跨层重排",
+    "finding": "EM 提升 2-4 点",
+    "limitation": "离线聚类增加延迟",
+    "evidence": [
+      {
+        "field": "what",
+        "quote": "long-document QA"
+      },
+      {
+        "field": "how",
+        "quote": "Sparse retrieval and cross-layer reranking"
+      },
+      {
+        "field": "finding",
+        "quote": "EM gains of 2-4 points"
+      },
+      {
+        "field": "limitation",
+        "quote": "offline clustering adds latency"
+      }
+    ]
+  },
+  "classification": {
+    "primary_tag": "T02",
+    "primary_confidence": 0.9,
+    "runner_up_tag": "T01",
+    "runner_up_confidence": 0.4,
+    "secondary_tags": [],
+    "special_candidates": [],
+    "evidence": [
+      {
+        "quote": "Sparse retrieval"
+      }
+    ],
+    "boundary_note": null
+  },
+  "special_nomination": {
+    "nominations": []
+  }
+}

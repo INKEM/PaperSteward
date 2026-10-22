@@ -22,6 +22,13 @@
 
 ### Added
 
+- **P7-S6**：P7 最终 e2e 与特殊桶提升。真实 Uvicorn/CLI 链路新增 5 篇合成论文，
+  覆盖特殊桶 review/distant/classic、档位/桥接/经典依据、视图重排、权重预览/确认与
+  生效日队列；新增 `shelf promote`（特殊桶回主标签主题桶、R 门槛、静态复用/重算、
+  下一次日快照回到 P），并创建 `docs/phases/P7-acceptance.md` 本地验收记录。
+  无新迁移/依赖；`make check` 1010 passed、integration 331 passed、e2e 4 passed。
+  未独立验收、未打 P7 tag、不宣称 Beta。
+
 - **P7-S5**：全局权重治理。新增迁移 `0014` 的 `scoring_change`、Top-N 影响预览、
   preview hash、版本自动提升、显式确认、按生效日激活与已有静态分重算；
   `config preview|confirm|changes|show` CLI 与 `/config/scoring/*` API。
