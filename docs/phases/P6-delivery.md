@@ -40,3 +40,10 @@ CHANGELOG。超过 8 文件/400 行在执行记录说明。跨模块决策见 AD
   9项新增unit/contract；测试数据库使用/dev/shm独立tmp_path，未触碰var。
 - 能做：生成结构化可解释日报；不能做：持久化、渲染、发送。回滚撤销S1代码，无迁移。
 - 共7文件；七卡/跨模块ADR同交。下一卡S2仅消费Digest渲染。P5 tag留待发布流程。
+
+### S2（2026-10-22）
+
+- Markdown/HTML完整卡片与解释、链接白名单/转义、空日报完成；basic.json/md/html为golden。
+- make check：888 passed / 4 deselected，ruff/mypy 104源文件通过；secret-scan/diff通过。
+  新增3项渲染/注入测试；无网络。能渲染，不能发送；无迁移，撤销代码即可回滚。
+- S1净407行略超400指引（七卡/ADR同交）；S2较大golden含完整解释JSON，未推进S3。

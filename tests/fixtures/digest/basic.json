@@ -1,0 +1,85 @@
+{
+  "digest_date": "2026-10-22",
+  "timezone": "Asia/Shanghai",
+  "binding": {},
+  "items": [
+    {
+      "paper_id": "示例论文",
+      "title": "示例论文",
+      "primary_tag": "T01",
+      "summary_100": "方法与结果",
+      "published_on": "2026-10-22",
+      "score_date": "2026-10-22",
+      "priority": 70.0,
+      "rank_score": 70.0,
+      "explanation": {
+        "paper_id": "示例论文",
+        "score_date": "2026-10-22",
+        "config_version": "1.0.0",
+        "profile_version": "1.0",
+        "taxonomy_version": "1.0",
+        "static_input_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "primary_tag": "T01",
+        "components": {
+          "R": {
+            "score": 85.0,
+            "weight": 0.1,
+            "contribution": 8.5,
+            "confidence": 0.5
+          },
+          "E": {
+            "score": 75.0,
+            "weight": 0.1,
+            "contribution": 7.5,
+            "confidence": 0.5
+          },
+          "H": {
+            "score": 50.0,
+            "weight": 0.1,
+            "contribution": 5.0,
+            "confidence": 0.5
+          },
+          "A": {
+            "score": 50.0,
+            "weight": 0.1,
+            "contribution": 5.0,
+            "confidence": 0.5
+          }
+        },
+        "layer_weights": {},
+        "scores": {
+          "P": 70.0,
+          "rank_score": 70.0
+        },
+        "dynamic": {},
+        "quasi": {},
+        "stability": {},
+        "evidence": [],
+        "reasons": [],
+        "binding": {},
+        "formula": "P = wS*S + wD*D + wQ*U; S/D are frozen to one decimal"
+      },
+      "excluded_from_priority": false,
+      "read_mode": "deep",
+      "reason": "T01：R=85，E=75；高相关且额外价值或直接参考证据充分，建议精读",
+      "authors": [
+        "A",
+        "B"
+      ],
+      "venue": "ACL",
+      "url": "https://example.org/paper",
+      "pdf_url": null,
+      "code_url": null,
+      "secondary_tags": [
+        "检索"
+      ],
+      "filing_bucket": "主题桶"
+    }
+  ],
+  "queue_total": 1,
+  "pending_review": 2,
+  "deferred": {},
+  "inventory_mode": false,
+  "special_slots": 2,
+  "special_status": "特殊桶完整编排将在P7启用"
+}
