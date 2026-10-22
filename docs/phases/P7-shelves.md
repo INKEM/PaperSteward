@@ -1,6 +1,7 @@
 # P7 特殊桶、自定义排序与权重治理
 
-> 状态：**P7-S1–S6 本地实现与阶段门完成（2026-10-22）；独立验收/tag/Beta 未做。**
+> 状态：**P7-S1–S6 本地实现与阶段门完成；2026-10-22 独立验收 Not Accepted，需返工复验；
+> P7 tag/Beta 未发布。**
 > 依据：开发计划 §3 P7；设计 §5.4、§8、§10.10；P6 handoff、P5 队列契约与 ADR0015。
 > 前置：P6 已关闭；特殊桶不参与 P、主标签保留、Filing 唯一等 P4/P5 契约不重开。
 
@@ -262,10 +263,15 @@
 ## P7 Handoff（P8）
 
 - P7-S1–S6 本地实现完成，head 仍为 `0014`；S6 没有 schema 变更。分支
-  `feat/p7-s6-e2e` 从 S5 `b556a61` 建立。
+  `feat/p7-s6-e2e` 从 S5 `b556a61` 建立；独立验收对象 `6a877e9`（PR #10）。
+- **2026-10-22 独立验收 Not Accepted**：F1 权重治理可激活非权重字段、F2 确认后至
+  生效日之间处理/提升的文献在生效日被旧静态快照排除、F3 拒绝后无法重新提名；另有
+  N1–N4。详见 [P7-acceptance-independent.md](P7-acceptance-independent.md)。
 - 冻结契约：特殊桶无 P/rank；Filing 唯一；主标签保留；视图只重排当前队列且不得写
   全局配置；全局权重必须 preview→confirm→版本→生效日；G4 原始证据仍复核。
 - 已知限制：主题桶→特殊桶独立 demote、提升 API（当前仅 CLI）、提升低 R 文献、
-  P7 独立验收/P7 tag/Beta 发布未做；P8 成本/性能/降级不在此阶段。
-- P8 开工前先读 `docs/phases/P7-acceptance.md` 与 P7 handoff；`make check` 当前
-  1010 passed，e2e 4 passed。
+  P7 tag/Beta 发布未做；P8 成本/性能/降级不在此阶段。
+- **P7 独立验收未通过，P8 不得开始**；F1–F3 返工并再次独立复验前不得创建 P7 tag。
+- P8 开工前先读 `docs/phases/P7-acceptance.md`、
+  `docs/phases/P7-acceptance-independent.md` 与 P7 handoff；当前 `make check`
+  1010 passed，e2e 4 passed，但 P7 独立验收 Not Accepted，返工复验完成前不得开始 P8。

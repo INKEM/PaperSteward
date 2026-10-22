@@ -27,7 +27,12 @@
   生效日队列；新增 `shelf promote`（特殊桶回主标签主题桶、R 门槛、静态复用/重算、
   下一次日快照回到 P），并创建 `docs/phases/P7-acceptance.md` 本地验收记录。
   无新迁移/依赖；`make check` 1010 passed、integration 331 passed、e2e 4 passed。
-  未独立验收、未打 P7 tag、不宣称 Beta。
+  未打 P7 tag、不宣称 Beta。
+- **P7 独立验收（2026-10-22）Not Accepted**：本地门、fresh clone、Docker smoke/CI 通过，
+  但独立验收发现 F1 权重治理可激活非权重字段并绕过预览边界、F2 确认后至生效日处理/
+  提升的文献在生效日被旧静态快照排除、F3 拒绝提名后无法重新提名；另有 N1–N4
+  （changes total、tier reviewer、UTC 日期、preview rank）。返工复验前 P7 tag/Beta
+  不发布，P8 不得开始；证据见 `docs/phases/P7-acceptance-independent.md`。
 
 - **P7-S5**：全局权重治理。新增迁移 `0014` 的 `scoring_change`、Top-N 影响预览、
   preview hash、版本自动提升、显式确认、按生效日激活与已有静态分重算；

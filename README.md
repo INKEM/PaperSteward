@@ -2,12 +2,15 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S6 本地实现完成）**。
+当前处于 **P7 特殊桶、自定义排序与权重治理（S1–S6 本地实现完成；独立验收 Not Accepted）**。
 P0–P6已有初始化G1–G4、采集/去重/过滤、摘要/分类/静态与动态评分、审核和解释队列、
 日报/投递/阅读反馈/归档。P7新增特殊桶提名/档位/配额/轮换、特殊桶只读视图、组件级
 自定义排序预设、全局权重影响预览/版本/确认/按日激活，以及特殊桶提升回主题桶；
-迁移head为0014，无新增Python依赖。P7独立验收/tag与Beta发布尚未完成。
-P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，不宣称 Alpha/Beta 已发布。
+迁移head为0014，无新增Python依赖。**2026-10-22 P7 独立验收为 Not Accepted**：
+权重治理可激活非权重字段、确认后至生效日处理/提升的文献在生效日被旧静态快照排除、
+拒绝提名后无法重新提名（F1–F3），另有 N1–N4；需返工复验。P7 tag 与 Beta 发布尚未完成，
+P8 不得开始。P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程，
+不宣称 Alpha/Beta 已发布。
 
 ```bash
 .venv/bin/papersteward shelf review
@@ -33,7 +36,9 @@ P6 已关闭，P6 tag 与用户首份真实日报审阅仍待发布/验收流程
 SMTP必须G4明确选择且CLI显式发送；阅读备注默认仅本地保存。
 操作见[日报与归档指南](docs/delivery-cli.md)、[特殊桶视图指南](docs/shelves.md)、
 [自定义排序视图指南](docs/views.md)、[权重治理指南](docs/config-governance.md)、
-[P7本地验收](docs/phases/P7-acceptance.md)、[P7阶段卡片](docs/phases/P7-shelves.md)、
+[P7本地验收](docs/phases/P7-acceptance.md)、
+[P7独立验收报告（Not Accepted）](docs/phases/P7-acceptance-independent.md)、
+[P7阶段卡片](docs/phases/P7-shelves.md)、
 [P6阶段交接](docs/phases/P6-delivery.md)、[P6本地验证记录](docs/phases/P6-acceptance.md)、
 [P6独立验收报告](docs/phases/P6-acceptance-independent.md)和
 [P6返工验证记录](docs/phases/P6-acceptance-rework.md)。
