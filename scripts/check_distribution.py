@@ -31,6 +31,12 @@ def check(path: Path) -> None:
         assert Path(name).name not in {"AGENTS.md", ".env"}, name
     for source in Path("migrations/versions").glob("*.py"):
         assert files[prefix + "versions/" + source.name] == source.read_bytes(), source
+    resource_root = Path("src/papersteward/resources/starter")
+    for source in resource_root.glob("*"):
+        target = "papersteward/resources/starter/" + source.name
+        if not wheel:
+            target = "src/" + target
+        assert files[target] == source.read_bytes(), source
     assert prefix + "env.py" in files
     assert any(name.endswith("LICENSE") for name in files)
     assert any(name.endswith("HTMX-LICENSE") for name in files)

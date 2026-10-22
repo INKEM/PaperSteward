@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import utc_now
+from papersteward.core.entities import utc_now as utc_now
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.core.onboarding import Gate, GateApproval, OnboardingStage
 from papersteward.errors import ConflictError, InvalidRequestError

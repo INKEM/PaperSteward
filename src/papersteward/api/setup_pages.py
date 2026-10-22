@@ -224,9 +224,20 @@ def setup(
                 raise InvalidRequestError("请按当前步骤操作")
             body += _documents(session, stage, identity, version, edit)
         elif stage == "active":
-            body += '<p>初始化已完成。</p><a href="/ui/today">进入今日</a>'
-        else:
-            body += "<p>方向和分类法已确认；下一步为校准和试运行。</p>"
+            body += (
+                "<p>初始化已完成。示例校准仅验证流程；正式使用请在独立新工作区确认自己的资料。</p>"
+                "<p>下一步：配置 LLM 和采集数据。缺少真实模型配置时不能处理真实论文。</p>"
+                "<p>若选择不授权外发，当前工作区仅作离线体验；可用 --data-dir 新目录重新设置。</p>"
+                '<a href="/ui/today">进入今日</a>'
+            )
+        elif stage == "calibration":
+            from papersteward.api.setup_late import calibration_page
+
+            body += calibration_page(session)
+        elif stage == "dry_run":
+            from papersteward.api.setup_late import dry_run_page
+
+            body += dry_run_page(session)
         return _page("首次设置", body)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
         return failure(exc)
@@ -238,6 +249,10 @@ async def document_action(
 ) -> Response:
     try:
         data = await fields(request)
+        if kind in {"calibration", "dry-run"}:
+            from papersteward.api.setup_late import advance_action
+
+            return advance_action(kind, action, data, session)
         identity = data.get("identity", "")
         if kind not in {"profile", "taxonomy"}:
             raise InvalidRequestError("未知文档类型")
