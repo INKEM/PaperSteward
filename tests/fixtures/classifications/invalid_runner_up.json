@@ -1,0 +1,10 @@
+{
+  "primary_tag": "T02",
+  "primary_confidence": 0.86,
+  "runner_up_tag": "T99",
+  "runner_up_confidence": 0.4,
+  "secondary_tags": [],
+  "special_candidates": [],
+  "evidence": [{"quote": "retrieval-augmented generation"}],
+  "boundary_note": null
+}

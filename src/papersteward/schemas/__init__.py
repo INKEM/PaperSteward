@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from papersteward.schemas.models import (
     SCHEMA_MODELS,
+    ClassificationEvidenceOutput,
     ClassificationOutput,
     DynamicScoreOutput,
     EventEnvelope,
@@ -27,6 +28,7 @@ from papersteward.schemas.models import (
 
 __all__ = [
     "SCHEMA_MODELS",
+    "ClassificationEvidenceOutput",
     "ClassificationOutput",
     "DynamicScoreOutput",
     "EventEnvelope",

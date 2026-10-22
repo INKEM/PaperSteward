@@ -2,15 +2,16 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P4 富化、摘要、分类与静态评分（S1–S4 完成）**：P0/P1 的配置、API、
+当前处于 **P4 富化、摘要、分类与静态评分（S1–S5 完成）**：P0/P1 的配置、API、
 CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与确认门已通过；P3
 已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与可审计运行报告；
 P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live` 授权、脱敏 provider
 与富化输入契约；P4-S2 新增 `enrichment` 持久化、中性值回填与幂等 upsert；
 P4-S3 新增相关度 R（离线哈希 embedding + rubric 证据校验 + 55/65 分 band）；
-P4-S4 新增 summary/v2 100 字四槽概括、逐字段证据/数字/空泛词校验与 needs_review。
+P4-S4 新增 summary/v2 100 字四槽概括、逐字段证据/数字/空泛词校验与 needs_review；
+P4-S5 新增 classification/v2 主/副标签、runner-up/置信度、边界/证据校验与幂等写入。
 P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍是
-非阻断债务。下一阶段为 P4-S5 分类、置信度与边界案例。
+非阻断债务。下一阶段为 P4-S6 特殊桶提名与桥接假设。
 详细契约见 [P4 阶段记录](docs/phases/P4-enrichment.md)、[P3 阶段记录](docs/phases/P3-ingestion.md)
 与 [P3 验收报告](docs/phases/P3-acceptance.md)。
 
@@ -65,6 +66,7 @@ P2/P3 Docker 与 CI 均已验证；F5（httpx 弃用警告）和 P1 F3 断言仍
   canonicalization/五类保守去重、硬过滤、来源版本与 Run 报告；
 - P4-S1–S4：中性富化信号、enrichment 持久化、相关度 R/rubric 证据；
 - 摘要：summary/v2 prompt、四槽/逐字证据/数字校验、needs_review 与 summary 表持久化；
+- 分类：classification/v2 主/副标签、runner-up/置信度、边界/证据校验与 paper_tag/paper_bucket 写入；
 - Makefile、Docker Compose、GitHub Actions CI。
 
 ## 初始化链路演示
@@ -359,7 +361,7 @@ docs/             # 设计与阶段文档
 - [P2 独立验收报告](docs/phases/P2-independent-acceptance.md)
 - [P3 阶段记录与 P4 交接](docs/phases/P3-ingestion.md)
 - [P3 独立验收报告](docs/phases/P3-acceptance.md)
-- [P4 阶段记录与 P4-S5 交接](docs/phases/P4-enrichment.md)
+- [P4 阶段记录与 P4-S6 交接](docs/phases/P4-enrichment.md)
 - [LLM provider 配置指南](docs/llm-provider.md)
 - [初始化 CLI 操作指南](docs/onboarding-cli.md)
 - [采集 CLI 操作指南](docs/ingestion-cli.md)

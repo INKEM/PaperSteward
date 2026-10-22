@@ -1,7 +1,7 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S4 完成并通过本地阶段门；P4-S5–S8 未开始。**
+> 状态：**P4-S1–S5 完成并通过本地阶段门；P4-S6–S8 未开始。**
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -62,10 +62,11 @@ P4 是最大阶段，拆成 8 张卡；每张卡单独分支/提交，默认离�
   持久化与 `needs_review`；schema 复用 P1 `SummaryOutput`；
 - 范围外：全文解析、真实 LLM 质量验收；预估 1–2 天。
 
-### P4-S5：分类、置信度与边界案例
+### P4-S5：分类、置信度与边界案例（完成）
 
 - 目标：主/副标签唯一性、置信度阈值、低置信度转人工；绑定已确认 taxonomy 版本；
-- 输出：`pipeline/classify.py`、分类 golden、标签/桶写入服务；
+- 输出：`classification/v2` prompt/schema（runner-up + evidence）、`pipeline/classify.py`、
+  分类正反例、标签/桶幂等写入；
 - 范围外：特殊桶提名；预估 1–2 天。
 
 ### P4-S6：特殊桶提名与桥接假设
@@ -350,6 +351,70 @@ P4-S3 超过 8 文件指引：embedding 协议/实现、R 管线、schema/prompt
 
 P4-S4 超过 8 文件指引：prompt 版本、摘要服务/校验、持久化、正反例与文档共同构成
 本次竖切；没有提前实现 P4-S5 分类逻辑。
+
+## P4-S5 验证与 handoff
+
+### 验证证据（2026-10-22）
+
+- `make check PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s5-make-check'`：
+  ruff format/check（176 文件）、strict mypy（**88 源文件**）通过；
+  **803 passed / 4 e2e excluded**（P4-S4 后基线 792，新增 11 项）。
+- `make test-integration PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s5-integration'`：
+  **242 passed**（P4-S4 后基线 240；新增 2 项分类持久化）。
+- `make e2e PYTEST='.venv/bin/pytest --basetemp=/dev/shm/p4-s5-e2e'`：**4 passed**。
+- `TMPDIR=/dev/shm make migrate-check`：base → 0006 → base → 0006 通过（无新迁移；
+  复用 P1 的 `paper_tag`/`paper_bucket`）。
+- `make demo DEMO_PORT=8060`：`/health`、`/papers` 正常；head 仍为 0006。
+- `make secret-scan`、`git diff --check` 通过；未调用真实 LLM。
+- 离线演示：`classification/v2` + `FakeLLM` 得到 primary T02（0.86）、runner-up T01
+  （0.62）、secondary S01/S02、主题桶 b-t02，evidence 逐字有效、`needs_review=false`。
+
+### 实现
+
+- `classification/v2` prompt：主标签、次优主标签/置信度、副标签、逐字 evidence 与
+  boundary_note；保留 v1。
+- `ClassificationOutput` 扩展可选 `runner_up_tag`/`runner_up_confidence` 与 evidence；
+  二者必须同时提供且 runner-up 不能等于 primary。
+- `pipeline/classify.py`：taxonomy block、置信度/边界/证据校验、标签与主题桶写入。
+- review 原因：`low_primary_confidence`、`ambiguous_primary`、`invalid_runner_up`、
+  `boundary_case`、`missing_evidence`、`invalid_evidence`、`missing_abstract`、
+  `invalid_secondary_tag:*`、`duplicate_secondary_tag:*`。
+- taxonomy 主标签必须在已确认且激活的受控词表中；主标签没有激活主题桶时直接拒绝。
+- 副标签优先按 taxonomy code/name/alias 归一；未命中受控词表时按自由词保存（≤64 字符）。
+- `persist_classification` 首次写入主/副标签与归属桶；完全相同幂等，已有不同分类/桶
+  时拒绝静默覆盖；不自行 commit。
+
+### 能做什么
+
+- 对已确认 taxonomy 生成主/副标签、置信度、runner-up、逐字证据与 boundary note；
+- 低置信度/接近次优/边界/证据不足自动进入 `needs_review`，分类结果仍可保存供审核；
+- 幂等写入 `paper_tag`/`paper_bucket`，保留 provenance 与主题桶归属；
+- 输出结构化 `ClassificationResult.as_json()` 供 P4-S8 审核队列使用。
+
+### 不能做什么
+
+- 不改变 `PaperStatus`、不入队/推送；状态迁移由 P4-S8 编排；
+- 不处理特殊桶提名（`special_candidates` 留空，P4-S6）；
+- 不支持已有不同分类的自动重分类/覆盖，重分类需要后续显式流程；
+- 不解析全文，只用标题/摘要作为证据来源；
+- 未做分类准确率/kappa 的真实模型验收；测试使用 FakeLLM 与合成 fixtures。
+
+### P4-S6 输入与开工约束
+
+- 输入：`ClassificationResult`（含 boundary_note、special_candidates 字段位置）、
+  taxonomy/bucket 目录、`paper_tag`/`paper_bucket` 写入结果；
+- 特殊桶提名需理由/证据与远邻 bridge memo；只写提名，不改变最终归属；
+- 继续使用 FakeLLM/fixtures；新字段/表走新增迁移（当前 0006）。
+
+### 回滚
+
+- 无迁移；撤销 `classification/v2`、`pipeline/classify.py`、fixtures/测试即可；
+- 已写入的 `paper_tag`/`paper_bucket` 保留；回滚代码不会自动删除用户分类数据。
+
+### 规模说明
+
+P4-S5 超过 8 文件指引：prompt/schema 扩展、分类服务、taxonomy/证据校验、标签/桶
+持久化、正反例与文档共同构成本次竖切；没有提前实现 P4-S6 特殊桶逻辑。
 
 ## 与 P5 的边界
 

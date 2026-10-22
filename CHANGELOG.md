@@ -6,6 +6,9 @@
 
 ### Added
 
+- **P4-S5**：classification/v2 主/副标签、runner-up/置信度、逐字 evidence 与
+  boundary_note；置信度/边界/证据不足进入 `needs_review`，标签与主题桶幂等写入
+  `paper_tag`/`paper_bucket`，已有不同分类拒绝静默覆盖。无迁移，测试只用 FakeLLM。
 - **P4-S4**：100 字概括 `summary/v2` 与 `pipeline/summarize.py`：四槽生成、逐字证据
   覆盖、数字 claim 对齐证据、空泛词检查与 `needs_review`；复用 `summary` 表持久化，
   保留 `summary/v1`。无迁移，测试只用 FakeLLM。

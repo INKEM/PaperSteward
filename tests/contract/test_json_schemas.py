@@ -251,3 +251,25 @@ def test_relevance_rejects_out_of_range_and_missing_evidence() -> None:
     with pytest.raises(SchemaError) as exc_info:
         validate_mapping("relevance", payload)
     assert exc_info.value.field == "schema.relevance.evidence"
+
+
+def test_classification_runner_up_and_evidence_contract() -> None:
+    payload = _classification()
+    payload.update(
+        runner_up_tag="T01",
+        runner_up_confidence=0.62,
+        evidence=[{"quote": "retrieval-augmented generation"}],
+    )
+    model = validate_mapping("classification", payload)
+    assert model.model_dump(mode="json")["runner_up_tag"] == "T01"
+
+    payload = _classification()
+    payload["runner_up_tag"] = "T01"
+    with pytest.raises(SchemaError) as exc_info:
+        validate_mapping("classification", payload)
+    assert "runner_up_confidence" in str(exc_info.value)
+
+    payload = _classification()
+    payload.update(runner_up_tag="T02", runner_up_confidence=0.5)
+    with pytest.raises(SchemaError, match="runner_up_tag"):
+        validate_mapping("classification", payload)

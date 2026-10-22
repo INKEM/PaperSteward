@@ -47,7 +47,7 @@ def test_valid_completion_records_provenance_and_usage() -> None:
     assert result.repair_used is False
     assert result.attempts == 1
     assert result.provenance.model == "fake-llm"
-    assert result.provenance.prompt_version == "classification/v1"
+    assert result.provenance.prompt_version == "classification/v2"
     assert result.provenance.generated_at == NOW
     assert len(result.provenance.input_hash) == 64
     assert result.usage.calls == 1
@@ -66,7 +66,7 @@ def test_schema_invalid_output_is_repaired_once() -> None:
 
     assert isinstance(result.data, ClassificationOutput)
     assert result.repair_used is True
-    assert result.provenance.prompt_version == "classification/v1+repair:repair/v1"
+    assert result.provenance.prompt_version == "classification/v2+repair:repair/v1"
     assert result.usage.calls == 2
     assert result.usage.repairs == 1
     assert result.attempts == 2

@@ -42,7 +42,7 @@ class _OutputModel(BaseModel):
 
 class SecondaryTagOutput(_OutputModel):
     facet: Literal["method", "task", "data", "theory", "application", "evaluation"]
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=64)
     confidence: float = Field(ge=0.0, le=1.0)
 
 
@@ -52,11 +52,18 @@ class SpecialCandidateOutput(_OutputModel):
     reason: str = Field(min_length=1)
 
 
+class ClassificationEvidenceOutput(_OutputModel):
+    quote: str = Field(min_length=1, max_length=500)
+
+
 class ClassificationOutput(_OutputModel):
     primary_tag: str = Field(pattern=_CODE_PATTERN)
     primary_confidence: float = Field(ge=0.0, le=1.0)
+    runner_up_tag: str | None = Field(default=None, pattern=_CODE_PATTERN)
+    runner_up_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     secondary_tags: list[SecondaryTagOutput] = Field(default_factory=list, max_length=5)
     special_candidates: list[SpecialCandidateOutput] = Field(default_factory=list, max_length=3)
+    evidence: list[ClassificationEvidenceOutput] = Field(default_factory=list, max_length=5)
     boundary_note: str | None = None
 
     @model_validator(mode="after")
@@ -64,6 +71,10 @@ class ClassificationOutput(_OutputModel):
         keys = [(tag.facet, tag.name.casefold()) for tag in self.secondary_tags]
         if len(keys) != len(set(keys)):
             raise ValueError("secondary_tags 的 facet+name 不能重复")
+        if (self.runner_up_tag is None) != (self.runner_up_confidence is None):
+            raise ValueError("runner_up_tag 与 runner_up_confidence 必须同时提供")
+        if self.runner_up_tag is not None and self.runner_up_tag == self.primary_tag:
+            raise ValueError("runner_up_tag 不能等于 primary_tag")
         return self
 
 
@@ -231,6 +242,7 @@ def validate_json_text(name: str, text: str, *, source: str | None = None) -> Ba
 
 
 __all__ = [
+    "ClassificationEvidenceOutput",
     "ClassificationOutput",
     "DynamicScoreOutput",
     "EventEnvelope",

@@ -5,8 +5,8 @@
 
 ## 1. 当前阶段
 
-- 当前：**P4 富化、摘要、分类与静态评分（S1–S4 完成：真实 LLM、enrichment、相关度 R、100 字摘要/校验；P4-S5 待开始；卡片见 P4-enrichment.md）**；
-- 下一阶段：**P4-S5 分类、置信度与边界案例**；P2/P3 CI 已验证、阶段 tag 待发布流程，P1 F5 保留；
+- 当前：**P4 富化、摘要、分类与静态评分（S1–S5 完成：真实 LLM、enrichment、R、摘要、分类/标签桶；P4-S6 待开始；卡片见 P4-enrichment.md）**；
+- 下一阶段：**P4-S6 特殊桶提名与桥接假设**；P2/P3 CI 已验证、阶段 tag 待发布流程，P1 F5 保留；
 - P0 的 `papers` / `runs` 已由迁移 `0002` 替换为正式 `paper` / `run` 及领域表；后续 schema 变更必须新增迁移。
 - 当前 head 为 `0006`（新增 enrichment 富化信号表）；G4 前禁止入队/推送/归档。
 
@@ -20,7 +20,7 @@
 4. `docs/phases/P1-domain-documents-llm.md`（P1 契约与 P2 交接）；
 5. `docs/phases/P2-onboarding.md`（完整契约、阶段验收与 P3 handoff）；
 6. `docs/phases/P3-ingestion.md`（P3 契约、验收与 P4 handoff）；
-7. `docs/phases/P4-enrichment.md`（当前卡片、P4-S4 交接与后续小阶段）；
+7. `docs/phases/P4-enrichment.md`（当前卡片、P4-S5 交接与后续小阶段）；
 8. 本文件。
 
 不要依赖聊天记录作为契约来源。关键决策写入 `docs/phases/` 或 ADR。

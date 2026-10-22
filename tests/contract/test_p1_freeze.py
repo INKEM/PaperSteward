@@ -142,7 +142,7 @@ def test_schema_registry_freeze() -> None:
 def test_prompt_registry_and_fake_provider_freeze() -> None:
     registry = default_registry()
     assert registry.names() == ("classification", "summary", "relevance", "repair")
-    assert registry.get("classification").version == "classification/v1"
+    assert registry.get("classification").version == "classification/v2"
     assert registry.get("summary").schema == "summary"
     assert registry.get("relevance").schema == "relevance"
     assert registry.get("repair").schema is None
