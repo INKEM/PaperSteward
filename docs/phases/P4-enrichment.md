@@ -1,8 +1,8 @@
 # P4 富化、摘要、分类与静态评分
 
 > 依据：大阶段开发计划 §3 P4、§5.3；设计 §6.5–6.7、§10。
-> 状态：**P4-S1–S8 实现完成；独立验收 F1–F5 已返工，待独立复验；P5 不开始。**
-> 验收报告：[P4-acceptance.md](P4-acceptance.md)。
+> 状态：**P4-S1–S8 实现完成；独立验收 F1–F5 已返工，独立复验通过；P4 可以关闭，P5 可开始。**
+> 验收/返工：[P4-acceptance.md](P4-acceptance.md)、[P4-acceptance-rework.md](P4-acceptance-rework.md)。
 > 前置：P3 验收通过；真实 LLM 接入不改变 P3 采集、去重与 G4 门禁。
 
 ## 小阶段卡片
@@ -644,12 +644,12 @@ e2e、操作文档共同构成本次竖切；未提前实现 P5 动态分或 P6 
 - **F5**：单一 `--llm-fixture` 只允许 `--paper`，批量逐篇或 `--live`。
 - 返工门：`make check` **833 passed / 4 e2e excluded**；integration **254 passed**；
   e2e **4 passed**；migrate 0008；demo 8065；Docker 本地重建 healthy（UID 10001，
-  head 0008）；CI 待 push 后重跑。
-- 结论：**返工完成，待独立复验；P5 不开始**。
+  head 0008）；CI run 39742936389（`f048a82`）与 main 39743222329（`453560c`）均全绿。
+- 结论：**返工完成，独立复验通过；P4 可以关闭，P5 可开始**。
 
 ## 与 P5 的边界
 
 - P4 只产出可审阅条目、摘要/分类/静态分；P5 才计算动态分、排序与解释；
 - 任何真实 LLM 调用都必须显式授权；备注默认外发仍需 P6/P8 的单独授权流程；
-- **P4 当前未通过独立验收（F1/F2 阻断）；P5 不得在 process 返工复验前开始。**
-  详见 [P4 验收报告](P4-acceptance.md)。
+- **P4 已通过独立复验；P5 可以开始。** 验收/返工复验见
+  [P4 验收报告](P4-acceptance.md) 与 [返工记录](P4-acceptance-rework.md) §6。

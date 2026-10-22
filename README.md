@@ -2,7 +2,7 @@
 
 本地优先的文献自动挖掘、优先级排序与每日推送系统。
 
-当前处于 **P4 富化、摘要、分类与静态评分（S1–S8 实现完成；独立验收 F1–F5 已返工，待独立复验）**：
+当前处于 **P4 富化、摘要、分类与静态评分（S1–S8 实现完成；F1–F5 返工复验通过）**：
 P0/P1 的配置、API、CLI、领域实体与文档/LLM 网关已完成；P2 的 G1–G4 初始化协商与
 确认门已通过；P3 已接入三个来源适配器、查询生成、保守去重、硬过滤、幂等入库与
 可审计运行报告；P4-S1 新增 OpenAI-compatible 真实 LLM 配置入口、显式 `--live`
@@ -14,9 +14,9 @@ needs_review；P4-S5 新增 classification/v2 主/副标签、runner-up/置信�
 distant bridge memo；P4-S7 新增确定性 A/E/S 静态分、版本冻结与独立
 static_score_snapshot（迁移 0007）；P4-S8 新增 process 编排、review_item 审核队列、
 review API/CLI 与真实 Uvicorn e2e（迁移 0008）。
-P4 独立验收发现的 enrichment 覆盖、无摘要整批失败等 F1–F5 已返工；
-**P5 在独立复验前不开始**。详见 [P4 验收报告](docs/phases/P4-acceptance.md)
-与 [返工记录](docs/phases/P4-acceptance-rework.md)。
+P4 独立验收发现的 enrichment 覆盖、无摘要整批失败等 F1–F5 已返工并通过独立复验；
+**P5 可以开始**。详见 [P4 验收报告](docs/phases/P4-acceptance.md)
+与 [返工复验](docs/phases/P4-acceptance-rework.md)。
 
 ## 当前能力
 

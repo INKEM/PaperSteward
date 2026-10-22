@@ -10,7 +10,8 @@
   缺摘要/无法摘要转为 `needs_review` 并打开 review item，不使批次回滚；process CLI
   捕获 LLMError、`--live` 在 provider=fake 时拒绝、单一 fixture 仅允许 `--paper`；
   A/E 可选 author/citation/repro/rigor 输入并在 CLI 输出 R/A/E/S。返工门
-  833 passed / 254 integration / 4 e2e；Docker 本地重建通过；CI 待 push 后重跑。
+  833 passed / 254 integration / 4 e2e；Docker 与 CI（run 39742936389 / main
+  39743222329）均通过；独立复验通过，P4 可以关闭。
 
 ### Added
 
@@ -18,9 +19,9 @@
   低置信度/边界/特殊提名写入 `review_item`；新增 review API/CLI（列表、批准、
   人工改标签）、迁移 `0008` 与真实 Uvicorn process→review e2e。无新依赖，
   测试仅用 FakeLLM/fixtures。
-- **P4 验收**：独立验收发现 F1–F5；F1/F2 阻断已返工（见 Fixed），P4 待独立复验，
-  P5 在复验通过前不开始。
-  详见 `docs/phases/P4-acceptance.md`。
+- **P4 验收**：独立验收发现 F1–F5；F1/F2 阻断已返工，独立复验通过；P4 可以关闭，
+  P5 可开始。详见 `docs/phases/P4-acceptance.md` 与
+  `docs/phases/P4-acceptance-rework.md`。
 - **P4-S7**：确定性静态分 A/E/S（venue/作者/引用、code/data/repro/rigor/open），
   confidence/中性值与分项 breakdown；迁移 `0007` 新增独立
   `static_score_snapshot`，同版本冻结、版本变化后按日期追加。完整每日

@@ -4,7 +4,7 @@
 > **验收 commit**：`239b732`（`feat(p4-s8): add offline processing and human review queue`）  
 > **验收日期**：2026-10-22  
 > **验收方式**：不修改实现代码；独立运行阶段门、全新 clone、Docker、CI、process/review 边界复现  
-> **结论**：**未通过（Not Accepted）**。本地阶段门、Docker 与 CI 均通过，但 `process` 存在两个阻断性功能缺陷：覆盖既有富化信号造成数据丢失，以及无摘要文献使整批处理失败而不是转人工审核。P4 需返工后复验，P5 不应在修复前开始。
+> **结论**：**未通过（Not Accepted）**。本报告记录 `239b732` 时点的原始验收；F1–F5 已在 `f048a82` 返工并经独立复验通过，最终结论见 [P4 返工复验](P4-acceptance-rework.md) §6。P4 可以关闭，P5 可开始。
 
 ---
 
