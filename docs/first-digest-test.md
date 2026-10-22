@@ -479,7 +479,7 @@ G1/G2 仍按 A1/A2 的步骤提交，只是文件换成 `var/first-digest/profil
    模型常输出 110–130 字；需要把约束放进 schema 并加强 repair 提示。
 4. **相关度校准**：`hashing-v1` 未校准，R 普遍偏低，在 55 门槛下召回不足。
 5. **临时绕行**：本次用 `var/first-digest/process_with_schema.py` 在运行时补
-   schema 并截断摘要，**不是产品代码**；修复后应删除。
+   schema 并截断摘要，**不是产品代码**；修复后已删除。
 
 ### 修复验证
 
@@ -487,6 +487,8 @@ G1/G2 仍按 A1/A2 的步骤提交，只是文件换成 `var/first-digest/profil
 - live `deepseek-chat` 回归（不带测试包装）：
   - CycleVLA：`relevance/v2` 返回扁平四维分；`summary/v3+repair` 通过，78 字。
   - GAVEL：`relevance/v2` 扁平；`summary/v3` 通过，92 字。
+  - GAVEL：`classification/v3` 返回 T01（0.9）；`special_nomination/v2+repair`
+    无提名。
 - 修复分支：`fix/llm-prompt-schema`（提交 `8f498e2`）。
 
 ### 后续
