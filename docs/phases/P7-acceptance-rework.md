@@ -265,5 +265,49 @@ golden/实际队列对照，所以 1015 个测试未捕获。
 | `make migrate-check` | 0014 ↔ 0015 upgrade/downgrade/upgrade 通过 |
 | `make demo` / `make secret-scan` | 通过 |
 
-仍未完成：再次独立复验、fresh clone（上次 PyPI SSL 阻塞）、Docker（buildx 沙箱
-拒绝）、远程 CI（返工分支未推送）。**P7 仍 Not Accepted；P7 tag/Beta/P8 继续阻塞。**
+二次返工完成后的独立复验见 §12；此前 §11 生成时仍未复验，现结论以 §12 为准。
+Docker 与远程 CI 仍待发布流程；P7 tag/Beta 不随功能验收自动发布。
+
+## 12. 再次独立复验结论（2026-10-22）
+
+> **结论：Accepted（功能/返工层面）。** 复验对象 `d8918de`（二次返工：N4/N3/N2 展示）；
+> F1–F3 保持闭环，N1/N2 保持修复，N3/N4 二次修复经独立探针通过；无新增阻断项。
+
+### 12.1 复验结果
+
+- **F1–F3**：沿用 §10.1 的独立复跑结果，未发现回归；定向治理/特殊桶测试均通过。
+- **N1**：`limit=1` 时 `items=1, total=2`，API/CLI 一致。
+- **N2**：`reviewed_by` 持久化；API `ShelfItemRead` 新增 `tier_reviewed_by`，CLI 已可见。
+- **N3**：`api/governance.preview` 与 `cli/config.preview` 在未显式给日期时通过
+  `bound_context` + `runtime_local_day` 取 runtime 本地日；独立探针在
+  `2026-10-21T18:00Z`（Asia/Shanghai 2026-10-22 02:00）得到
+  `preview_day=2026-10-22`、`effective=2026-10-23`，不再与 10-22 静态快照冲突。
+- **N4**：`_build_impact` 的 static/dynamic 输入改为未展开子权重，再
+  `compute_priority(reset=True)`；独立探针用同样组件值计算 P，并与确认后的生效日队列
+  对照，`new_priority`/`new_rank_score` 与 queue `priority`/`rank_score` 在 0.1
+  舍入内一致（示例 high-e 约 71.7，而非此前的 43.8）。
+- 未发现新的契约级缺陷。
+
+### 12.2 门与验证环境
+
+| 检查 | 结果 |
+|---|---|
+| `make check` | **1017 passed / 4 deselected**；ruff **270** 文件；strict mypy **132** 源文件 |
+| `make test-integration` | **338 passed** |
+| `make e2e` | **4 passed** |
+| `make migrate-check` | 0014 ↔ 0015 upgrade/downgrade/upgrade 通过 |
+| `make demo` / `make secret-scan` | 通过 |
+| 全新 clone（Python 3.14.7，`d8918de`） | check **1017**、integration **338**、e2e **4**、migrate/demo/secret 通过，工作树干净 |
+| N4/N3 独立探针 | 2 passed；数值/本地日断言通过 |
+
+**发布门仍未完成**：返工分支 `fix/p7-rework-n4-n3`/`d8918de` 未推送，PR #10 合并的是
+原始 `6a877e9`（main `56382c0`），因此没有 `d8918de` 的远程 CI；本地 Docker 镜像
+未重建到 `d8918de`。这不改变功能验收结论，但在打 P7 tag/Beta 前必须完成
+merge、CI 与 Docker build/run。
+
+### 12.3 状态
+
+- P7 返工功能验收 **Accepted**；P7 tag/Beta 仍未发布。
+- P8 可以在返工分支合并到 main、CI/Docker 发布门完成后开始；当前不得把本地未推送分支
+  当作发布版本。
+- 未修改实现代码；临时探针已删除。

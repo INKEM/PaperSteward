@@ -26,16 +26,17 @@
   子权重，再 compute_priority），新增 preview 与生效日队列 priority/rank_score 数值
   对照；API/CLI config preview 缺省日期改用 runtime local day；API 暴露
   `tier_reviewed_by`。`make check` 1017 passed、integration 338、e2e 4。
-  再次独立复验未执行，P7 仍 Not Accepted，tag/Beta/P8 阻塞。
+  2026-10-22 二次独立复验 Accepted（功能层面）；P7 tag/Beta 与 merge/CI/Docker 发布门
+  仍待完成，P8 在合并后开始。
 
 - **P7 独立验收返工**：F1 治理 allowlist（仅 8 个线性权重，非权重字段 400）；
   F2 确认后处理/提升的文献补写生效日静态快照；F3 `shelf reopen` 受控重开 rejected
   提名并审计。N1 changes 全量 total；N2 迁移 `0015` 持久化档位 `reviewed_by`；
-  N3 runtime 本地日且不污染 binding hash；N4 预览改按 rank_score。（N4 的层权重
-  输入存在重复计算回归，见 2026-10-22 独立复验。）新增 5 项回归；`make check` 1015
-  passed、integration 336、e2e 4、migrate 0014↔0015 通过；fresh clone 同数通过。
-  返工后独立复验仍为 Not Accepted（N4 preview 43.8 vs 实际 71.7；N3 preview 缺省 UTC），
-  P7 tag/Beta/P8 阻塞。
+  N3 runtime 本地日且不污染 binding hash；N4 预览改按 rank_score。二次返工修正 N4
+  层权重重复计算、N3 config preview 本地日和 N2 API reviewer 展示；`make check` 1017
+  passed、integration 338、e2e 4、migrate 0014↔0015 通过；fresh clone 同数通过。
+  2026-10-22 二次独立复验 Accepted（功能层面）；P7 tag/Beta 与 merge/CI/Docker 发布门
+  仍待完成，P8 在合并后开始。
 
 - **P7-S6**：P7 最终 e2e 与特殊桶提升。真实 Uvicorn/CLI 链路新增 5 篇合成论文，
   覆盖特殊桶 review/distant/classic、档位/桥接/经典依据、视图重排、权重预览/确认与
