@@ -227,8 +227,14 @@ def _static_snapshot(
     return persist_static_snapshot(session, snapshot)
 
 
-def ensure_topic_buckets(session: Session, taxonomy: Taxonomy) -> dict[str, Bucket]:
-    """从已确认分类法补齐激活主题桶；已存在的桶保持不变。"""
+def ensure_topic_buckets(
+    session: Session, taxonomy: Taxonomy, *, persist: bool = True
+) -> dict[str, Bucket]:
+    """从已确认分类法补齐激活主题桶；已存在的桶保持不变。
+
+    ``persist=False`` 只构建内存映射不写库：并行 worker 的只读阶段用它取得分类
+    所需桶映射；写阶段（BEGIN IMMEDIATE）再次以默认参数调用完成落库。
+    """
     repository = BucketRepository(session)
     existing = {
         bucket.tag_code: bucket
@@ -248,32 +254,78 @@ def ensure_topic_buckets(session: Session, taxonomy: Taxonomy) -> dict[str, Buck
             bucket_type=BucketType.TOPIC,
             tag_code=tag.code,
         )
-        repository.add(bucket)
+        if persist:
+            repository.add(bucket)
         existing[tag.code] = bucket
     return existing
 
 
-def process_paper(
+def _require_processable(paper: Paper) -> None:
+    if paper.status not in _ALLOWED_INPUT_STATUSES:
+        raise ConflictError("只处理 screened/enriched/summarized 文献")
+
+
+def persist_triage(
     session: Session,
+    paper_id: str,
+    profile: ResearchProfile,
+    relevance: RelevanceResult,
+    *,
+    now: datetime,
+) -> None:
+    """落初筛分析载荷；独立于评估，供并行 worker 在短写事务中调用。"""
+    PaperAnalysisRepository(session).save(
+        paper_id,
+        {
+            "stage": "triage",
+            "profile_id": profile.id,
+            "profile_version": profile.version,
+            "relevance": relevance.as_json(),
+        },
+        tuple(f"relevance:{reason}" for reason in relevance.reasons),
+        now=now,
+    )
+
+
+def triage_paper(
+    session: Session,
+    paper: Paper,
+    *,
+    profile: ResearchProfile,
+    gateway: LLMGateway,
+    embedding_provider: EmbeddingProvider,
+    now: datetime,
+) -> RelevanceResult:
+    """初筛：只做相关度评估并落部分分析，不改变状态、不消耗后续模型调用。
+
+    返回的 R 用于排序选样；注定低于门槛的论文在此止步，省去摘要/分类/特殊桶
+    三次模型调用。写入只发生在评估完成之后，缩短 SQLite 写锁持有时间。
+    """
+    _require_processable(paper)
+    relevance = evaluate_relevance(profile, paper, gateway, embedding_provider)
+    persist_triage(session, paper.id, profile, relevance, now=now)
+    return relevance
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentPlan:
+    """深处理的模型计算结果；计算与落库分离，写事务只做持久化。"""
+
+    summary: SummaryResult | None
+    summary_reason: str | None
+    classification: ClassificationResult
+    special: SpecialNominationResult
+
+
+def compute_enrichment(
     paper: Paper,
     *,
     profile: ResearchProfile,
     taxonomy: Taxonomy,
     topic_buckets: Mapping[str, Bucket],
-    config: ScoringConfig,
     gateway: LLMGateway,
-    embedding_provider: EmbeddingProvider,
-    now: datetime,
-    score_date: date | None = None,
-    author_scores: tuple[float, ...] = (),
-    citation_percentile: float | None = None,
-    reproducibility: float | None = None,
-    rigor: float | None = None,
-) -> ProcessOutcome:
-    """处理一篇 screened 文献；P4 不计算动态分/P。"""
-    if paper.status not in _ALLOWED_INPUT_STATUSES:
-        raise ConflictError("只处理 screened/enriched/summarized 文献")
-    relevance = evaluate_relevance(profile, paper, gateway, embedding_provider)
+) -> EnrichmentPlan:
+    """深处理的全部模型调用；不触碰数据库，可安全运行在任何事务之外。"""
     summary: SummaryResult | None = None
     summary_reason: str | None = None
     if not paper.abstract:
@@ -281,7 +333,6 @@ def process_paper(
     else:
         try:
             summary = generate_summary(paper, gateway)
-            persist_summary(session, summary)
         except SummaryError as exc:
             summary_reason = (
                 "summary:missing_abstract"
@@ -289,9 +340,38 @@ def process_paper(
                 else "summary:unavailable"
             )
     classification = classify_paper(paper, taxonomy, topic_buckets, gateway)
-    persist_classification(session, classification)
     special = nominate_special(paper, profile, gateway)
-    persist_nominations(session, special, now=now)
+    return EnrichmentPlan(
+        summary=summary,
+        summary_reason=summary_reason,
+        classification=classification,
+        special=special,
+    )
+
+
+def persist_enrichment_results(
+    session: Session,
+    paper: Paper,
+    *,
+    plan: EnrichmentPlan,
+    profile: ResearchProfile,
+    taxonomy: Taxonomy,
+    config: ScoringConfig,
+    relevance: RelevanceResult,
+    now: datetime,
+    score_date: date | None = None,
+    author_scores: tuple[float, ...] = (),
+    citation_percentile: float | None = None,
+    reproducibility: float | None = None,
+    rigor: float | None = None,
+) -> ProcessOutcome:
+    """把深处理计算结果落库并迁入 classified；不含模型调用，宜在短写事务中执行。"""
+    summary = plan.summary
+    summary_reason = plan.summary_reason
+    if summary is not None:
+        persist_summary(session, summary)
+    persist_classification(session, plan.classification)
+    persist_nominations(session, plan.special, now=now)
     static = _static_snapshot(
         session,
         paper,
@@ -320,7 +400,7 @@ def process_paper(
         after_day=static.score_date,
         now=now,
     )
-    reasons = _quality_flags(relevance, summary, summary_reason, classification)
+    reasons = _quality_flags(relevance, summary, summary_reason, plan.classification)
     payload = {
         "taxonomy_id": taxonomy.id,
         "taxonomy_version": taxonomy.version,
@@ -330,15 +410,15 @@ def process_paper(
         "relevance": relevance.as_json(),
         "summary": summary.as_json() if summary is not None else None,
         "summary_error": summary_reason,
-        "classification": classification.as_json(),
-        "special": special.as_json(),
+        "classification": plan.classification.as_json(),
+        "special": plan.special.as_json(),
         "static": {
             "static_score": static.static_score,
             "confidence": static.confidence,
             "input_hash": static.input_hash,
         },
     }
-    reasons += tuple(f"special:{reason}" for reason in special.reasons)
+    reasons += tuple(f"special:{reason}" for reason in plan.special.reasons)
     PaperAnalysisRepository(session).save(paper.id, payload, reasons, now=now)
     status = _move_to_classified(session, paper, now=now)
     auto_shelved = auto_decide_special(session, paper.id, now=now)
@@ -351,9 +431,96 @@ def process_paper(
         auto_shelved=auto_shelved,
         relevance=relevance,
         summary=summary,
-        classification=classification,
-        special=special,
+        classification=plan.classification,
+        special=plan.special,
         static=static,
+    )
+
+
+def enrich_paper(
+    session: Session,
+    paper: Paper,
+    *,
+    profile: ResearchProfile,
+    taxonomy: Taxonomy,
+    topic_buckets: Mapping[str, Bucket],
+    config: ScoringConfig,
+    gateway: LLMGateway,
+    relevance: RelevanceResult,
+    now: datetime,
+    score_date: date | None = None,
+    author_scores: tuple[float, ...] = (),
+    citation_percentile: float | None = None,
+    reproducibility: float | None = None,
+    rigor: float | None = None,
+) -> ProcessOutcome:
+    """对初筛入选的文献补全摘要/分类/特殊桶/静态分并迁入 classified。
+
+    ``relevance`` 接受初筛结果避免重复模型调用。三个模型计算先于全部写库执行，
+    SQLite 写锁只在落库阶段持有。
+    """
+    _require_processable(paper)
+    plan = compute_enrichment(
+        paper, profile=profile, taxonomy=taxonomy, topic_buckets=topic_buckets, gateway=gateway
+    )
+    return persist_enrichment_results(
+        session,
+        paper,
+        plan=plan,
+        profile=profile,
+        taxonomy=taxonomy,
+        config=config,
+        relevance=relevance,
+        now=now,
+        score_date=score_date,
+        author_scores=author_scores,
+        citation_percentile=citation_percentile,
+        reproducibility=reproducibility,
+        rigor=rigor,
+    )
+
+
+def process_paper(
+    session: Session,
+    paper: Paper,
+    *,
+    profile: ResearchProfile,
+    taxonomy: Taxonomy,
+    topic_buckets: Mapping[str, Bucket],
+    config: ScoringConfig,
+    gateway: LLMGateway,
+    embedding_provider: EmbeddingProvider,
+    now: datetime,
+    score_date: date | None = None,
+    author_scores: tuple[float, ...] = (),
+    citation_percentile: float | None = None,
+    reproducibility: float | None = None,
+    rigor: float | None = None,
+) -> ProcessOutcome:
+    """处理一篇 screened 文献；P4 不计算动态分/P。"""
+    relevance = triage_paper(
+        session,
+        paper,
+        profile=profile,
+        gateway=gateway,
+        embedding_provider=embedding_provider,
+        now=now,
+    )
+    return enrich_paper(
+        session,
+        paper,
+        profile=profile,
+        taxonomy=taxonomy,
+        topic_buckets=topic_buckets,
+        config=config,
+        gateway=gateway,
+        relevance=relevance,
+        now=now,
+        score_date=score_date,
+        author_scores=author_scores,
+        citation_percentile=citation_percentile,
+        reproducibility=reproducibility,
+        rigor=rigor,
     )
 
 

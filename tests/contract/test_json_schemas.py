@@ -122,6 +122,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         "special_nomination",
         "event",
         "profile_extraction",
+        "query_planning",
     }
 
     classification = schema_for("classification")

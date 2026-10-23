@@ -69,6 +69,8 @@ class SnapshotResponse(BaseModel):
     created: int
     existing: int
     excluded: list[Exclusion]
+    # 保底填充入队的篇数（仅豁免 below_relevance_gate，快照 reasons 带 quota_fill 标记）。
+    quota_filled: int = 0
 
 
 class BacklogFilters(BaseModel):

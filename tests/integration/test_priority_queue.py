@@ -280,3 +280,47 @@ def test_completely_missing_summary_is_excluded(client, migrated_engine):
         report = create_snapshots(session, DAY, now=NOW)
         assert report.created == 0
         assert report.excluded[0].reasons == ["summary_unavailable"]
+
+
+def test_quota_fill_exempts_only_relevance_gate_and_respects_floor(client, migrated_engine):
+    """保底填充：按 R 降序补足、下限截断；特殊桶等其他淘汰理由不豁免。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "fill-54", r=54)
+        seed(session, "fill-41", r=41)
+        seed(session, "too-low", r=30)
+        seed(session, "blocked", r=52, special=True)
+        report = create_snapshots(session, DAY, now=NOW, min_queue_yield=4, relevance_floor=40.0)
+        # 只有 below_relevance_gate 一个理由的论文可被填充：54 → 41，30 低于下限，
+        # special_bucket 不豁免。
+        assert report.quota_filled == 2
+        assert report.created == 2
+        excluded = {item.paper_id: item.reasons for item in report.excluded}
+        assert excluded["too-low"] == ["below_relevance_gate"]
+        assert excluded["blocked"] == ["special_bucket"]
+        queued = read_queue(session, DAY, now=NOW)
+        assert queued.total == 2
+        assert [item.paper_id for item in queued.items] == ["fill-54", "fill-41"]
+        assert all("quota_fill" in item.explanation.reasons for item in queued.items)
+
+
+def test_quota_fill_shortfall_reported_when_all_below_floor(client, migrated_engine):
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "low", r=39)
+        report = create_snapshots(session, DAY, now=NOW, min_queue_yield=1, relevance_floor=40.0)
+        assert report.quota_filled == 0
+        assert report.created == 0
+        assert report.excluded[0].reasons == ["below_relevance_gate"]
+        assert read_queue(session, DAY, now=NOW).total == 0
+
+
+def test_default_snapshot_ignores_quota_params(client, migrated_engine):
+    """不传 min_queue_yield 的路径（周任务、手动刷新）行为不变。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "gate", r=50)
+        report = create_snapshots(session, DAY, now=NOW)
+        assert report.quota_filled == 0
+        assert report.created == 0
+        assert report.excluded[0].reasons == ["below_relevance_gate"]

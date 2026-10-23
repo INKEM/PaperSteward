@@ -104,6 +104,8 @@ class LLMRuntimeConfig:
     source: Literal["db", "env"]
     updated_at: datetime | None = None
     api_key_from_env: bool = False
+    cache_enabled: bool = True
+    concurrency: int = 4
 
     @classmethod
     def from_settings(cls, settings: Settings) -> LLMRuntimeConfig:
@@ -119,6 +121,8 @@ class LLMRuntimeConfig:
             authorized=False,
             source="env",
             api_key_from_env=settings.llm_api_key is not None,
+            cache_enabled=settings.llm_cache_enabled,
+            concurrency=settings.llm_concurrency,
         )
 
     @property
@@ -201,6 +205,8 @@ def _payload_to_config(
         source="db",
         updated_at=updated_at,
         api_key_from_env=api_key_from_env,
+        cache_enabled=settings.llm_cache_enabled,
+        concurrency=settings.llm_concurrency,
     )
 
 

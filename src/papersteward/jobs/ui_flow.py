@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Literal
@@ -21,21 +22,37 @@ from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, ConflictError, InvalidRequestError, NotFoundError
 from papersteward.llm import LLMGateway, build_llm_provider
+from papersteward.llm.cache import DatabaseLLMCache
 from papersteward.llm.errors import LLMError, LLMTimeoutError, LLMValidationError
-from papersteward.llm.runtime import resolve_llm_config
+from papersteward.llm.runtime import LLMRuntimeConfig, resolve_llm_config
 from papersteward.onboarding.intake import ensure_draft_stage, materials_text, run_extraction
 from papersteward.pipeline.context import bound_context
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
 from papersteward.pipeline.ingest import ingest
-from papersteward.pipeline.process import process_paper, reconcile_legacy_reviews
+from papersteward.pipeline.process import (
+    ProcessOutcome,
+    compute_enrichment,
+    ensure_topic_buckets,
+    persist_enrichment_results,
+    persist_triage,
+    reconcile_legacy_reviews,
+)
+from papersteward.pipeline.relevance import RelevanceResult, evaluate_relevance
 from papersteward.scoring.queue import refresh_queue
-from papersteward.sources.contracts import QuerySpec
+from papersteward.scoring.service import read_scoring_config
 from papersteward.sources.http import SourceHTTP
+from papersteward.sources.planner import QueryPlan, plan_queries
 from papersteward.storage import session_scope
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import PaperRepository, RunRepository
 
 logger = logging.getLogger(__name__)
+
+# 挖掘漏斗：规划轮数、初筛候选上限系数与每波深处理篇数系数。
+MAX_PLAN_ROUNDS = 3
+TRIAGE_POOL_FACTOR = 4
+TRIAGE_POOL_MINIMUM = 24
+ENRICH_WAVE_FACTOR = 2
 
 
 class FlowRequest(BaseModel):
@@ -43,8 +60,10 @@ class FlowRequest(BaseModel):
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     kind: Literal["sync", "refresh", "extract"]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
-    query: str = Field(default="", max_length=500)
-    limit: int = Field(default=10, ge=1, le=50)
+    # 可选关注点：作为品味信号喂给检索规划 Agent；不填则纯按档案与已读历史决定。
+    focus: str = Field(default="", max_length=500)
+    # 期望入队篇数；0 表示使用评分配置中的 min_queue_yield 默认值。
+    target: int = Field(default=0, ge=0, le=50)
 
 
 def processing_problem(session: Session, settings: Settings) -> str | None:
@@ -265,7 +284,9 @@ class UIFlowManager:
                 self.pending.task_done()
 
     def _update(self, identity: str, **values: Any) -> None:
-        with session_scope(self.factory) as session:
+        # immediate：进度写与并行 worker 的短写事务竞争时直接拿写锁等待，
+        # 避免"读 run 行→写回"的升级路径在 busy timeout 之外立即失败。
+        with session_scope(self.factory, immediate=True) as session:
             row = session.get(RunRow, identity)
             assert row is not None
             row.stats_json = {**row.stats_json, **values, "updated_at": utc_now().isoformat()}
@@ -278,12 +299,7 @@ class UIFlowManager:
             request = FlowRequest(run_id=identity, **report.stats_json["request"])
         try:
             if request.kind == "sync":
-                self._update(identity, stage="collecting")
-                self.collect(request)
-                self._update(identity, stage="processing", completed=["collecting"])
-                self.process(request)
-                self._update(identity, stage="refreshing", completed=["collecting", "processing"])
-                self.refresh(request)
+                self._run_sync(request)
                 completed = ["collecting", "processing", "refreshing"]
             elif request.kind == "extract":
                 self._update(identity, stage="extracting", extract_note="正在读取材料与历史意见…")
@@ -342,6 +358,29 @@ class UIFlowManager:
                     ]
                 }
 
+    def _target_and_floor(self) -> tuple[int, float]:
+        """期望入队篇数与保底填充下限；请求未指定时取评分配置默认。"""
+        with session_scope(self.factory) as session:
+            config = read_scoring_config(session)
+        if config is None:
+            return 5, 40.0
+        return int(config.gates.min_queue_yield), float(config.gates.quota_fill_relevance_floor)
+
+    def _build_gateway(self) -> tuple[LLMGateway, Any, LLMRuntimeConfig]:
+        with session_scope(self.factory) as session:
+            llm_config = resolve_llm_config(session, self.settings)
+        if problem := llm_config.readiness_problem():
+            raise InvalidRequestError(problem)
+        provider = build_llm_provider(llm_config)
+        cache = DatabaseLLMCache(self.factory) if llm_config.cache_enabled else None
+        gateway = LLMGateway(
+            provider,
+            max_attempts=llm_config.max_attempts,
+            timeout_s=llm_config.timeout_s,
+            cache=cache,
+        )
+        return gateway, provider, llm_config
+
     def refresh(self, request: FlowRequest) -> None:
         with session_scope(self.factory) as session:
             report = refresh_queue(session, now=utc_now())
@@ -356,11 +395,9 @@ class UIFlowManager:
             else f"队列共 {report.queue_total} 篇",
         )
 
-    def collect(self, request: FlowRequest) -> None:
+    def collect(self, request: FlowRequest, plan: QueryPlan) -> None:
         import argparse
 
-        if not request.query.strip():
-            raise InvalidRequestError("请填写检索词后再同步")
         clients: list[SourceHTTP] = []
         try:
             adapters = _adapters(
@@ -373,7 +410,7 @@ class UIFlowManager:
                     session,
                     adapters,
                     run_id="ui-ingest-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:40],
-                    queries=[QuerySpec(keywords=(request.query,), max_results=request.limit)],
+                    queries=[planned.spec for planned in plan.queries],
                 )
             self._update(request.run_id, collected=dict(report.stats_json))
             if report.status is RunStatus.FAILED:
@@ -382,90 +419,333 @@ class UIFlowManager:
             for client in clients:
                 client.close()
 
-    def process(self, request: FlowRequest) -> None:
+    def _plan(
+        self,
+        request: FlowRequest,
+        gateway: LLMGateway,
+        target: int,
+        *,
+        round_index: int,
+        used_keywords: str = "",
+        feedback: str = "",
+    ) -> QueryPlan:
         with session_scope(self.factory) as session:
-            llm_config = resolve_llm_config(session, self.settings)
-        if problem := llm_config.readiness_problem():
-            raise InvalidRequestError(problem)
-        provider = build_llm_provider(llm_config)
-        try:
-            gateway = LLMGateway(
-                provider,
-                max_attempts=llm_config.max_attempts,
-                timeout_s=llm_config.timeout_s,
+            plan = plan_queries(
+                session,
+                gateway,
+                focus_hint=request.focus,
+                target=target,
+                round_index=round_index,
+                used_keywords=used_keywords,
+                round_feedback=feedback,
             )
-            with session_scope(self.factory) as session:
-                reconciled = reconcile_legacy_reviews(session, now=utc_now())
-                identities = list(
-                    session.scalars(
-                        select(PaperRow.id)
-                        .where(
-                            PaperRow.status.in_(
-                                [
-                                    PaperStatus.SCREENED.value,
-                                    PaperStatus.ENRICHED.value,
-                                    PaperStatus.SUMMARIZED.value,
-                                ]
-                            )
-                        )
-                        .order_by(PaperRow.first_seen_at, PaperRow.id)
-                        .limit(request.limit)
-                    )
-                )
-            processed = auto_classified = auto_shelved = skipped_no_summary = 0
-            quality_flags: dict[str, list[str]] = {}
+        self._update(request.run_id, query_plan=plan.as_json())
+        return plan
+
+    def _triage_one(self, gateway: LLMGateway, paper_id: str) -> RelevanceResult:
+        """单篇初筛：只读上下文 → 模型评估 → BEGIN IMMEDIATE 短写事务落分析。
+
+        读阶段完全不写库（不建主题桶），模型计算在事务外；写阶段从第一句就
+        持有 SQLite 写锁，避免读-写升级撞 BUSY_SNAPSHOT。
+        """
+        with session_scope(self.factory) as session:
+            profile, *_rest = _processor_context(session, utc_now(), ensure_buckets=False)
+            paper = PaperRepository(session).get(paper_id)
+            assert paper is not None
+        relevance = evaluate_relevance(profile, paper, gateway, HashingEmbeddingProvider())
+        with session_scope(self.factory, immediate=True) as session:
+            persist_triage(session, paper.id, profile, relevance, now=utc_now())
+        return relevance
+
+    def _triage_candidates(
+        self, request: FlowRequest, gateway: LLMGateway, cap: int, workers: int
+    ) -> tuple[list[RelevanceResult], int]:
+        """对 screened 候选并行初筛；返回按 R 降序的结果与无摘要跳过数。
+
+        初筛只做相关度评估（每篇一次模型调用）；注定入不了队的论文在此止步，
+        省去摘要/分类/特殊桶三次调用。写库只发生在评估之后，缩短写锁持有。
+        """
+        with session_scope(self.factory) as session:
+            reconciled = reconcile_legacy_reviews(session, now=utc_now())
+            rows = session.execute(
+                select(PaperRow.id, PaperRow.title, PaperRow.abstract)
+                .where(PaperRow.status == PaperStatus.SCREENED.value)
+                .order_by(PaperRow.published_at.desc().nullslast(), PaperRow.first_seen_at)
+            ).all()
+        with_abstract = [
+            (paper_id, title) for paper_id, title, abstract in rows if abstract and abstract.strip()
+        ]
+        skipped = len(rows) - len(with_abstract)
+        selected = with_abstract[:cap]
+        if selected:
             self._update(
                 request.run_id,
-                processing_total=len(identities),
+                reconciled=reconciled,
+                processing_phase="triage",
+                processing_total=len(selected),
                 processed=0,
                 current_index=0,
                 current_paper_title=None,
-                reconciled=reconciled,
-                auto_classified=0,
-                auto_shelved=0,
-                skipped_no_summary=0,
+                skipped_no_abstract=skipped,
             )
-            for index, paper_id in enumerate(identities):
+        else:
+            # 空轮不重置进度统计：后续轮次的 triage 不应抹掉已完成的深处理计数。
+            self._update(request.run_id, reconciled=reconciled, skipped_no_abstract=skipped)
+        results: list[RelevanceResult] = []
+        if selected:
+            with ThreadPoolExecutor(
+                max_workers=min(workers, len(selected)), thread_name_prefix="ps-triage"
+            ) as pool:
+                futures = {
+                    pool.submit(self._triage_one, gateway, paper_id): (paper_id, title)
+                    for paper_id, title in selected
+                }
+                pending = set(futures)
+                failure: BaseException | None = None
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_EXCEPTION)
+                    for future in done:
+                        paper_id, title = futures[future]
+                        if failure is not None:
+                            continue
+                        try:
+                            error = future.exception()
+                        except BaseException as exc:  # noqa: BLE001 - 已取消等异常按失败处理
+                            error = exc
+                        if error is not None or self._is_stopping(request.run_id):
+                            failure = error or InvalidRequestError("任务已停止")
+                            continue
+                        results.append(future.result())
+                        self._update(
+                            request.run_id,
+                            processed=len(results),
+                            current_index=len(results),
+                            current_paper_title=title,
+                        )
+                    if failure is not None:
+                        for future in pending:
+                            future.cancel()
+                        assert failure is not None
+                        raise failure
+        results.sort(key=lambda item: -item.R)
+        return results, skipped
+
+    def _enrich_one(
+        self, gateway: LLMGateway, paper_id: str, relevance: RelevanceResult
+    ) -> ProcessOutcome:
+        """单篇深处理：只读上下文 → 三次模型计算 → BEGIN IMMEDIATE 短写事务落库。"""
+        with session_scope(self.factory) as session:
+            profile, taxonomy, scoring, buckets, day = _processor_context(
+                session, utc_now(), ensure_buckets=False
+            )
+            paper = PaperRepository(session).get(paper_id)
+            assert paper is not None
+        plan = compute_enrichment(
+            paper, profile=profile, taxonomy=taxonomy, topic_buckets=buckets, gateway=gateway
+        )
+        with session_scope(self.factory, immediate=True) as session:
+            ensure_topic_buckets(session, taxonomy)
+            paper = PaperRepository(session).get(paper_id)
+            assert paper is not None
+            return persist_enrichment_results(
+                session,
+                paper,
+                plan=plan,
+                profile=profile,
+                taxonomy=taxonomy,
+                config=scoring,
+                relevance=relevance,
+                now=utc_now(),
+                score_date=day,
+            )
+
+    def _enrich_wave(
+        self,
+        request: FlowRequest,
+        gateway: LLMGateway,
+        batch: list[RelevanceResult],
+        workers: int,
+    ) -> tuple[int, int, dict[str, list[str]]]:
+        """对初筛入选的一批论文并行深处理；返回 (auto_shelved, skipped_no_summary, flags)。"""
+        self._update(
+            request.run_id,
+            processing_phase="enrich",
+            processing_total=len(batch),
+            processed=0,
+            current_index=0,
+        )
+        outcomes: list[ProcessOutcome] = []
+        titles: dict[str, str] = {}
+        with session_scope(self.factory) as session:
+            for item in batch:
+                title = session.scalar(select(PaperRow.title).where(PaperRow.id == item.paper_id))
+                titles[item.paper_id] = str(title or "")
+        with ThreadPoolExecutor(
+            max_workers=min(workers, len(batch)), thread_name_prefix="ps-enrich"
+        ) as pool:
+            futures = {
+                pool.submit(self._enrich_one, gateway, item.paper_id, item): item.paper_id
+                for item in batch
+            }
+            pending = set(futures)
+            failure: BaseException | None = None
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_EXCEPTION)
+                for future in done:
+                    paper_id = futures[future]
+                    if failure is not None:
+                        continue
+                    try:
+                        error = future.exception()
+                    except BaseException as exc:  # noqa: BLE001
+                        error = exc
+                    if error is not None or self._is_stopping(request.run_id):
+                        failure = error or InvalidRequestError("任务已停止")
+                        continue
+                    outcomes.append(future.result())
+                    self._update(
+                        request.run_id,
+                        processed=len(outcomes),
+                        current_index=len(outcomes),
+                        current_paper_title=titles.get(paper_id),
+                    )
+                if failure is not None:
+                    for future in pending:
+                        future.cancel()
+                    assert failure is not None
+                    raise failure
+        auto_shelved = sum(outcome.auto_shelved for outcome in outcomes)
+        skipped_no_summary = sum(
+            1
+            for outcome in outcomes
+            if outcome.summary is None or not outcome.summary.summary.summary_100.strip()
+        )
+        flags: dict[str, list[str]] = {}
+        for outcome in outcomes:
+            if outcome.quality_flags:
+                flags[outcome.paper_id] = list(outcome.quality_flags)
+        return auto_shelved, skipped_no_summary, flags
+
+    def _refresh_for_sync(
+        self, request: FlowRequest, *, target: int, floor: float, fill: bool
+    ) -> set[str]:
+        with session_scope(self.factory) as session:
+            report = refresh_queue(
+                session,
+                now=utc_now(),
+                min_queue_yield=target if fill else None,
+                relevance_floor=floor,
+            )
+        self._update(
+            request.run_id,
+            queue_total=report.queue_total,
+            added_ids=report.added_ids,
+            queue_created=report.created,
+            queue_existing=report.existing,
+            quota_filled=report.quota_filled,
+            queue_message="暂无合格候选"
+            if report.queue_total == 0
+            else f"队列共 {report.queue_total} 篇",
+        )
+        return set(report.added_ids)
+
+    def _run_sync(self, request: FlowRequest) -> None:
+        """挖掘漏斗：Agent 检索规划 → 初筛排序 → 按名次深处理 → 配额循环 → 保底填充。
+
+        目标是每次至少入队 ``target`` 篇：先深处理最相关的候选，正常门槛下不足时
+        继续处理次优候选，候选耗尽则追加一轮检索规划；全部耗尽后才以
+        ``quota_fill`` 标记降门槛补足，仍不足则如实报告缺口。
+        """
+        gateway, provider, llm_config = self._build_gateway()
+        try:
+            configured_target, floor = self._target_and_floor()
+            target = request.target or configured_target or 5
+            if target <= 0:
+                raise InvalidRequestError("期望入队篇数必须大于 0")
+            triage_cap = max(target * TRIAGE_POOL_FACTOR, TRIAGE_POOL_MINIMUM)
+            wave_size = max(target * ENRICH_WAVE_FACTOR, target + 3)
+            workers = max(1, llm_config.concurrency)
+            ranked: list[RelevanceResult] = []
+            added: set[str] = set()
+            used_keywords = ""
+            skipped_no_abstract_total = 0
+            totals = {"enriched": 0, "auto_shelved": 0, "skipped_no_summary": 0}
+            quality_flags: dict[str, list[str]] = {}
+            plans: list[dict[str, Any]] = []
+            for round_index in range(1, MAX_PLAN_ROUNDS + 1):
                 if self.stopped.is_set():
                     raise InvalidRequestError("应用正在停止")
-                if self._is_stopping(request.run_id):
-                    raise InvalidRequestError("任务已停止")
-                with session_scope(self.factory) as session:
-                    title = session.scalar(select(PaperRow.title).where(PaperRow.id == paper_id))
-                self._update(request.run_id, current_index=index + 1, current_paper_title=title)
-                with session_scope(self.factory) as session:
-                    now = utc_now()
-                    profile, taxonomy, scoring, buckets, day = _processor_context(session, now)
-                    paper = PaperRepository(session).get(paper_id)
-                    assert paper is not None
-                    outcome = process_paper(
-                        session,
-                        paper,
-                        profile=profile,
-                        taxonomy=taxonomy,
-                        config=scoring,
-                        topic_buckets=buckets,
-                        gateway=gateway,
-                        embedding_provider=HashingEmbeddingProvider(),
-                        now=now,
-                        score_date=day,
+                if round_index > 1:
+                    self._update(request.run_id, stage="collecting", completed=["collecting"])
+                plan = self._plan(
+                    request,
+                    gateway,
+                    target,
+                    round_index=round_index,
+                    used_keywords=used_keywords,
+                    feedback=(
+                        "" if round_index == 1 else f"已入队 {len(added)} / 目标 {target} 篇"
+                    ),
+                )
+                plans.append(plan.as_json())
+                self._update(request.run_id, plans=plans, round=round_index)
+                used_keywords = "、".join(filter(None, (used_keywords, plan.keyword_digest())))
+                self.collect(request, plan)
+                self._update(request.run_id, stage="processing", completed=["collecting"])
+                new_results, skipped = self._triage_candidates(
+                    request, gateway, triage_cap, workers
+                )
+                skipped_no_abstract_total += skipped
+                seen = {item.paper_id for item in ranked}
+                ranked = sorted(
+                    [*ranked, *(item for item in new_results if item.paper_id not in seen)],
+                    key=lambda item: -item.R,
+                )
+                while ranked and len(added) < target:
+                    wave = ranked[:wave_size]
+                    del ranked[:wave_size]
+                    auto_shelved, skipped_no_summary, flags = self._enrich_wave(
+                        request, gateway, wave, workers
                     )
-                processed = auto_classified = index + 1
-                auto_shelved += int(outcome.auto_shelved)
-                skipped_no_summary += int(
-                    outcome.summary is None or not outcome.summary.summary.summary_100.strip()
-                )
-                if outcome.quality_flags:
-                    quality_flags[paper_id] = list(outcome.quality_flags)
-                self._update(
-                    request.run_id,
-                    processed=processed,
-                    auto_classified=auto_classified,
-                    auto_shelved=auto_shelved,
-                    skipped_no_summary=skipped_no_summary,
-                    quality_flags=quality_flags,
-                )
-            self._update(request.run_id, current_paper_title=None)
+                    totals["enriched"] += len(wave)
+                    totals["auto_shelved"] += auto_shelved
+                    totals["skipped_no_summary"] += skipped_no_summary
+                    quality_flags.update(flags)
+                    self._update(
+                        request.run_id,
+                        processed=totals["enriched"],
+                        auto_classified=totals["enriched"],
+                        auto_shelved=totals["auto_shelved"],
+                        skipped_no_summary=totals["skipped_no_summary"],
+                        quality_flags=quality_flags,
+                        current_paper_title=None,
+                    )
+                    added |= self._refresh_for_sync(request, target=target, floor=floor, fill=False)
+                    if self._is_stopping(request.run_id):
+                        raise InvalidRequestError("任务已停止")
+                if len(added) < target:
+                    # 本轮候选处理完（或为空）也要刷新一次：collect 入库的合格论文
+                    # （如已分类文献）不依赖深处理也能入队。
+                    added |= self._refresh_for_sync(request, target=target, floor=floor, fill=False)
+                    if self._is_stopping(request.run_id):
+                        raise InvalidRequestError("任务已停止")
+                if len(added) >= target:
+                    break
+            shortfall = max(0, target - len(added))
+            if shortfall:
+                added |= self._refresh_for_sync(request, target=target, floor=floor, fill=True)
+            self._update(
+                request.run_id,
+                stage="refreshing",
+                completed=["collecting", "processing"],
+                current_paper_title=None,
+                target=target,
+                # added_ids 用整次运行各轮刷新的并集：单轮刷新的报告会被后续轮覆盖。
+                added_ids=sorted(added),
+                queued_this_run=len(added),
+                shortfall=max(0, target - len(added)),
+                skipped_no_abstract=skipped_no_abstract_total,
+            )
         finally:
             close = getattr(provider, "close", None)
             if callable(close):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
+from pathlib import Path
 
 from conftest import activate
 from papersteward.config import get_settings
@@ -8,11 +11,92 @@ from papersteward.core.entities import Paper, Run, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.errors import InvalidRequestError
 from papersteward.jobs.ui_flow import UIFlowManager
+from papersteward.llm import FakeLLM
+from papersteward.llm.provider import LLMCompletion
 from papersteward.llm.runtime import LLMSettingsPayload, save_llm_config
+from papersteward.sources.contracts import QuerySpec
+from papersteward.sources.planner import PlannedQuery, QueryPlan
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.repositories import PaperRepository, RunRepository
 
 HEADERS = {"origin": "http://testserver", "content-type": "application/x-www-form-urlencoded"}
+
+PROCESS_FIXTURES = json.loads(Path("tests/fixtures/process/valid.json").read_text())
+PLANNING_FIXTURE = json.loads(Path("tests/fixtures/llm/query_planning.valid.json").read_text())
+
+
+class UniformEmbedding:
+    """所有文本同一向量的离线 embedding；语义分量恒为 1，相关度完全由 rubric 决定。"""
+
+    model_id = "uniform-test"
+
+    def embed(self, texts):
+        return tuple((1.0,) for _ in texts)
+
+
+class OrthogonalEmbedding:
+    """按文本哈希的正交 one-hot embedding；跨文本余弦≈0，语义分量恒为 0。"""
+
+    model_id = "orthogonal-test"
+    DIMS = 65536
+
+    def embed(self, texts):
+        vectors = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.DIMS
+            vector = [0.0] * self.DIMS
+            vector[index] = 1.0
+            vectors.append(tuple(vector))
+        return tuple(vectors)
+
+
+ABSTRACT = (
+    "We study long-document retrieval with sparse retrieval and reranking. "
+    "We release the benchmark dataset and baseline code for evaluation."
+)
+
+
+def relevance_payload(score: int) -> dict:
+    return {
+        "problem": score,
+        "method": score,
+        "domain": score,
+        "actionability": score,
+        "evidence": [
+            {"dimension": "problem", "quote": "long-document retrieval"},
+            {"dimension": "method", "quote": "sparse retrieval and reranking"},
+            {"dimension": "domain", "quote": "long-document retrieval with sparse retrieval"},
+            {"dimension": "actionability", "quote": "benchmark dataset and baseline code"},
+        ],
+        "confidence": 0.9,
+        "boundary_note": None,
+    }
+
+
+class RoutingFakeLLM(FakeLLM):
+    """按 prompt 中的 Agent 角色分发 fixture 响应；并行调用的到达顺序不影响分发。"""
+
+    MARKERS = (
+        ("检索规划", "query_planning"),
+        ("相关度 rubric", "relevance"),
+        ("文献概括", "summary"),
+        ("分类 Agent", "classification"),
+        ("特殊桶提名", "special_nomination"),
+    )
+
+    def __init__(self, payloads: dict):
+        super().__init__(responses=("pong",))
+        self._payloads = payloads
+
+    def complete(self, prompt: str, *, timeout_s: float) -> LLMCompletion:
+        for marker, key in self.MARKERS:
+            if marker in prompt:
+                text = json.dumps(self._payloads[key], ensure_ascii=False)
+                return LLMCompletion(
+                    text=text, prompt_tokens=1, completion_tokens=1, cost_usd=0.0, latency_ms=0.0
+                )
+        raise AssertionError(f"未知 prompt 角色：{prompt[:60]}")
 
 
 def ready(client):
@@ -50,8 +134,8 @@ def request(identity, kind="sync", **overrides):
         "run_id": identity,
         "kind": kind,
         "source": "arxiv",
-        "query": "fixture",
-        "limit": "1",
+        "focus": "",
+        "target": "5",
         **overrides,
     }
     return payload
@@ -61,51 +145,96 @@ def post(client, path, data):
     return client.post(path, data=data, headers=HEADERS)
 
 
+def canned_plan(queries=("long-document retrieval",)):
+    """替换检索规划：返回固定 QueryPlan，不让测试触碰真实模型。"""
+
+    def _plan(request, gateway, target, *, round_index=1, used_keywords="", feedback=""):
+        return QueryPlan(
+            queries=tuple(
+                PlannedQuery(spec=QuerySpec(keywords=(q,), max_results=5), rationale="测试检索式")
+                for q in queries
+            ),
+            strategy_note="测试计划",
+            origin="agent",
+            round_index=round_index,
+        )
+
+    return _plan
+
+
+def seed_screened(manager, *paper_ids):
+    def _collect(request, plan):
+        with session_scope(manager.factory) as session:
+            for paper_id in paper_ids:
+                if PaperRepository(session).get(paper_id) is None:
+                    PaperRepository(session).add(
+                        Paper(
+                            paper_id,
+                            f"Paper {paper_id}",
+                            abstract=ABSTRACT,
+                            status=PaperStatus.SCREENED,
+                            first_seen_at=utc_now(),
+                        )
+                    )
+
+    return _collect
+
+
+def install_fake_llm(monkeypatch, payloads, embedding=UniformEmbedding):
+    monkeypatch.setattr(
+        "papersteward.jobs.ui_flow.build_llm_provider",
+        lambda config: RoutingFakeLLM(payloads),
+    )
+    monkeypatch.setattr("papersteward.jobs.ui_flow.HashingEmbeddingProvider", embedding)
+
+
 def test_ui_sync_requires_active_workspace(client):
     response = post(client, "/ui/runs", request("before-setup"))
     assert response.status_code == 409
     assert "初始化确认" in response.text
 
 
-def test_ui_sync_progress_idempotency_and_profile_default_query(client, monkeypatch):
+def test_ui_sync_idempotency_and_form_has_no_query_field(client, monkeypatch):
+    from test_priority_queue import seed
+
     manager = ready(client)
     calls = []
-    monkeypatch.setattr(manager, "collect", lambda spec: calls.append("collect"))
-    monkeypatch.setattr(manager, "process", lambda spec: calls.append("process"))
-    response = post(client, "/ui/runs", request("ui-once"))
+
+    def collect(request, plan):
+        calls.append(plan.queries[0].spec.keywords)
+        with session_scope(manager.factory) as session:
+            if PaperRepository(session).get("seed-classified") is None:
+                # 完整可入队的 CLASSIFIED 论文（标签/桶/摘要/静态分齐全）。
+                seed(session, "seed-classified")
+
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", collect)
+    response = post(client, "/ui/runs", request("ui-once", target="1"))
     assert response.status_code == 200, response.text
     assert wait(manager, "ui-once").status is RunStatus.SUCCEEDED
-    assert calls == ["collect", "process"]
-    assert post(client, "/ui/runs", request("ui-once")).status_code == 200
-    assert post(client, "/ui/runs", request("ui-once", query="changed")).status_code == 409
+    assert calls == [("long-document retrieval",)]  # 第 1 轮达标即停，不再追加规划
+    assert post(client, "/ui/runs", request("ui-once", target="1")).status_code == 200
+    assert post(client, "/ui/runs", request("ui-once", target="3")).status_code == 409
     terminal = client.get("/ui/runs/ui-once?fragment=true")
     assert 'hx-trigger="every' not in terminal.text
     assert "已完成" in terminal.text
     today = client.get("/ui/today")
     assert "挖掘新论文" in today.text
-    assert 'value="long-document retrieval"' in today.text
+    # 检索词输入已被 Agent 规划取代；表单只有可选关注点与期望入队篇数。
+    assert 'name="query"' not in today.text
+    assert 'name="focus"' in today.text
+    assert 'name="target"' in today.text
+    assert "自动生成多条检索式" in today.text
 
 
-def test_ui_failed_step_preserves_data_and_shows_retry(client, monkeypatch):
+def test_ui_sync_failed_step_preserves_data_and_shows_retry(client, monkeypatch):
     manager = ready(client)
-
-    def collect(spec):
-        with session_scope(manager.factory) as session:
-            if PaperRepository(session).get("collected") is None:
-                PaperRepository(session).add(
-                    Paper(
-                        "collected",
-                        "Collected fixture",
-                        status=PaperStatus.SCREENED,
-                        first_seen_at=utc_now(),
-                    )
-                )
-
-    monkeypatch.setattr(manager, "collect", collect)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", seed_screened(manager, "collected"))
     monkeypatch.setattr(
         manager,
-        "process",
-        lambda spec: (_ for _ in ()).throw(InvalidRequestError("model failure")),
+        "_triage_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(InvalidRequestError("model failure")),
     )
     assert post(client, "/ui/runs", request("ui-failed")).status_code == 200
     failed = wait(manager, "ui-failed")
@@ -180,12 +309,12 @@ def test_running_task_blocks_new_submission_and_today_refreshes(client, monkeypa
     manager = ready(client)
     entered, release = Event(), Event()
 
-    def collect(spec):
+    def collect(request, plan):
         entered.set()
         assert release.wait(5)
 
+    monkeypatch.setattr(manager, "_plan", canned_plan())
     monkeypatch.setattr(manager, "collect", collect)
-    monkeypatch.setattr(manager, "process", lambda spec: None)
     try:
         assert post(client, "/ui/runs", request("busy")).status_code == 200
         assert entered.wait(2)
@@ -235,7 +364,7 @@ def test_progress_states_and_legacy_stats(client):
         },
     )
     html = run_body(active)
-    assert "正在处理论文 6 / 9" in html
+    assert "正在深处理论文 6 / 9" in html
     assert "已处理 5 / 9 篇（56%）" in html
     assert '<progress max="9" value="5"' in html
     assert "&lt;Paper &amp; title&gt;" in html
@@ -243,6 +372,20 @@ def test_progress_states_and_legacy_stats(client):
     assert "最近更新" not in html
     assert 'aria-current="step"' in html
     assert "停止任务" in html
+    triage = Run(
+        "triage",
+        "ui.sync",
+        started_at=now,
+        stats_json={
+            "stage": "processing",
+            "processing_phase": "triage",
+            "processing_total": 9,
+            "processed": 5,
+            "current_index": 6,
+            "updated_at": now.isoformat(),
+        },
+    )
+    assert "正在初筛排序论文 6 / 9" in run_body(triage)
     queued = Run("queued", "ui.refresh", started_at=now)
     html = run_body(queued, current=active)
     assert "正在开始" in html
@@ -268,51 +411,119 @@ def test_progress_states_and_legacy_stats(client):
     assert "返回队列" not in run_body(running_with_home, home=("/ui/today", "返回队列"))
 
 
+def test_sync_funnel_reports_planned_queries_and_meets_target(client, monkeypatch):
+    """漏斗全链路：规划进报告、初筛排序、配额达标即停；相关度过门槛的论文正常入队。"""
+    manager = ready(client)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", seed_screened(manager, "p-a", "p-b", "p-c"))
+    install_fake_llm(
+        monkeypatch,
+        {**PROCESS_FIXTURES, "relevance": relevance_payload(4), "query_planning": PLANNING_FIXTURE},
+    )
+    assert post(client, "/ui/runs", request("funnel", target="2")).status_code == 200
+    report = wait(manager, "funnel")
+    assert report.status is RunStatus.SUCCEEDED
+    stats = dict(report.stats_json)
+    assert stats["queued_this_run"] >= 2
+    assert stats["shortfall"] == 0
+    assert stats["quota_filled"] == 0  # 相关度过门槛，无需保底填充
+    assert stats["target"] == 2
+    assert stats["round"] == 1  # 第 1 轮即达标，不再追加规划
+    assert stats["plans"][0]["queries"][0]["keywords"] == ["long-document retrieval"]
+    with session_scope(manager.factory) as session:
+        assert PaperRepository(session).get("p-a").status is PaperStatus.QUEUED
+    page = client.get("/ui/runs/funnel")
+    assert "本次使用的检索式" in page.text
+    assert "long-document retrieval" in page.text
+
+
+def test_sync_quota_fill_admits_below_gate_with_marker(client, monkeypatch):
+    """相关度不足门槛但高于下限：循环扩查后仍不足，保底填充入队并标注 quota_fill。"""
+    from sqlalchemy import select
+
+    from papersteward.storage.models import ScoreSnapshotRow
+
+    manager = ready(client)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", seed_screened(manager, "q-a", "q-b"))
+    install_fake_llm(
+        monkeypatch,
+        {**PROCESS_FIXTURES, "relevance": relevance_payload(1), "query_planning": PLANNING_FIXTURE},
+    )
+    assert post(client, "/ui/runs", request("fill", target="2")).status_code == 200
+    report = wait(manager, "fill")
+    assert report.status is RunStatus.SUCCEEDED
+    stats = dict(report.stats_json)
+    # 四维 rubric=1、语义恒 1 → R=52：低于门槛 55、高于下限 40，保底填充补足。
+    assert stats["queued_this_run"] == 2
+    assert stats["quota_filled"] == 2
+    assert stats["shortfall"] == 0
+    with session_scope(manager.factory) as session:
+        for paper_id in ("q-a", "q-b"):
+            assert PaperRepository(session).get(paper_id).status is PaperStatus.QUEUED
+            row = session.scalar(
+                select(ScoreSnapshotRow).where(ScoreSnapshotRow.paper_id == paper_id)
+            )
+            assert "quota_fill" in row.breakdown_json["reasons"]
+    page = client.get("/ui/runs/fill")
+    assert "为保底填充" in page.text
+
+
+def test_sync_reports_shortfall_when_candidates_exhausted(client, monkeypatch):
+    """全部候选相关度低于下限：不硬塞，如实报告缺口。"""
+    manager = ready(client)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", seed_screened(manager, "low-a"))
+    install_fake_llm(
+        monkeypatch,
+        {
+            **PROCESS_FIXTURES,
+            "relevance": relevance_payload(0),
+            "query_planning": PLANNING_FIXTURE,
+        },
+        embedding=OrthogonalEmbedding,  # 语义分量≈0：rubric=0 → R≈0，低于保底下限 40
+    )
+    assert post(client, "/ui/runs", request("short", target="2")).status_code == 200
+    report = wait(manager, "short")
+    assert report.status is RunStatus.SUCCEEDED
+    stats = dict(report.stats_json)
+    assert stats["queued_this_run"] == 0
+    assert stats["shortfall"] == 2
+    assert stats["target"] == 2
+    assert stats["round"] == 3  # 三轮规划都尝试过
+
+
 def test_processing_statistics_and_legacy_reconciliation(client, monkeypatch):
-    import json
     from dataclasses import replace
-    from pathlib import Path
 
     from test_process_review import PAPER
 
-    from papersteward.jobs.ui_flow import FlowRequest
-    from papersteward.llm import FakeLLM
     from papersteward.storage.repositories import ReviewRepository
 
     manager = ready(client)
-    fixture = json.loads(Path("tests/fixtures/process/valid.json").read_text())
-    responses = [
-        json.dumps(fixture[key], ensure_ascii=False)
-        for key in (
-            "relevance",
-            "summary",
-            "classification",
-            "special_nomination",
-            "relevance",
-            "classification",
-            "special_nomination",
-        )
-    ]
-    monkeypatch.setattr(
-        "papersteward.jobs.ui_flow.build_llm_provider", lambda config: FakeLLM(responses)
-    )
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    monkeypatch.setattr(manager, "collect", lambda request, plan: None)
+    install_fake_llm(monkeypatch, {**PROCESS_FIXTURES, "relevance": relevance_payload(4)})
     with session_scope(manager.factory) as session:
         PaperRepository(session).add(replace(PAPER, id="a-summary"))
         PaperRepository(session).add(replace(PAPER, id="b-no-summary", abstract=None))
         PaperRepository(session).add(replace(PAPER, id="legacy", status=PaperStatus.NEEDS_REVIEW))
         ReviewRepository(session).open("legacy", ["legacy"], {}, now=utc_now())
-        RunRepository(session).add(Run("stats", "ui.sync", started_at=utc_now()))
-    manager.process(FlowRequest(run_id="stats", kind="sync", limit=10))
+    identity = "stats"
+    assert post(client, "/ui/runs", request(identity, target="1")).status_code == 200
+    report = wait(manager, identity)
+    assert report.status is RunStatus.SUCCEEDED
     with session_scope(manager.factory) as session:
-        stats = RunRepository(session).get("stats").stats_json
-        assert stats["processing_total"] == stats["processed"] == stats["auto_classified"] == 2
-        assert stats["skipped_no_summary"] == 1
+        stats = RunRepository(session).get(identity).stats_json
+        # 无摘要论文在初筛前就被跳过，不烧任何模型调用；legacy 由对账直接归类。
+        assert stats["processed"] == stats["auto_classified"] == 1
+        assert stats["skipped_no_abstract"] == 1
         assert stats["reconciled"] == 1
         assert stats["current_paper_title"] is None
         assert stats["updated_at"]
-        assert "b-no-summary" in stats["quality_flags"]
         assert PaperRepository(session).get("legacy").status is PaperStatus.CLASSIFIED
         assert ReviewRepository(session).list_open()[1] == 0
+        assert PaperRepository(session).get("a-summary").status is PaperStatus.QUEUED
 
 
 def _draft_ready(client):
@@ -423,12 +634,12 @@ def test_cancel_running_sync_run_and_resubmit(client, monkeypatch):
     manager = ready(client)
     entered, release = threading.Event(), threading.Event()
 
-    def collect(spec):
+    def collect(request, plan):
         entered.set()
         assert release.wait(5)
 
+    monkeypatch.setattr(manager, "_plan", canned_plan())
     monkeypatch.setattr(manager, "collect", collect)
-    monkeypatch.setattr(manager, "process", lambda spec: None)
     try:
         assert post(client, "/ui/runs", request("busy-sync")).status_code == 200
         assert entered.wait(2)
@@ -456,12 +667,12 @@ def test_resubmit_after_cancel_explains_waiting(client, monkeypatch):
     manager = ready(client)
     entered, release = threading.Event(), threading.Event()
 
-    def collect(spec):
+    def collect(request, plan):
         entered.set()
         assert release.wait(5)
 
+    monkeypatch.setattr(manager, "_plan", canned_plan())
     monkeypatch.setattr(manager, "collect", collect)
-    monkeypatch.setattr(manager, "process", lambda spec: None)
     try:
         assert post(client, "/ui/runs", request("first-run")).status_code == 200
         assert entered.wait(2)
@@ -489,12 +700,12 @@ def test_cancel_survives_locked_db_and_still_stops(client, monkeypatch):
     manager = ready(client)
     entered, release = Event(), Event()
 
-    def collect(spec):
+    def collect(request, plan):
         entered.set()
         assert release.wait(5)
 
+    monkeypatch.setattr(manager, "_plan", canned_plan())
     monkeypatch.setattr(manager, "collect", collect)
-    monkeypatch.setattr(manager, "process", lambda spec: None)
     original = RunRepository.transition
     state = {"tried": False}
 

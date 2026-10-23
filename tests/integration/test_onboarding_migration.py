@@ -193,4 +193,7 @@ def test_upgraded_active_workspace_can_render_today(sqlite_engine: Engine) -> No
         page = client.get("/ui/today")
         assert page.status_code == 200, page.text
         assert "挖掘新论文" in page.text
-        assert 'value="long-document retrieval"' in page.text
+        # 检索词输入已被 Agent 检索规划取代：表单只有可选关注点与期望入队篇数。
+        assert 'name="query"' not in page.text
+        assert 'name="focus"' in page.text
+        assert 'name="target"' in page.text

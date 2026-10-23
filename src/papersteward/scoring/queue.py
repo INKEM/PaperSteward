@@ -1,7 +1,7 @@
 """绑定已确认运行参数的可解释主题队列；日快照追加、同日幂等，读取不写库。"""
 
 from collections import Counter
-from collections.abc import Set
+from collections.abc import Sequence, Set
 from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any
@@ -135,7 +135,20 @@ def _eligibility(
         ):
             reasons.append("static_version_mismatch")
         if static.relevance < max(55, ctx["config"].gates.min_relevance_for_push):
-            reasons.append("below_relevance_gate")
+            # 保底填充的快照带 quota_fill 标记：仅豁免门槛这一项，其余理由照旧。
+            # 当日快照尚不存在时（create_snapshots 首次评估）保持淘汰，交由填充逻辑。
+            day_snapshot = next(
+                (
+                    s
+                    for s in ScoreSnapshotRepository(session).history(paper.id)
+                    if s.score_date == day
+                ),
+                None,
+            )
+            if day_snapshot is None or "quota_fill" not in day_snapshot.breakdown_json.get(
+                "reasons", []
+            ):
+                reasons.append("below_relevance_gate")
     return reasons, tag, static
 
 
@@ -226,6 +239,7 @@ def _build(
     completions: list[Completion],
     feedback: list[Feedback],
     backlog: int,
+    extra_reasons: Sequence[str] = (),
 ) -> ScoreSnapshot:
     config: ScoringConfig = ctx["config"]
     dynamic = compute_dynamic(
@@ -305,6 +319,7 @@ def _build(
             analysis.payload_json.get("relevance", {}).get("rubric", {}).get("confidence", 0.0)
         )
     reasons = list(dynamic.reasons + quasi.reasons)
+    reasons.extend(extra_reasons)
     if analysis is None:
         reasons.append("relevance_evidence_unavailable")
     if priority.delta_limited:
@@ -373,8 +388,16 @@ def create_snapshots(
     *,
     now: datetime,
     eligible: Set[PaperStatus] = ELIGIBLE,
+    min_queue_yield: int | None = None,
+    relevance_floor: float = 40.0,
 ) -> SnapshotResponse:
-    """追加当日快照；周任务可传入 ``WEEKLY_ELIGIBLE`` 以覆盖已投递未读候选。"""
+    """追加当日快照；周任务可传入 ``WEEKLY_ELIGIBLE`` 以覆盖已投递未读候选。
+
+    ``min_queue_yield`` 是保底入队配额：合格候选不足时，仅豁免
+    ``below_relevance_gate`` 这一个淘汰理由、按 R 降序补足，且不低于
+    ``relevance_floor``；被填充论文的快照 reasons 带 ``quota_fill`` 标记。
+    其余淘汰理由（特殊桶、无摘要、版本不匹配等）仍一票否决。
+    """
     natural_day(day)
     with _atomic(session):
         ctx = _context(session, now, execution=True, day=day)
@@ -382,13 +405,28 @@ def create_snapshots(
             raise InvariantViolation("score_date", "不能生成未来日快照")
         candidates = []
         excluded = []
+        below_gate: list[tuple[float, Paper, str, StaticScoreSnapshot]] = []
         for paper in PaperRepository(session).list():
             reasons, tag, static = _eligibility(session, paper, ctx, day, eligible=eligible)
             if reasons:
                 excluded.append(Exclusion(paper_id=paper.id, reasons=reasons))
+                if reasons == ["below_relevance_gate"] and tag is not None and static is not None:
+                    below_gate.append((static.relevance, paper, tag, static))
             else:
                 assert tag is not None and static is not None
                 candidates.append((paper, tag, static))
+        quota_filled = 0
+        fill_ids: set[str] = set()
+        if min_queue_yield is not None and min_queue_yield > len(candidates):
+            below_gate.sort(key=lambda item: (-item[0], item[1].id))
+            for _relevance, paper, tag, static in below_gate:
+                if len(candidates) >= min_queue_yield or _relevance < relevance_floor:
+                    break
+                candidates.append((paper, tag, static))
+                fill_ids.add(paper.id)
+                quota_filled += 1
+            if fill_ids:
+                excluded = [item for item in excluded if item.paper_id not in fill_ids]
         backlog = Counter(tag for _, tag, _ in candidates)
         completions, feedback = _history(session, ctx, day)
         created = existing = 0
@@ -407,7 +445,16 @@ def create_snapshots(
             else:
                 repo.append(
                     _build(
-                        session, paper, tag, static, ctx, day, completions, feedback, backlog[tag]
+                        session,
+                        paper,
+                        tag,
+                        static,
+                        ctx,
+                        day,
+                        completions,
+                        feedback,
+                        backlog[tag],
+                        extra_reasons=("quota_fill",) if paper.id in fill_ids else (),
                     )
                 )
                 created += 1
@@ -426,7 +473,11 @@ def create_snapshots(
                     payload={"stage": "priority", "score_date": day.isoformat()},
                 )
         return SnapshotResponse(
-            score_date=day, created=created, existing=existing, excluded=excluded
+            score_date=day,
+            created=created,
+            existing=existing,
+            excluded=excluded,
+            quota_filled=quota_filled,
         )
 
 
@@ -583,8 +634,17 @@ def read_backlog(
     )
 
 
-def refresh_queue(session: Session, *, now: datetime) -> RefreshResponse:
-    """本地刷新排序并将新合格论文入队；日内幂等，不创建日报。"""
+def refresh_queue(
+    session: Session,
+    *,
+    now: datetime,
+    min_queue_yield: int | None = None,
+    relevance_floor: float = 40.0,
+) -> RefreshResponse:
+    """本地刷新排序并将新合格论文入队；日内幂等，不创建日报。
+
+    ``min_queue_yield`` 仅由挖掘 sync 传入；周任务与手动刷新不启用保底填充。
+    """
     with _atomic(session):
         ctx = _context(session, now)
         day = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
@@ -593,7 +653,14 @@ def refresh_queue(session: Session, *, now: datetime) -> RefreshResponse:
             for paper in PaperRepository(session).list()
             if paper.status in BACKLOG_STATUSES
         }
-        report = create_snapshots(session, day, now=now, eligible=ELIGIBLE | BACKLOG_STATUSES)
+        report = create_snapshots(
+            session,
+            day,
+            now=now,
+            eligible=ELIGIBLE | BACKLOG_STATUSES,
+            min_queue_yield=min_queue_yield,
+            relevance_floor=relevance_floor,
+        )
         after: set[str] = set()
         offset = 0
         while True:

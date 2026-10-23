@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.form_utils import conflict_redirect, failure, fields, hidden, input_field
+from papersteward.api.form_utils import conflict_redirect, failure, fields, hidden
 from papersteward.api.pages import HEADERS, _page
 from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
@@ -23,6 +23,7 @@ from papersteward.errors import AppError, NotFoundError
 from papersteward.jobs.ui_flow import FlowRequest, processing_problem
 from papersteward.pipeline.context import bound_context
 from papersteward.scoring.queue import read_backlog
+from papersteward.scoring.service import read_scoring_config
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.onboarding import get_onboarding
 from papersteward.storage.repositories import RunRepository
@@ -110,10 +111,13 @@ def run_body(
             else LABELS.get(run.status.value, run.status.value)
         )
     else:
+        phase = str(stats.get("processing_phase", ""))
         title = {
             "queued": "正在开始…",
             "collecting": "正在采集论文",
-            "processing": f"正在处理论文 {index} / {total}",
+            "processing": (
+                f"正在{'初筛排序' if phase == 'triage' else '深处理'}论文 {index} / {total}"
+            ),
             "digest": "历史日报任务",
             "refreshing": "正在刷新阅读队列",
             "extracting": "正在生成研究草案",
@@ -143,9 +147,12 @@ def run_body(
     if stage == "collecting":
         request = stats.get("request", {})
         if isinstance(request, dict):
+            focus = str(request.get("focus", "")).strip()
             body += (
                 f"<p>来源：{escape(str(request.get('source', '未知')))} · "
-                f"检索词：{escape(str(request.get('query', '')))}</p>"
+                f"检索式：Agent 按研究档案与已读历史自动生成"
+                + (f" · 关注点：{escape(focus)}" if focus else "")
+                + "</p>"
             )
     if total:
         percent = min(100, round(processed / total * 100))
@@ -162,7 +169,7 @@ def run_body(
     body += _timing(run)
     if active:
         caption = {
-            "ui.sync": "停止会在当前这一篇处理完后生效；已采集、已处理的论文都会保留。",
+            "ui.sync": "停止会在当前这一批论文处理完后生效；已采集、已初筛、已处理的论文都会保留。",
             "ui.refresh": "停止后已保存的评分保留，排序可重新执行。",
             "ui.extract": (
                 "停止会在本次模型调用结束后生效；上传的材料、修改意见和已生成的"
@@ -187,10 +194,26 @@ def run_body(
                 f"<p>采集 {_number(collected, 'candidates')} 篇 · "
                 f"新增 {_number(collected, 'new')} · 已存在 {_number(collected, 'existing')} · "
                 f"去重 {_number(collected, 'deduplicated')} · 过滤 {filtered_count} · "
-                f"处理 {processed} 篇 · 自动归类 {_number(stats, 'auto_classified')} · "
+                f"深处理 {processed} 篇 · 自动归类 {_number(stats, 'auto_classified')} · "
                 f"特殊桶 {_number(stats, 'auto_shelved')} · "
                 f"跳过（无摘要）{_number(stats, 'skipped_no_summary')} 篇</p>"
             )
+            queued_this_run = stats.get("queued_this_run")
+            if isinstance(queued_this_run, int):
+                target = _number(stats, "target")
+                shortfall = _number(stats, "shortfall")
+                line = f"<p>本次入队 {queued_this_run} 篇"
+                if target:
+                    line += f" / 期望 {target} 篇"
+                if shortfall:
+                    line += f"（差 {shortfall} 篇：候选已挖尽，宁缺毋滥）"
+                line += "</p>"
+                if _number(stats, "quota_filled"):
+                    line += (
+                        f"<p class='muted'>其中 {_number(stats, 'quota_filled')} 篇为保底填充："
+                        "相关度未达正常门槛、按名次补足，详情页有标注。</p>"
+                    )
+                body += line
     flags = stats.get("quality_flags", {})
     if isinstance(flags, dict) and flags:
         body += (
@@ -202,13 +225,38 @@ def run_body(
             )
             + "</ul></details>"
         )
+    plans = stats.get("plans")
+    if run.run_type == "ui.sync" and isinstance(plans, list):
+        items: list[str] = []
+        for plan in plans:
+            if not isinstance(plan, dict):
+                continue
+            note = "（模型规划不可用，档案兜底）" if plan.get("origin") == "profile" else ""
+            for query in plan.get("queries") or []:
+                if not isinstance(query, dict):
+                    continue
+                keywords = " ".join(str(word) for word in query.get("keywords", []))
+                rationale = str(query.get("rationale", ""))
+                items.append(
+                    f"<li><code>{escape(keywords)}</code> — {escape(rationale)}{note}</li>"
+                )
+        if items:
+            body += (
+                "<details><summary>本次使用的检索式（"
+                + str(len(items))
+                + " 条）</summary><ul>"
+                + "".join(items)
+                + "</ul></details>"
+            )
     if "queue_total" in stats:
         body += (
             f'<p class="success">队列共 {_number(stats, "queue_total")} 篇 · '
             f"本次新增 {len(stats.get('added_ids', []))} 篇</p>"
         )
         if stats.get("queue_total") == 0:
-            body += "<p>暂无合格候选。可以调整检索词后再次挖掘。</p>"
+            body += (
+                "<p>暂无合格候选。Agent 下一轮会自动换角度生成检索式；也可以换个来源再挖一次。</p>"
+            )
     if run.errors_json:
         messages = [
             str(error.get("message", "步骤失败，请检查设置后重试。"))
@@ -262,15 +310,8 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
         body += "<p>等待当前任务，完成后再开始新任务。</p>"
     elif not backlog.total:
         body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
-    default_query = next(
-        (
-            str(keyword)
-            for direction in profile.parsed_json.get("subdirections", [])
-            for keyword in direction.get("keywords", [])
-            if str(keyword).strip()
-        ),
-        "retrieval",
-    )
+    scoring = read_scoring_config(session)
+    default_target = int(scoring.gates.min_queue_yield) if scoring is not None else 5
     controls = '<details><summary>采集参数</summary><label>来源<select name="source">'
     controls += "".join(
         f'<option value="{value}">{label}</option>'
@@ -280,10 +321,18 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
             ("semantic_scholar", "Semantic Scholar"),
         )
     )
-    controls += "</select></label>" + input_field("query", default_query, "检索词（字面短语）")
+    controls += "</select></label>"
     controls += (
-        '<label>每次上限<input type="number" name="limit" value="10" '
+        '<label>本次关注点（可选）<input type="text" name="focus" maxlength="500" '
+        'placeholder="例如：本周想看评测方向的新基准"></label>'
+    )
+    controls += (
+        f'<label>期望入队篇数<input type="number" name="target" value="{default_target}" '
         'min="1" max="50"></label></details>'
+    )
+    controls += (
+        '<p class="muted">不填检索词：Agent 会综合你的研究档案、已读评分历史和'
+        "本次关注点自动生成多条检索式，挖掘报告会列出所用检索式及理由。</p>"
     )
     body += _run_form("sync", controls, "挖掘新论文", disabled=busy or bool(problem))
     body += _run_form("refresh", "", "刷新排序", disabled=busy)
@@ -312,8 +361,8 @@ async def submit_run(request: Request) -> Response:
             run_id=values.get("run_id", ""),
             kind=values.get("kind"),
             source=values.get("source", "arxiv"),
-            query=values.get("query", ""),
-            limit=values.get("limit", "10"),
+            focus=values.get("focus", ""),
+            target=values.get("target", "0"),
         )
         identity = request.app.state.ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)

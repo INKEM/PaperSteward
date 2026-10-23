@@ -22,6 +22,7 @@ def test_default_registry_is_versioned() -> None:
         "relevance",
         "special_nomination",
         "profile_extraction",
+        "query_planning",
         "repair",
     )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")

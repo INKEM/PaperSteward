@@ -27,6 +27,7 @@ SchemaName = Literal[
     "special_nomination",
     "event",
     "profile_extraction",
+    "query_planning",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -330,6 +331,26 @@ class ProfileExtractionOutput(_OutputModel):
         return self
 
 
+class PlannedQueryOutput(_OutputModel):
+    """一条检索式计划；keywords 为英文检索词，rationale 说明服务的方向或品味信号。"""
+
+    keywords: list[str] = Field(min_length=1, max_length=8)
+    operator: Literal["any", "all"] = "any"
+    exclude_keywords: list[str] = Field(default_factory=list, max_length=10)
+    field: Literal["all", "author", "venue", "team"] = "all"
+    date_from: date | None = None
+    date_to: date | None = None
+    max_results: int = Field(default=30, ge=5, le=100)
+    rationale: str = Field(min_length=1, max_length=500)
+
+
+class QueryPlanningOutput(_OutputModel):
+    """一轮挖掘的检索规划：多条互补检索式与整体策略说明。"""
+
+    queries: list[PlannedQueryOutput] = Field(min_length=1, max_length=8)
+    strategy_note: str = Field(min_length=1, max_length=1000)
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -340,6 +361,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "special_nomination": SpecialNominationsOutput,
         "event": EventEnvelope,
         "profile_extraction": ProfileExtractionOutput,
+        "query_planning": QueryPlanningOutput,
     }
 )
 
@@ -405,6 +427,8 @@ __all__ = [
     "ExtractionTag",
     "PriorityScoreOutput",
     "ProfileExtractionOutput",
+    "PlannedQueryOutput",
+    "QueryPlanningOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
     "SpecialEvidenceOutput",

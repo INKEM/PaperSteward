@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -21,6 +21,31 @@ from papersteward.llm.errors import (
 from papersteward.llm.prompts import PromptRegistry, default_registry
 from papersteward.llm.provider import LLMCompletion, LLMProvider
 from papersteward.schemas import SchemaError, schema_for, validate_json_text
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCacheEntry:
+    """缓存的一条模型输出；``prompt_version`` 是最终版本（可能含 +repair 后缀）。"""
+
+    raw_text: str
+    repair_used: bool
+    prompt_version: str
+    generated_at: datetime
+
+
+class LLMCache(Protocol):
+    """缓存后端协议；实现必须容忍自身故障，不允许抛异常阻塞主流程。"""
+
+    def get(self, *, model: str, prompt_version: str, input_hash: str) -> LLMCacheEntry | None: ...
+
+    def put(
+        self,
+        entry: LLMCacheEntry,
+        *,
+        model: str,
+        prompt_version: str,
+        input_hash: str,
+    ) -> None: ...
 
 
 @dataclass(slots=True)
@@ -103,6 +128,7 @@ class LLMGateway:
         repair_attempts: int = 1,
         timeout_s: float = 30.0,
         backoff_s: float = 0.0,
+        cache: LLMCache | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
@@ -118,6 +144,7 @@ class LLMGateway:
         self._repair_attempts = repair_attempts
         self._timeout_s = timeout_s
         self._backoff_s = max(0.0, backoff_s)
+        self._cache = cache
         self._sleep = sleep
         self._clock = clock
 
@@ -160,6 +187,40 @@ class LLMGateway:
         rendered = prompt.render(variables)
         input_hash = self._input_hash(rendered)
         usage = LLMUsage(model_id=self._provider.model_id)
+
+        hit = (
+            self._cache.get(
+                model=self._provider.model_id,
+                prompt_version=prompt.version,
+                input_hash=input_hash,
+            )
+            if self._cache is not None
+            else None
+        )
+        if hit is not None:
+            try:
+                data = validate_json_text(
+                    prompt.schema, hit.raw_text, source=f"llm:{prompt.name}:cache"
+                )
+            except SchemaError:
+                data = None  # 缓存内容损坏按未命中处理，重新调用 provider。
+            if data is not None:
+                provenance = Provenance(
+                    model=self._provider.model_id,
+                    prompt_version=hit.prompt_version,
+                    generated_at=hit.generated_at,
+                    input_hash=input_hash,
+                )
+                return LLMResult(
+                    data=data,
+                    raw_text=hit.raw_text,
+                    usage=usage,
+                    provenance=provenance,
+                    prompt_name=prompt.name,
+                    prompt_version=hit.prompt_version,
+                    repair_used=hit.repair_used,
+                    attempts=0,
+                )
 
         raw_text, attempts = self._call_with_retries(rendered, usage)
         try:
@@ -225,6 +286,18 @@ class LLMGateway:
             generated_at=self._clock(),
             input_hash=input_hash,
         )
+        if self._cache is not None:
+            self._cache.put(
+                LLMCacheEntry(
+                    raw_text=raw_text,
+                    repair_used=repair_used,
+                    prompt_version=final_prompt_version,
+                    generated_at=provenance.generated_at,
+                ),
+                model=self._provider.model_id,
+                prompt_version=prompt.version,
+                input_hash=input_hash,
+            )
         return LLMResult(
             data=data,
             raw_text=raw_text,
@@ -242,4 +315,4 @@ class LLMGateway:
         return LLMPingResult(text=text, usage=usage, model_id=self._provider.model_id)
 
 
-__all__ = ["LLMGateway", "LLMPingResult", "LLMResult", "LLMUsage"]
+__all__ = ["LLMCache", "LLMCacheEntry", "LLMGateway", "LLMPingResult", "LLMResult", "LLMUsage"]

@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_timeout_s: float = Field(default=30.0, gt=0, le=600)
     llm_max_attempts: int = Field(default=3, ge=1, le=5)
+    llm_cache_enabled: bool = True
+    llm_concurrency: int = Field(default=4, ge=1, le=16)
     llm_prompt_cost_per_1k_usd: float = Field(default=0.0, ge=0)
     llm_completion_cost_per_1k_usd: float = Field(default=0.0, ge=0)
 

@@ -64,8 +64,12 @@ def _fixture_provider(path: str) -> FakeLLM:
 
 
 def _processor_context(
-    session: Session, now: datetime
+    session: Session, now: datetime, *, ensure_buckets: bool = True
 ) -> tuple[ResearchProfile, Taxonomy, ScoringConfig, dict[str, Bucket], date]:
+    """处理管线的运行上下文；``ensure_buckets=False`` 时完全不写库。
+
+    并行挖掘 worker 的只读阶段用 False 取上下文，主题桶落库留给写阶段。
+    """
     profile, binding = bound_context(session, now, action="process")
     taxonomy = TaxonomyRepository(session).get(binding["taxonomy_id"], binding["taxonomy_version"])
     if taxonomy is None:
@@ -75,7 +79,8 @@ def _processor_context(
         raise InvalidRequestError("选定评分配置不存在")
     config = validate_scoring_config(ScoringConfig.model_validate(config_row.value_json))
     local_day = runtime_local_day(session, now, binding)
-    return profile, taxonomy, config, ensure_topic_buckets(session, taxonomy), local_day
+    buckets = ensure_topic_buckets(session, taxonomy, persist=ensure_buckets)
+    return profile, taxonomy, config, buckets, local_day
 
 
 def _run_process(args: argparse.Namespace) -> int:

@@ -101,6 +101,7 @@ def test_schema_registry_freeze() -> None:
         "special_nomination",
         "event",
         "profile_extraction",
+        "query_planning",
     }
     assert set(schema_for("classification")["required"]) == {
         "primary_tag",
@@ -149,6 +150,7 @@ def test_prompt_registry_and_fake_provider_freeze() -> None:
         "relevance",
         "special_nomination",
         "profile_extraction",
+        "query_planning",
         "repair",
     )
     assert registry.get("classification").version == "classification/v2"

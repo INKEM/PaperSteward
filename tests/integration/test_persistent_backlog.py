@@ -107,16 +107,18 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
 def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(
     client, migrated_engine, monkeypatch
 ):
+    """三次挖掘各自入队一篇；无候选的轮次与保底不达标都如实成功结束。"""
+    from test_ui_flows import canned_plan
+
     manager = ready(client)
-    monkeypatch.setattr(manager, "collect", lambda spec: None)
-    calls = []
+    monkeypatch.setattr(manager, "_plan", canned_plan())
 
-    def process(spec):
-        calls.append(spec.run_id)
+    def collect(request, plan):
         with session_scope(manager.factory) as session:
-            seed(session, spec.run_id)
+            if PaperRepository(session).get(request.run_id) is None:
+                seed(session, request.run_id)
 
-    monkeypatch.setattr(manager, "process", process)
+    monkeypatch.setattr(manager, "collect", collect)
     for index in range(3):
         identity = f"mining-{index}"
         assert post(client, "/ui/runs", request(identity)).status_code == 200
@@ -125,7 +127,6 @@ def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(
         assert report.stats_json["queue_total"] == index + 1
         assert report.stats_json["added_ids"] == [identity]
         assert post(client, "/ui/runs", request(identity)).status_code == 200
-    assert len(calls) == 3
     with session_scope(manager.factory) as session:
         assert session.scalar(select(func.count()).select_from(DigestRow)) == 0
     # A separate, initially empty workspace is covered by the local sort refresh.

@@ -683,6 +683,30 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class LLMCacheRow(Base):
+    """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
+
+    只缓存最终通过 schema 校验的输出；档案/分类法等输入变化会改变渲染后的
+    input_hash，因此缓存随内容自然失效，不做 TTL。
+    """
+
+    __tablename__ = "llm_cache"
+    __table_args__ = (
+        Index("uq_llm_cache_key", "model", "prompt_version", "input_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    repair_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class ConfigRow(Base):
     """版本化配置；``(key, version)`` 唯一。"""
 
