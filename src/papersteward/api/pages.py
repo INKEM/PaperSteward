@@ -433,8 +433,20 @@ def setup_script() -> FileResponse:
 
 @router.get("/static/style.css")
 def style() -> FileResponse:
+    # URL 已带应用版本号（V-11）：内容随版本变化，可放心长缓存。
     return FileResponse(
-        STATIC / "style.css", media_type="text/css", headers=_static_headers("no-cache")
+        STATIC / "style.css",
+        media_type="text/css",
+        headers=_static_headers("public, max-age=86400"),
+    )
+
+
+@router.get("/static/favicon.svg")
+def favicon() -> FileResponse:
+    return FileResponse(
+        STATIC / "favicon.svg",
+        media_type="image/svg+xml",
+        headers=_static_headers("public, max-age=86400"),
     )
 
 

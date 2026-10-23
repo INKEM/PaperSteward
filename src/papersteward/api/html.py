@@ -17,8 +17,12 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
+from papersteward import __version__ as _app_version
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.errors import AppError
+
+# 资产版本号：随应用版本变化，配合长缓存策略让样式更新立即生效（V-11）。
+_ASSET_VERSION = _app_version
 
 HTML_HEADERS = {
     "Cache-Control": "no-store",
@@ -61,7 +65,8 @@ def page(title: str, body: str, *, nav: str | None = None) -> HTMLResponse:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<meta name="htmx-config" content="{escape(json.dumps(config))}">'
         f"<title>{escape(title)} · PaperSteward</title>"
-        '<link rel="stylesheet" href="/ui/static/style.css">'
+        f'<link rel="icon" type="image/svg+xml" href="/ui/static/favicon.svg">'
+        f'<link rel="stylesheet" href="/ui/static/style.css?v={escape(_ASSET_VERSION)}">'
         '<script src="/ui/static/htmx.js" defer></script>'
         '<script src="/ui/static/setup.js" defer></script></head><body>'
         '<a class="skip-link" href="#main">跳到内容</a><header>'
