@@ -67,6 +67,20 @@ def _page(title: str, body: str) -> HTMLResponse:
             {"code": "[45]..", "swap": True, "error": True},
         ],
     }
+    links = (
+        ("/ui/today", "今日", "今日阅读"),
+        ("/ui/review", "审核", "待审核"),
+        ("/ui/queue", "阅读队列", "阅读队列"),
+        ("/ui/shelves", "特殊桶", "特殊桶"),
+        ("/ui/views", "视图", "自定义视图"),
+        ("/ui/archive", "归档", "阅读归档"),
+        ("/ui/setup", "设置", "首次设置"),
+        ("/ui/help", "帮助", "使用帮助"),
+    )
+    navigation = "".join(
+        f'<a href="{url}"' + (' aria-current="page"' if title == active else "") + f">{label}</a>"
+        for url, label, active in links
+    )
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -75,14 +89,38 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<link rel="stylesheet" href="/ui/static/style.css">'
         '<script src="/ui/static/htmx.js" defer></script>'
         '<script src="/ui/static/setup.js" defer></script></head><body>'
-        '<header><a class="brand" href="/ui/today">PaperSteward</a>'
-        '<nav aria-label="主导航"><a href="/ui/setup">设置</a><a href="/ui/today">今日</a>'
-        '<a href="/ui/review">审核</a><a href="/ui/queue">阅读队列</a>'
-        '<a href="/ui/shelves">特殊桶</a>'
-        '<a href="/ui/views">视图</a><a href="/ui/archive">归档</a></nav></header>'
-        f"<main><h1>{escape(title)}</h1>{body}</main>"
-        "<footer>阅读反馈保存在本地。备注不会发送到外部模型。</footer></body></html>",
+        '<a class="skip-link" href="#main">跳到内容</a><header>'
+        '<a class="brand" href="/ui/today"><span class="brand-mark" aria-hidden="true">P</span>'
+        "PaperSteward<small>留一点时间，读重要的论文</small></a>"
+        f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
+        '<details class="mobile-nav"><summary>导航菜单</summary>'
+        f'<nav aria-label="移动导航">{navigation}</nav></details></header>'
+        f'<main id="main"><div class="page-heading"><p class="eyebrow">你的研究书桌</p>'
+        f"<h1>{escape(title)}</h1></div>{body}</main>"
+        "<footer><span>PaperSteward · 本地阅读工作区</span>"
+        '<span>阅读反馈保存在本地，备注不外发。 <a href="/ui/help">帮助与隐私</a></span>'
+        "</footer></body></html>",
         headers=HEADERS,
+    )
+
+
+@router.get("/help")
+def help_page() -> HTMLResponse:
+    return _page(
+        "使用帮助",
+        "<article><h2>从这里开始</h2><p>先在设置页依次审阅并确认研究方向、"
+        "分类法、校准和试运行。Starter 是合成示例，只验证流程。</p>"
+        "<p>日常顺序：同步 / 处理 → 处理审核 → 生成日报 → 阅读并记录反馈。</p>"
+        "<p>运行中可关闭页面，稍后从今日页查看；失败后检查原因，再显式重试。</p></article>"
+        "<article><h2>模型与隐私</h2><p>默认不授权论文数据外发。只有在试运行确认授权范围、配置模型，"
+        "并勾选本次同步授权后，才会访问文献源并发送论文元数据和摘要。备注不发送到模型。</p>"
+        "<p>模型地址、名称和密钥通过 PAPERSTEWARD_LLM_* 环境变量或本地 .env 配置，修改后重启。"
+        "密钥不要粘贴到研究方向、备注或页面表单。</p><p>新工作区：停止后使用 "
+        "<code>papersteward start --data-dir 新目录</code>，原数据保留。</p></article>"
+        "<article><h2>常见状态</h2><p>没有候选：检查模型配置与隐私授权，先同步处理，再处理审核。"
+        "没有日报：完成上述步骤后点击生成。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
+        "<p>本地单用户工具，请使用默认 127.0.0.1 地址。"
+        "关闭服务后再复制整个数据目录保存副本。</p></article>",
     )
 
 
@@ -162,11 +200,14 @@ def _card(session: SessionDep, item: QueueItem) -> str:
     body = (
         f'<article><span class="tag">{escape(item.primary_tag)}</span>'
         f"<h2>{escape(item.title)}</h2>{meta}<blockquote>{escape(item.summary_100)}</blockquote>"
-        f"<p>综合 {item.priority:.1f} · 排序 {item.rank_score:.1f}</p>"
     )
     if isinstance(item, DigestCard):
         body += f"<p><strong>{'建议精读' if mode == 'deep' else '建议粗读'}</strong> · "
         body += f"{escape(item.reason)}</p>"
+    body += (
+        '<details class="score-detail"><summary>分数与排序</summary>'
+        f"<p>综合 {item.priority:.1f} · 排序 {item.rank_score:.1f}</p></details>"
+    )
     body += f'<a href="/ui/papers/{quote(item.paper_id, safe="")}">详情与评分解释</a>'
     if paper and paper.status in {PaperStatus.DONE, PaperStatus.ARCHIVED}:
         body += '<p class="success">已完成归档</p>'
@@ -358,7 +399,14 @@ def today(request: Request, session: SessionDep, day: date | None = None) -> Res
         try:
             digest = read_digest(session, selected)
         except NotFoundError:
-            label = "今日" if selected == current else "该日"
+            if selected == current:
+                return _page(
+                    "今日阅读",
+                    intro + '<article class="empty"><h2>从一份好奇开始</h2>'
+                    "<p>还没有今日日报。先同步处理论文、完成审核，再点击上方生成日报。</p>"
+                    "<p>首次体验可回设置页查看已确认的合成试运行预览。</p></article>",
+                )
+            label = "该日"
             return _page(
                 "今日阅读",
                 intro + f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'

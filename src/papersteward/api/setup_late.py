@@ -46,7 +46,27 @@ def calibration_page(session: SessionDep) -> str:
     else:
         number = rows[-1].round_number
         view = api.review_calibration(number, session)
-        body += "<article><h2>校准报告</h2><pre>" + escape(_json(view)) + "</pre></article>"
+        report = view["report"] or {}
+        body += '<article><h2>校准报告</h2><dl class="metrics">'
+        for key, label in (
+            ("spearman", "排序相关"),
+            ("top5_overlap", "前五重合"),
+            ("primary_tag_agreement", "主标签一致率"),
+            ("read_mode_agreement", "阅读方式一致率"),
+        ):
+            body += (
+                f"<div><dt>{label}</dt><dd>{escape(str(report.get(key, '待提交标注')))}</dd></div>"
+            )
+        body += '</dl><p class="notice">' + (
+            "指标通过，仍需审阅完整报告并明确确认。"
+            if report.get("metrics_passed")
+            else "指标尚未通过，请检查报告、双方标注或明确记录已知偏差。"
+        )
+        body += (
+            "</p><details><summary>完整指标、分歧与建议</summary><pre>"
+            + escape(_json(view))
+            + "</pre></details></article>"
+        )
         if view["report"] is not None:
             fields = confirmation_fields(view, get_onboarding(session).revision)
             fields += hidden("round_number", number)
@@ -65,7 +85,11 @@ def calibration_page(session: SessionDep) -> str:
         ):
             if not submitted:
                 fields = hidden("round_number", number)
-                fields += textarea("payload", "{}", f"{role} 独立标注 JSON")
+                fields += (
+                    textarea("payload", "{}", f"{role} 独立标注 JSON")
+                    .replace('id="payload"', f'id="{role}-payload"')
+                    .replace('for="payload"', f'for="{role}-payload"')
+                )
                 body += "<details><summary>提交 " + role + " 标注</summary>"
                 body += form("calibration/" + role, fields, "提交本方标注") + "</details>"
     if not rows or (rows[-1].round_number == 1 and rows[-1].report_json is not None):
@@ -148,7 +172,11 @@ def dry_run_page(session: SessionDep) -> str:
         + escape(parameters["quiet_end"] or "")
         + '"></label>'
     )
-    editor += '<label><input type="checkbox" name="paused" value="yes">暂停日常处理</label>'
+    editor += (
+        '<label class="check"><input type="checkbox" name="paused" value="yes"'
+        + (" checked" if parameters["paused"] else "")
+        + ">暂停日常处理</label>"
+    )
     editor += '<label>外部模型的数据授权<select name="external_model_data">'
     for value, label in (
         ("disabled", "仅离线体验，不授权外发"),

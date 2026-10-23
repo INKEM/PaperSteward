@@ -224,6 +224,16 @@ def setup(
                 raise InvalidRequestError("请按当前步骤操作")
             body += _documents(session, stage, identity, version, edit)
         elif stage == "active":
+            from papersteward.onboarding.dry_run_service import _latest_version
+
+            latest = _latest_version(session)
+            if latest:
+                preview = api.review_dry_run(latest, session)
+                body += (
+                    "<details><summary>已确认的合成试运行日报预览</summary><pre>"
+                    + escape(preview["report"]["markdown"])
+                    + "</pre></details>"
+                )
             body += (
                 "<p>初始化已完成。示例校准仅验证流程；正式使用请在独立新工作区确认自己的资料。</p>"
                 "<p>下一步：配置 LLM 和采集数据。缺少真实模型配置时不能处理真实论文。</p>"
