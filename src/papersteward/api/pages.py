@@ -5,7 +5,7 @@ from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import parse_qs, quote
+from urllib.parse import quote
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -14,8 +14,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import ViewConfig, utc_now
-from papersteward.core.enums import PaperStatus
+from papersteward.core.entities import Taxonomy, ViewConfig, utc_now
+from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.delivery.actions import apply_action
 from papersteward.delivery.archive import list_archives, read_archive
@@ -221,12 +221,18 @@ def _paper_links(session: SessionDep, paper_id: str) -> str:
 
 
 def _card(
-    session: SessionDep, item: QueueItem, *, is_new: bool = False, readonly: bool = False
+    session: SessionDep,
+    item: QueueItem,
+    *,
+    is_new: bool = False,
+    readonly: bool = False,
+    taxonomy: Taxonomy | None = None,
 ) -> str:
     paper = PaperRepository(session).get(item.paper_id)
     mode = item.read_mode.value if isinstance(item, DigestCard) else "skim"
     rank = item.rank if isinstance(item, BacklogItem) else None
-    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    if taxonomy is None:
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
     label = (
         next((tag.name for tag in taxonomy.tags if tag.code == item.primary_tag), item.primary_tag)
         if taxonomy
@@ -442,19 +448,36 @@ def views(
         return _page("排序视图", f'<p role="alert">{escape(exc.message)}</p>')
 
 
+def _static_headers(cache_control: str) -> dict[str, str]:
+    """静态资产共用安全头；缓存策略按资产可变性区分（HTML 页面仍为 no-store）。"""
+    return {**HEADERS, "Cache-Control": cache_control}
+
+
 @router.get("/static/htmx.js")
 def htmx() -> FileResponse:
-    return FileResponse(STATIC / "htmx-2.0.11.min.js", media_type="application/javascript")
+    # 文件名内含版本号，内容永不变化：允许浏览器长缓存、不再重复下载。
+    return FileResponse(
+        STATIC / "htmx-2.0.11.min.js",
+        media_type="application/javascript",
+        headers=_static_headers("public, max-age=31536000, immutable"),
+    )
 
 
 @router.get("/static/setup.js")
 def setup_script() -> FileResponse:
-    return FileResponse(STATIC / "setup.js", media_type="application/javascript", headers=HEADERS)
+    # 自有脚本会随版本变化：no-cache 走 ETag 协商，改动能立即生效且有 304 快路径。
+    return FileResponse(
+        STATIC / "setup.js",
+        media_type="application/javascript",
+        headers=_static_headers("no-cache"),
+    )
 
 
 @router.get("/static/style.css")
 def style() -> FileResponse:
-    return FileResponse(STATIC / "style.css", media_type="text/css")
+    return FileResponse(
+        STATIC / "style.css", media_type="text/css", headers=_static_headers("no-cache")
+    )
 
 
 def _backlog_page(
@@ -467,7 +490,9 @@ def _backlog_page(
 
         now = utc_now()
         page = read_backlog(session, now=now, limit=50, offset=offset, filters=filters)
-        body = dashboard(session, request.app.state.settings, _day(session))
+        body = dashboard(
+            session, request.app.state.settings, _day(session), backlog_total=page.total
+        )
         if "cancelled" in request.query_params:
             body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
         taxonomy = TaxonomyRepository(session).latest_confirmed()
@@ -493,14 +518,7 @@ def _backlog_page(
                 'min="0" max="100" step="0.1"></label>'
             )
         body += "<button>应用筛选</button></form>"
-        latest = next(
-            (
-                run
-                for run in RunRepository(session).list(limit=100)
-                if run.run_type == "ui.sync" and run.status.value == "succeeded"
-            ),
-            None,
-        )
+        latest = RunRepository(session).latest("ui.sync", status=RunStatus.SUCCEEDED)
         added = set(latest.stats_json.get("added_ids", [])) if latest else set()
         if page.items:
             dates = sorted({item.score_date for item in page.items})
@@ -510,7 +528,8 @@ def _backlog_page(
                 "可随时刷新排序。</p>"
             )
             body += "".join(
-                _card(session, item, is_new=item.paper_id in added) for item in page.items
+                _card(session, item, is_new=item.paper_id in added, taxonomy=taxonomy)
+                for item in page.items
             )
         else:
             filtered = bool(
@@ -591,7 +610,8 @@ def historical_digest(day: date, session: SessionDep) -> HTMLResponse:
             '已有数据保留只读。<a href="/ui/queue">返回阅读队列</a></p>',
         )
     body = f"<p>历史日报 · {day} · 只读保留</p>"
-    body += "".join(_card(session, item, readonly=True) for item in digest.items)
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    body += "".join(_card(session, item, readonly=True, taxonomy=taxonomy) for item in digest.items)
     return _page("历史日报", body)
 
 
@@ -785,19 +805,16 @@ def _guard(request: Request) -> None:
 @router.post("/actions/{paper_id}")
 async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLResponse:
     try:
-        _guard(request)
-        raw = await request.body()
-        if len(raw) > 50000:
-            raise InvariantViolation("ui.body", "表单过大")
-        fields: dict[str, Any] = {
-            key: values[-1]
-            for key, values in parse_qs(raw.decode(), keep_blank_values=True).items()
-        }
-        if "score" in fields:
-            fields["score"] = int(fields["score"]) if fields["score"] else None
-        if "note" in fields and not fields["note"]:
-            fields["note"] = None
-        body = Action.model_validate(fields)
+        # form_utils.fields 与本模块互相引用（Q-02 待解环），此处函数内导入。
+        from papersteward.api.form_utils import fields as form_fields
+
+        form = await form_fields(request)
+        payload: dict[str, Any] = dict(form)
+        if "score" in payload:
+            payload["score"] = int(payload["score"]) if payload["score"] else None
+        if "note" in payload and not payload["note"]:
+            payload["note"] = None
+        body = Action.model_validate(payload)
         with session.begin():
             apply_action(session, paper_id, body, now=utc_now())
         messages = {

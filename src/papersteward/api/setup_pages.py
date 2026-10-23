@@ -119,23 +119,20 @@ def _active_run(session: SessionDep) -> Run | None:
 
 def _last_extract_note(session: SessionDep) -> str:
     """最近一次草案生成的失败或停止原因；更早的历史不再展示。"""
-    for run in RunRepository(session).list(limit=20):
-        if run.run_type != "ui.extract":
-            continue
-        if run.status is RunStatus.FAILED and run.errors_json:
-            messages = [
-                str(error.get("message", ""))
-                for error in run.errors_json.get("errors", [])
-                if isinstance(error, dict)
-            ]
-            text = "；".join(message for message in messages if message)
-            if text:
-                return f'<p role="alert">{escape(text)}</p>'
-        if run.status is RunStatus.CANCELLED:
-            return (
-                '<p class="notice">上一次生成已停止，已完成的数据保留。可调整材料后重新生成。</p>'
-            )
+    run = RunRepository(session).latest("ui.extract")
+    if run is None:
         return ""
+    if run.status is RunStatus.FAILED and run.errors_json:
+        messages = [
+            str(error.get("message", ""))
+            for error in run.errors_json.get("errors", [])
+            if isinstance(error, dict)
+        ]
+        text = "；".join(message for message in messages if message)
+        if text:
+            return f'<p role="alert">{escape(text)}</p>'
+    if run.status is RunStatus.CANCELLED:
+        return '<p class="notice">上一次生成已停止，已完成的数据保留。可调整材料后重新生成。</p>'
     return ""
 
 

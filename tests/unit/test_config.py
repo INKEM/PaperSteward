@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from papersteward.config import (
+    DEFAULT_LLM_TIMEOUT_S,
     AppEnv,
     LLMProviderKind,
     LogFormat,
@@ -168,7 +169,7 @@ def test_llm_defaults_are_offline_and_key_is_optional() -> None:
     assert settings.llm_base_url == "https://api.openai.com/v1"
     assert settings.llm_model is None
     assert settings.llm_api_key is None
-    assert settings.llm_timeout_s == 30.0
+    assert settings.llm_timeout_s == DEFAULT_LLM_TIMEOUT_S
     assert settings.llm_max_attempts == 3
     assert settings.llm_prompt_cost_per_1k_usd == 0.0
     assert settings.llm_completion_cost_per_1k_usd == 0.0

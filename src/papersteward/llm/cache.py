@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import sessionmaker
 
 from papersteward.core.entities import utc_now
@@ -58,6 +59,20 @@ class DatabaseLLMCache(LLMCache):
     ) -> None:
         try:
             with session_scope(self._factory) as session:
+                if session.get_bind().dialect.name == "sqlite":
+                    # 唯一索引兜底并发写入：一条 INSERT OR IGNORE 即可，省存在性预查。
+                    statement = sqlite_insert(LLMCacheRow).values(
+                        id=f"llmcache-{uuid4().hex[:24]}",
+                        model=model,
+                        prompt_version=prompt_version,
+                        input_hash=input_hash,
+                        raw_text=entry.raw_text,
+                        repair_used=entry.repair_used,
+                        generated_at=entry.generated_at,
+                        created_at=utc_now(),
+                    )
+                    session.execute(statement.on_conflict_do_nothing())
+                    return
                 existing = session.scalar(
                     select(LLMCacheRow.id).where(
                         LLMCacheRow.model == model,

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
 from papersteward.api.pages import _guard, _page
-from papersteward.config import get_settings
+from papersteward.config import DEFAULT_LLM_TIMEOUT_S, get_settings
 from papersteward.errors import AppError
 from papersteward.llm.runtime import (
     LLMSettingsPayload,
@@ -122,7 +122,7 @@ async def save_settings(request: Request, session: SessionDep) -> Response:
                 "base_url": data.get("base_url", ""),
                 "api_key": data.get("api_key", ""),
                 "model": data.get("model", ""),
-                "timeout_s": data.get("timeout_s", "60"),
+                "timeout_s": data.get("timeout_s", str(int(DEFAULT_LLM_TIMEOUT_S))),
                 "consent": data.get("consent") == "yes",
             }
         )

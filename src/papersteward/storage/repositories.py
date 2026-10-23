@@ -793,13 +793,27 @@ class SpecialTierRepository(_Repository):
 class EventRepository(_Repository):
     """只追加的事件日志。"""
 
+    _LAST_KEY = "papersteward.event_log_last"
+
     def append(self, event: Event) -> Event:
-        """追加事件；拒绝早于最后一条事件的时间，保持日志单调。"""
-        last = self.recent(limit=1)
+        """追加事件；拒绝早于最后一条事件的时间，保持日志单调。
+
+        “最后一条事件”按当前事务缓存：同一事务内的连续追加（如批量入队迁移）
+        不必每次都先查 recent(1)；事务结束（提交/回滚/保存点回滚都会换事务对象）
+        后缓存自然失效，不会把已回滚的事件当作单调基准。
+        """
+        transaction = self._session.get_transaction()
+        cached = self._session.info.get(self._LAST_KEY)
+        last: list[Event]
+        if cached is not None and cached[0] is transaction and transaction is not None:
+            last = [cached[1]]
+        else:
+            last = self.recent(limit=1)
         if last:
             ensure_event_appended(last, event)
         self._session.add(event_to_row(event))
         self._flush()
+        self._session.info[self._LAST_KEY] = (self._session.get_transaction(), event)
         return event
 
     def get(self, event_id: str) -> Event | None:
@@ -1018,6 +1032,16 @@ class RunRepository(_Repository):
         )
         return [run_from_row(row) for row in self._session.scalars(statement).all()]
 
+    def latest(self, run_type: str, *, status: RunStatus | None = None) -> Run | None:
+        """某类型最近一次运行；可选限定状态。等价于 list 后按类型/状态过滤的第一条。"""
+        statement = select(RunRow).where(RunRow.run_type == run_type)
+        if status is not None:
+            statement = statement.where(RunRow.status == status.value)
+        row = self._session.scalars(
+            statement.order_by(RunRow.started_at.desc(), RunRow.id).limit(1)
+        ).first()
+        return None if row is None else run_from_row(row)
+
     def transition(
         self, run_id: str, target: RunStatus, *, finished_at: datetime | None = None
     ) -> Run | None:
@@ -1215,6 +1239,7 @@ __all__ = [
     "EnrichmentRepository",
     "EventRepository",
     "IntakeMaterialRepository",
+    "PaperAnalysisRepository",
     "PaperBucketRepository",
     "PaperRepository",
     "PaperTagRepository",
@@ -1223,7 +1248,11 @@ __all__ = [
     "ReviewRepository",
     "RunRepository",
     "ScoreSnapshotRepository",
+    "ScoringChangeRepository",
+    "SpecialNominationRepository",
+    "SpecialTierRepository",
     "StaticScoreSnapshotRepository",
     "SummaryRepository",
     "TaxonomyRepository",
+    "ViewConfigRepository",
 ]

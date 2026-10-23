@@ -23,14 +23,18 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
-from papersteward.config import LLMProviderKind, Settings
+from papersteward.config import (
+    DEFAULT_LLM_TIMEOUT_S,
+    LOOPBACK_LLM_HOSTS,
+    LLMProviderKind,
+    Settings,
+    validate_llm_base_url,
+)
 from papersteward.core.enums import AssignedBy
 from papersteward.errors import InvalidRequestError
 from papersteward.storage.repositories import ConfigRepository
 
 CONFIG_KEY = "llm_config"
-
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class LLMSettingsPayload(BaseModel):
@@ -42,7 +46,7 @@ class LLMSettingsPayload(BaseModel):
     base_url: str
     api_key: SecretStr | None = None
     model: str
-    timeout_s: float = Field(default=60.0, gt=0, le=600)
+    timeout_s: float = Field(default=DEFAULT_LLM_TIMEOUT_S, gt=0, le=600)
     consent: bool = Field(default=False, strict=True)
 
     @field_validator("provider", mode="before")
@@ -57,20 +61,7 @@ class LLMSettingsPayload(BaseModel):
     @field_validator("base_url")
     @classmethod
     def _validate_base_url(cls, value: str) -> str:
-        url = value.strip().rstrip("/")
-        parsed = urlparse(url)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("必须是 http(s) API 根地址，不能包含认证、查询或片段")
-        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
-            raise ValueError("非本机 LLM 地址必须使用 https")
-        return url
+        return validate_llm_base_url(value)
 
     @field_validator("api_key", mode="before")
     @classmethod
@@ -132,7 +123,7 @@ class LLMRuntimeConfig:
     @property
     def requires_api_key(self) -> bool:
         """非本机地址必须携带密钥；本机 loopback 允许留空。"""
-        return urlparse(self.base_url).hostname not in _LOOPBACK_HOSTS
+        return urlparse(self.base_url).hostname not in LOOPBACK_LLM_HOSTS
 
     @property
     def ready(self) -> bool:
@@ -264,7 +255,7 @@ def save_llm_config(
         if env_key is not None:
             stored["api_key"] = env_key.get_secret_value()
             api_key_from_env = True
-    if urlparse(stored["base_url"]).hostname not in _LOOPBACK_HOSTS and not stored["api_key"]:
+    if urlparse(stored["base_url"]).hostname not in LOOPBACK_LLM_HOSTS and not stored["api_key"]:
         raise InvalidRequestError(
             "该地址不是本机，必须填写 API 密钥；请粘贴密钥后重新保存，并先用「测试连接」验证。"
         )

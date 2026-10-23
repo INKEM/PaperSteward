@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
@@ -53,6 +54,9 @@ MAX_PLAN_ROUNDS = 3
 TRIAGE_POOL_FACTOR = 4
 TRIAGE_POOL_MINIMUM = 24
 ENRICH_WAVE_FACTOR = 2
+# 进度节流：每篇论文的进度写与停止检查不必每次都落库/查库；阶段切换与最后一篇强制。
+PROGRESS_MIN_INTERVAL_S = 0.5
+STOP_CHECK_MIN_INTERVAL_S = 0.3
 
 
 class FlowRequest(BaseModel):
@@ -113,6 +117,8 @@ class UIFlowManager:
         self.thread: Thread | None = None
         self.active_id: str | None = None
         self._cancel_flags: set[str] = set()
+        self._last_progress_at: dict[str, float] = {}
+        self._stop_check_cache: dict[str, tuple[float, bool]] = {}
         self.recover()
 
     def recover(self) -> None:
@@ -249,8 +255,16 @@ class UIFlowManager:
             return row is None or row.status != RunStatus.RUNNING.value
 
     def _is_stopping(self, identity: str) -> bool:
-        """是否已请求停止（无论落库是否成功）或任务已终结。"""
-        return identity in self._cancel_flags or self._terminated(identity)
+        """是否已请求停止（无论落库是否成功）或任务已终结；带短窗缓存。"""
+        if identity in self._cancel_flags:
+            return True
+        now = time.monotonic()
+        cached = self._stop_check_cache.get(identity)
+        if cached is not None and now - cached[0] < STOP_CHECK_MIN_INTERVAL_S:
+            return cached[1]
+        terminated = self._terminated(identity)
+        self._stop_check_cache[identity] = (now, terminated)
+        return terminated
 
     def _finalize_stop(self, identity: str) -> bool:
         """有停止请求时在其自身事务结束后补写 CANCELLED；返回是否因此结束执行。"""
@@ -281,6 +295,8 @@ class UIFlowManager:
                 logger.exception("UI worker could not record failure", extra={"run_id": identity})
             finally:
                 self.active_id = None
+                self._last_progress_at.pop(identity, None)
+                self._stop_check_cache.pop(identity, None)
                 self.pending.task_done()
 
     def _update(self, identity: str, **values: Any) -> None:
@@ -290,6 +306,17 @@ class UIFlowManager:
             row = session.get(RunRow, identity)
             assert row is not None
             row.stats_json = {**row.stats_json, **values, "updated_at": utc_now().isoformat()}
+
+    def _progress(self, identity: str, *, force: bool = False, **values: Any) -> None:
+        """单篇维度的进度写：2s 轮询下节流到 PROGRESS_MIN_INTERVAL_S 即可感知。
+
+        阶段切换走 _update（无条件写）；force 用于批次最后一篇，保证完成态必落库。
+        """
+        now = time.monotonic()
+        if not force and now - self._last_progress_at.get(identity, 0.0) < PROGRESS_MIN_INTERVAL_S:
+            return
+        self._last_progress_at[identity] = now
+        self._update(identity, **values)
 
     def execute(self, identity: str) -> None:
         with session_scope(self.factory) as session:
@@ -377,6 +404,8 @@ class UIFlowManager:
             provider,
             max_attempts=llm_config.max_attempts,
             timeout_s=llm_config.timeout_s,
+            # 429/5xx 指数退避（1s、2s…）：立即重发会加剧限流，反而拉长整批耗时。
+            backoff_s=1.0,
             cache=cache,
         )
         return gateway, provider, llm_config
@@ -516,8 +545,9 @@ class UIFlowManager:
                             failure = error or InvalidRequestError("任务已停止")
                             continue
                         results.append(future.result())
-                        self._update(
+                        self._progress(
                             request.run_id,
+                            force=len(results) == len(selected),
                             processed=len(results),
                             current_index=len(results),
                             current_paper_title=title,
@@ -603,8 +633,9 @@ class UIFlowManager:
                         failure = error or InvalidRequestError("任务已停止")
                         continue
                     outcomes.append(future.result())
-                    self._update(
+                    self._progress(
                         request.run_id,
+                        force=len(outcomes) == len(batch),
                         processed=len(outcomes),
                         current_index=len(outcomes),
                         current_paper_title=titles.get(paper_id),

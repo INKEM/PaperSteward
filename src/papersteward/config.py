@@ -16,7 +16,27 @@ ENV_PREFIX = "PAPERSTEWARD_"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
-_LOOPBACK_LLM_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# LLM 接入的唯一默认来源：Settings、设置页 payload 与测试请求共用，防止多处漂移。
+DEFAULT_LLM_TIMEOUT_S = 60.0
+LOOPBACK_LLM_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def validate_llm_base_url(value: str) -> str:
+    """OpenAI 兼容 API 根地址校验；Settings 字段与设置页 payload 共用同一规则。"""
+    url = value.strip().rstrip("/")
+    parsed = urlparse(url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("必须是 http(s) API 根地址，不能包含认证、查询或片段")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_LLM_HOSTS:
+        raise ValueError("非本机 LLM 地址必须使用 https")
+    return url
 
 
 class AppEnv(StrEnum):
@@ -89,7 +109,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
-    llm_timeout_s: float = Field(default=30.0, gt=0, le=600)
+    llm_timeout_s: float = Field(default=DEFAULT_LLM_TIMEOUT_S, gt=0, le=600)
     llm_max_attempts: int = Field(default=3, ge=1, le=5)
     llm_cache_enabled: bool = True
     llm_concurrency: int = Field(default=4, ge=1, le=16)
@@ -115,20 +135,7 @@ class Settings(BaseSettings):
     @field_validator("llm_base_url")
     @classmethod
     def _validate_llm_base_url(cls, value: str) -> str:
-        url = value.strip().rstrip("/")
-        parsed = urlparse(url)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("必须是 http(s) API 根地址，不能包含认证、查询或片段")
-        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_LLM_HOSTS:
-            raise ValueError("非本机 LLM 地址必须使用 https")
-        return url
+        return validate_llm_base_url(value)
 
     @field_validator("llm_api_key", mode="before")
     @classmethod

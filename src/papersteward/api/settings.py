@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.config import get_settings
+from papersteward.config import DEFAULT_LLM_TIMEOUT_S, get_settings
 from papersteward.errors import InvalidRequestError
 from papersteward.llm.errors import LLMError
 from papersteward.llm.gateway import LLMGateway
@@ -80,7 +80,7 @@ class LLMTestRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096)
     model: str = Field(min_length=1, max_length=128)
     # 与保存端点（LLMSettingsPayload le=600）和设置表单 max=600 保持一致。
-    timeout_s: float = Field(default=30.0, gt=0, le=600)
+    timeout_s: float = Field(default=DEFAULT_LLM_TIMEOUT_S, gt=0, le=600)
 
 
 class LLMTestResponse(BaseModel):

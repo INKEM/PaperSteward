@@ -287,7 +287,9 @@ def run_body(
     return body + "</section>"
 
 
-def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
+def dashboard(
+    session: SessionDep, settings: Settings, day: date, *, backlog_total: int = -1
+) -> str:
     profile, _ = bound_context(
         session, utc_now(), action="ui.dashboard", enforce_schedule=False, day=day
     )
@@ -295,12 +297,14 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
     running = repository.running_ui_runs()
     busy = bool(running)
     body = run_body(running[0], card=True) if busy else ""
-    backlog = read_backlog(session, now=utc_now(), limit=1)
+    if backlog_total < 0:
+        # 调用方未提供时自行读取；队列页已算出总数，传入可省一次全量扫描。
+        backlog_total = read_backlog(session, now=utc_now(), limit=1).total
     capacity = int(profile.parsed_json["reading"]["weekly_capacity"])
-    suggested = min(backlog.total, max(1, (capacity + 6) // 7))
+    suggested = min(backlog_total, max(1, (capacity + 6) // 7))
     body += '<section class="dashboard">'
     body += (
-        f"<h2>队列共 {backlog.total} 篇</h2><p>按你的容量，今天建议先看 {suggested} 篇。"
+        f"<h2>队列共 {backlog_total} 篇</h2><p>按你的容量，今天建议先看 {suggested} 篇。"
         "全部论文会一直保留，随时可读。</p>"
     )
     problem = processing_problem(session, settings)
@@ -308,7 +312,7 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
         body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">连接模型</a></p>'
     elif busy:
         body += "<p>等待当前任务，完成后再开始新任务。</p>"
-    elif not backlog.total:
+    elif not backlog_total:
         body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
     scoring = read_scoring_config(session)
     default_target = int(scoring.gates.min_queue_yield) if scoring is not None else 5
@@ -337,9 +341,9 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
     body += _run_form("sync", controls, "挖掘新论文", disabled=busy or bool(problem))
     body += _run_form("refresh", "", "刷新排序", disabled=busy)
     body += '<p class="muted">刷新排序只在本地计算，不调用模型。同一天已保存的评分会复用。</p>'
-    recent = [run for run in repository.list(limit=100) if run.run_type == "ui.sync"]
-    if recent:
-        run = recent[0]
+    recent = repository.latest("ui.sync")
+    if recent is not None:
+        run = recent
         stats = dict(run.stats_json)
         collected = stats.get("collected", {})
         collected = collected if isinstance(collected, dict) else {}
