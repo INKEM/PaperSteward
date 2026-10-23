@@ -112,6 +112,8 @@ def test_failed_step_preserves_committed_data_and_requires_explicit_retry(client
         assert PaperRepository(session).get("collected") is not None
     retry_page = client.get("/ui/runs/ui-failed")
     assert "显式重试" in retry_page.text
+    assert '<p role="alert">model failure</p>' in retry_page.text
+    assert "失败" in retry_page.text
     monkeypatch.setattr(manager, "process", lambda spec: None)
     assert post(client, "/ui/runs", request("ui-retry")).status_code == 200
     assert wait(manager, "ui-retry").status is RunStatus.SUCCEEDED

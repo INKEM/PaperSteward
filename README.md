@@ -1,14 +1,18 @@
 # PaperSteward
 
-把文献发现、阅读队列和读后反馈放在一起的个人工具。本地保存研究方向、论文摘要、评分和备注，帮你每天挑出值得读的几篇论文。
+每天挑几篇值得读的论文，读完留下自己的判断。
 
-支持 arXiv、OpenAlex 和 Semantic Scholar 采集，100 字概括、主题分类、可解释排序、日报、阅读归档与导出；还可浏览综述、远邻和经典文献，保存自己的排序视图。
+PaperSteward 是单用户、本地优先的文献阅读工具：采集 arXiv、OpenAlex、Semantic Scholar，生成概括与分类，按研究方向安排阅读队列，记录评分、备注和归档。浏览器完成首次设置和日常操作。
 
-当前为 Beta；下一步改善安装与浏览器首用体验。
+当前为 Beta。示例资料可离线体验完整设置与试运行日报；真实论文处理需要配置兼容模型并明确授权。
 
-## 安装与启动
+![首次设置中的合成试运行日报](docs/images/setup-preview.jpg)
 
-需要 Docker Compose，或 Python 3.11+。当前请从源码安装；也支持从本仓库安装到 pipx：`pipx install .`。
+## 启动
+
+选择 Docker Compose 或 Python 3.11+。首次安装依赖需要联网。
+
+**Docker**
 
 ```bash
 git clone https://github.com/INKEM/PaperSteward.git
@@ -16,47 +20,51 @@ cd PaperSteward
 docker compose up --build
 ```
 
-打开 [本地页面](http://127.0.0.1:8000/ui/today)。容器启动前显式迁移数据库，数据保存在命名卷中。`docker compose down` 停止服务；保留数据时不要加 `-v`。
+打开 [首次设置](http://127.0.0.1:8000/ui/setup)。启动会显式迁移数据库，数据保存在命名卷中。`docker compose down` 停止并保留数据；不要加 `-v`。
 
-Python 源码方式：
+**Python / pipx**
+
+在已安装 pipx 的环境中：
+
+```bash
+git clone https://github.com/INKEM/PaperSteward.git
+cd PaperSteward
+pipx install .
+papersteward start --data-dir ./var
+```
+
+也可用虚拟环境：
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-cp .env.example .env
+.venv/bin/python -m pip install .
 .venv/bin/papersteward start --data-dir ./var
 ```
 
-安装依赖需要联网。默认使用离线模型替身；处理真实论文前请先[配置模型](docs/llm-provider.md)。
+`start` 显式迁移后启动服务并自动打开浏览器；`--no-browser` 关闭自动打开，`--port 8001` 换端口。当前使用源码或自行构建的 wheel，不要求 PyPI 已发布。详细步骤见[快速开始](docs/quickstart.md)。
 
-## 第一次使用
+## 第一次打开
 
-1. 用[初始化指南](docs/onboarding-cli.md)创建并审阅研究方向、分类法、校准报告和试运行日报，逐步显式确认。
-2. 按[采集指南](docs/ingestion-cli.md)获取候选，按[处理与审核指南](docs/process-review-cli.md)生成概括、分类和评分，解决待审核项。
-3. 按[日报与归档指南](docs/delivery-cli.md)生成日报，然后在浏览器阅读、评分、写备注和归档。
+1. **研究方向**：编辑或保留 Starter，保存草稿，审阅全文后明确确认。
+2. **分类法**：审阅分类与种子分布，再确认。
+3. **校准**：先用示例生成报告，审阅指标和分歧，再确认。
+4. **试运行**：调整阅读参数，预览合成日报，记录认可反馈，再确认完成。
 
-当前初始化和采集处理主要通过 CLI 完成，浏览器首启向导正在准备。示例与合成资料只验证流程，不代表真实模型质量或你的研究偏好。
+安装完成后，Starter 路径通常几分钟可看到试运行日报。它明确标注“合成 / 仅流程验证”，不代表真实模型质量。正式使用请用自己的资料在新工作区重新确认；[模型配置](docs/llm-provider.md)和数据授权都就绪后才能处理真实论文。
 
-## 日常阅读
+## 每天怎么用
 
-- [今日](http://127.0.0.1:8000/ui/today)：生成日报、记录阅读反馈。
-- [阅读队列](http://127.0.0.1:8000/ui/queue)：查看合格候选与[评分解释](docs/priority-queue.md)。
-- [特殊桶](docs/shelves.md)：综述、远邻、经典按档位浏览。
-- [排序视图](docs/views.md)：按自己的权重临时重排；[全局权重变更](docs/config-governance.md)需要预览与确认。
-- [归档](http://127.0.0.1:8000/ui/archive)：搜索读过的论文，导出 BibTeX、CSV、Markdown 或 JSON。
+在“今日”页点击 **同步 / 处理**，检查来源、检索词、上限并授权本次访问；随后 **处理审核 → 生成日报 → 阅读并记录反馈**。运行进度会保存，关闭页面后可回来查看；失败时保留已完成数据，检查原因后显式重试。
 
-## 配置、隐私与排障
+阅读队列可查看评分解释；特殊桶浏览综述、远邻和经典；自定义视图按自己的偏好重排。读完的论文可搜索，并导出 BibTeX、CSV、Markdown 或 JSON。邮件只通过显式 CLI 操作发送。
 
-配置使用 `.env` 或 `PAPERSTEWARD_*` 环境变量，环境变量优先；示例见 [.env.example](.env.example)。默认只绑定本机，运行页面无需 CDN，不收集遥测。
+## 配置与帮助
 
-真实来源采集与模型调用需要明确授权；API key 只放本地配置，阅读备注默认不发送到模型。邮件必须在初始化中明确选择并配置后才能手动发送。
+- [配置与工作区](docs/configuration.md)、[模型接入](docs/llm-provider.md)
+- [隐私与数据流向](docs/privacy.md)、[排障](docs/troubleshooting.md)、[常见问题](docs/faq.md)
+- 高级用法：[初始化 CLI](docs/advanced/onboarding-cli.md)、[采集](docs/advanced/ingestion-cli.md)、[处理与审核](docs/advanced/process-review-cli.md)、[日报与归档](docs/advanced/delivery-cli.md)
+- [评分解释](docs/advanced/priority-queue.md)、[特殊桶](docs/advanced/shelves.md)、[排序视图](docs/advanced/views.md)、[全局权重变更](docs/advanced/config-governance.md)
 
-启动会显式升级迁移后运行服务；`--no-browser` 关闭自动打开，`--port 8001` 更换端口，`--data-dir 新目录` 创建独立工作区。源码安装也可用 `make start`。
+默认绑定 `127.0.0.1`，阅读数据保存在本地，备注不发送到模型，没有遥测或外部 CDN。模型处理会按授权发送论文元数据和摘要。没有多用户登录、PDF 全文解析或笔记软件同步。
 
-启动失败先运行 `.venv/bin/papersteward doctor`；它只诊断，不迁移。若报告迁移落后，停止服务、备份数据，再运行 `.venv/bin/alembic upgrade head`。端口占用可用 Uvicorn 的 `--port 8001`。不要删除数据库或投递记录来重试未知送达的邮件。
-
-目前面向单用户本地使用；没有多用户登录、PDF 全文解析或外部笔记同步。不会因打开页面自动采集或发送邮件。
-
-## 许可证
-
-[MIT](LICENSE)。随包分发的 HTMX 保留其 [0BSD 许可证](src/papersteward/static/HTMX-LICENSE)。
+[MIT 许可证](LICENSE)。内置 HTMX 保留其 [0BSD 许可证](src/papersteward/static/HTMX-LICENSE)。

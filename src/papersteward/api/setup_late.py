@@ -54,9 +54,13 @@ def calibration_page(session: SessionDep) -> str:
             ("primary_tag_agreement", "主标签一致率"),
             ("read_mode_agreement", "阅读方式一致率"),
         ):
-            body += (
-                f"<div><dt>{label}</dt><dd>{escape(str(report.get(key, '待提交标注')))}</dd></div>"
+            raw = report.get(key)
+            value = (
+                f"{raw:.3f}"
+                if isinstance(raw, float)
+                else str(raw if raw is not None else "待提交标注")
             )
+            body += f"<div><dt>{label}</dt><dd>{escape(value)}</dd></div>"
         body += '</dl><p class="notice">' + (
             "指标通过，仍需审阅完整报告并明确确认。"
             if report.get("metrics_passed")

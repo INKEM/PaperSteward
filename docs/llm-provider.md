@@ -1,7 +1,7 @@
 # 真实 LLM provider 配置
 
-P4-S1 提供 OpenAI-compatible `chat/completions` 入口。默认仍是离线 `FakeLLM`；只有
-显式 `--live` 才会发起真实网络请求。配置全部通过 `PAPERSTEWARD_LLM_*` 环境变量或
+支持 OpenAI-compatible `chat/completions`。默认是离线 `FakeLLM`；CLI 显式 `--live`，
+或网页 G4 数据授权 + 本次同步授权后，才会发起真实模型请求。配置全部通过 `PAPERSTEWARD_LLM_*` 环境变量或
 `.env` 提供，**不要把真实 key 写进仓库**。
 
 ## 最小配置
@@ -13,7 +13,11 @@ PAPERSTEWARD_LLM_API_KEY=sk-...
 PAPERSTEWARD_LLM_MODEL=你的模型名
 ```
 
-然后显式检查连通性（会产生一次很小的真实调用和费用）：
+Python/pipx 在启动目录创建 `.env`；Docker 在仓库根目录创建 `.env` 后重新创建服务。
+不要把 key 放在命令行参数、截图或网页字段中。配置成功还需完成 G4 数据范围确认，并在
+今日页勾选本次授权；默认离线工作区需要新目录重新设置。
+
+然后可选地显式检查连通性（会产生一次很小的真实调用和费用）：
 
 ```bash
 papersteward llm ping --live
@@ -58,7 +62,7 @@ papersteward llm ping --fake
 
 ## 安全边界
 
-- 默认 `fake`；真实 provider 需要显式 `--live` 或后续服务显式授权；
+- 默认 `fake`；真实 provider 需要 CLI 显式 `--live`，或网页 G4 数据范围与本次同步授权；
 - API key 使用 Pydantic `SecretStr`，不写日志/报告/异常文本；
 - 非本机 endpoint 必须 HTTPS；`http://` 只允许 `localhost`/`127.0.0.1`/`::1`；
 - 不跟随重定向、不读取代理环境变量；
@@ -82,5 +86,5 @@ papersteward llm ping --fake
 
 ## 当前不做
 
-流式输出、function calling、embedding、多个 provider 自动路由、每日成本硬上限、
-真实模型质量评估。这些属于后续 P4/P8 小阶段；本入口只保证一次可审计的文本补全。
+流式输出、function calling、多个 provider 自动路由、每日成本硬上限、真实模型质量评估。
+处理流水线包含本地确定性向量，不表示提供了真实远程 embedding 接口。

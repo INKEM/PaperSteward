@@ -1,7 +1,8 @@
 # 初始化 CLI 操作指南
 
 `papersteward onboarding` 是本地 API 客户端。先启动服务器，再逐步提交、审阅和确认。
-不自动迁移、不调用真实模型、不启动推送。最小体验采用 CLI；浏览器可使用 `/docs`。
+不自动迁移、不调用真实模型、不启动推送。推荐首次体验使用[浏览器向导](../quickstart.md)；
+本文为高级 CLI 及源码合成演示，示例中的 tests/fixtures 路径需要完整源码 checkout。
 
 ```bash
 .venv/bin/alembic upgrade head
@@ -10,8 +11,7 @@
 
 以上命令使用当前配置的数据库，已有数据应先备份。仅演示时可先设置
 `PAPERSTEWARD_DATABASE_URL` 指向独立临时 SQLite；不要用演示答案初始化真实研究档案。
-本环境普通文件系统的 SQLite fsync 会挂起，测试使用 `/dev/shm` 临时库；普通环境
-可照常使用 `.env` 配置。CLI 不读服务器数据库，服务器和 CLI 可在两个终端运行。
+数据库路径使用 `.env` 或环境变量配置。CLI 不读服务器数据库，服务器和 CLI 可在两个终端运行。
 
 ## 命令约定
 

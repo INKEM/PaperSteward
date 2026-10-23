@@ -137,6 +137,8 @@ def complete_g3(client):
     report = post(client, "/ui/setup/calibration/example", {})
     assert report.status_code == 200, report.text
     assert "仅验证流程" in report.text or "只验证流程" in report.text
+    assert "<dd>0.969</dd>" in report.text
+    assert "0.9694584179118516" in report.text  # Full report retains the evidence precision.
     values = Inputs(report.text, "/ui/setup/calibration/confirm").values
     values["confirmed"] = "yes"
     assert post(client, "/ui/setup/calibration/confirm", values).status_code == 200
