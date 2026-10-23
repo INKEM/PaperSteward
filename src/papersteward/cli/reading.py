@@ -13,9 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
 from papersteward.core.errors import DomainError
-from papersteward.delivery.actions import apply_action
 from papersteward.delivery.contracts import Action
 from papersteward.errors import AppError
+from papersteward.reading.actions import apply_action
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
 
 

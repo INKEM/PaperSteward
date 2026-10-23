@@ -19,9 +19,8 @@ from papersteward.delivery.channels import send_smtp, smtp_destination, write_fi
 from papersteward.delivery.compose import DeliveryHistory, compose_digest
 from papersteward.delivery.contracts import Digest
 from papersteward.delivery.render import render_markdown
-from papersteward.onboarding.service import _atomic
 from papersteward.pipeline.context import bound_context
-from papersteward.scoring.queue import _context, create_snapshots, read_queue
+from papersteward.scoring.queue import create_snapshots, queue_context, read_queue
 from papersteward.storage import session_scope
 from papersteward.storage.delivery import append_digest, content_hash, read_digest
 from papersteward.storage.mappers import as_utc
@@ -33,6 +32,7 @@ from papersteward.storage.repositories import (
     PaperRepository,
     PaperTagRepository,
 )
+from papersteward.storage.tx import atomic
 
 
 def audit(session: Session, kind: EventType, now: datetime, payload: dict[str, Any]) -> None:
@@ -83,9 +83,9 @@ def delivery_history(session: Session) -> dict[str, DeliveryHistory]:
 def create_digest(
     session: Session, day: date, *, now: datetime, allow_downgrade: bool = False
 ) -> Digest:
-    with _atomic(session):
+    with atomic(session):
         bound_context(session, now, action="delivery.digest", enforce_schedule=True)
-        ctx = _context(session, now, execution=True)
+        ctx = queue_context(session, now, execution=True)
         if day > now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date():
             raise InvariantViolation("digest.date", "不能生成未来日报")
         if session.get(DigestRow, day) is not None:
@@ -175,7 +175,7 @@ def create_digest(
 
 
 def _preflight(session: Session, digest: Digest, channel: str, now: datetime) -> None:
-    ctx = _context(session, now, execution=True)
+    ctx = queue_context(session, now, execution=True)
     if digest.binding != ctx["binding"]:
         raise InvariantViolation("digest.binding", "日报依据已变化")
     history = delivery_history(session)
@@ -221,7 +221,7 @@ def deliver(
     try:
         with session_scope(factory) as session:
             digest = read_digest(session, day)
-            _context(session, now)  # 已送达回执只读；完成/暂停后重试仍返回原结果。
+            queue_context(session, now)  # 已送达回执只读；完成/暂停后重试仍返回原结果。
             row = session.get(DeliveryRow, (day, channel))
             if row is not None:
                 if row.destination_hash != destination_hash:

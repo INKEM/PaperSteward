@@ -1,6 +1,5 @@
 """本地HTML/HTMX薄页面；业务规则仅调用现有服务。"""
 
-import json
 from datetime import date
 from html import escape
 from pathlib import Path
@@ -14,14 +13,19 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
+from papersteward.api.form_utils import fields as form_fields
+from papersteward.api.html import HTML_HEADERS as HEADERS
+from papersteward.api.html import page as _page
+from papersteward.api.workflow_pages import dashboard
 from papersteward.core.entities import Enrichment, Paper, Taxonomy, ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
-from papersteward.core.errors import DomainError, InvariantViolation
-from papersteward.delivery.actions import apply_action
-from papersteward.delivery.archive import list_archives, read_archive
+from papersteward.core.errors import DomainError
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
-from papersteward.delivery.shelf_view import (
+from papersteward.errors import AppError, NotFoundError
+from papersteward.reading.actions import apply_action
+from papersteward.reading.archive import list_archives, read_archive
+from papersteward.reading.shelf_view import (
     ShelfItem,
     ShelfPage,
     ShelfSummary,
@@ -30,9 +34,8 @@ from papersteward.delivery.shelf_view import (
     shelf_item_for_paper,
     shelf_summaries,
 )
-from papersteward.errors import AppError, NotFoundError
 from papersteward.scoring.contracts import BacklogFilters, BacklogItem, QueueItem, ScoreExplanation
-from papersteward.scoring.queue import _context, explain_score, read_backlog
+from papersteward.scoring.queue import explain_score, queue_context, read_backlog
 from papersteward.scoring.views import (
     ViewPreview,
     get_view_config,
@@ -52,62 +55,6 @@ from papersteward.storage.repositories import (
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 STATIC = Path(__file__).resolve().parents[1] / "static"
-HEADERS = {
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-}
-
-
-def _page(title: str, body: str, *, nav: str | None = None) -> HTMLResponse:
-    """页面外壳。nav 为该页在主导航中的键；缺省用 title 匹配。"""
-    config = {
-        "allowEval": False,
-        "allowScriptTags": False,
-        "selfRequestsOnly": True,
-        "historyCacheSize": 0,
-        "includeIndicatorStyles": False,
-        "responseHandling": [
-            {"code": "[23]..", "swap": True},
-            {"code": "[45]..", "swap": True, "error": True},
-        ],
-    }
-    links = (
-        ("/ui/queue", "阅读队列", "阅读队列"),
-        ("/ui/shelves", "特殊桶", "特殊桶"),
-        ("/ui/views", "排序视图", "排序视图"),
-        ("/ui/archive", "归档", "归档"),
-        ("/ui/setup", "首次设置", "首次设置"),
-        ("/ui/settings", "设置", "设置"),
-        ("/ui/help", "帮助", "使用帮助"),
-    )
-    active = nav or title
-    navigation = "".join(
-        f'<a href="{url}"' + (' aria-current="page"' if active == key else "") + f">{label}</a>"
-        for url, label, key in links
-    )
-    return HTMLResponse(
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<meta name="htmx-config" content="{escape(json.dumps(config))}">'
-        f"<title>{escape(title)} · PaperSteward</title>"
-        '<link rel="stylesheet" href="/ui/static/style.css">'
-        '<script src="/ui/static/htmx.js" defer></script>'
-        '<script src="/ui/static/setup.js" defer></script></head><body>'
-        '<a class="skip-link" href="#main">跳到内容</a><header>'
-        '<a class="brand" href="/ui/queue"><span class="brand-mark" aria-hidden="true">P</span>'
-        "PaperSteward<small>留一点时间，读重要的论文</small></a>"
-        f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
-        '<details class="mobile-nav"><summary>导航菜单</summary>'
-        f'<nav aria-label="移动导航">{navigation}</nav></details></header>'
-        f'<main id="main"><div class="page-heading"><p class="eyebrow">你的研究书桌</p>'
-        f"<h1>{escape(title)}</h1></div>{body}</main>"
-        "<footer><span>PaperSteward · 本地阅读工作区</span>"
-        '<span>阅读反馈保存在本地，备注不外发。 <a href="/ui/help">帮助与隐私</a></span>'
-        "</footer></body></html>",
-        headers=HEADERS,
-    )
 
 
 @router.get("/help")
@@ -151,7 +98,7 @@ def _error(exc: DomainError | AppError | ValidationError) -> HTMLResponse:
 
 
 def _day(session: SessionDep, explicit: date | None = None) -> date:
-    ctx = _context(session, utc_now())
+    ctx = queue_context(session, utc_now())
     return explicit or utc_now().astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
 
 
@@ -403,11 +350,10 @@ def _view_table(preview: ViewPreview) -> str:
 def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None) -> str:
     date_part = f"&date={day.isoformat()}" if day is not None else ""
     links = "<p>预设："
-    parts = []
-    for preset in list_presets():
-        parts.append(
-            f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
-        )
+    parts = [
+        f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
+        for preset in list_presets()
+    ]
     links += " · ".join(parts) + "</p>"
     links += "<p>已保存："
     if saved:
@@ -498,8 +444,6 @@ def _backlog_page(
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
     try:
-        from papersteward.api.workflow_pages import dashboard
-
         now = utc_now()
         page = read_backlog(session, now=now, limit=50, offset=offset, filters=filters)
         body = dashboard(
@@ -828,22 +772,9 @@ def archive(
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>')
 
 
-def _guard(request: Request) -> None:
-    origin = request.headers.get("origin")
-    if request.headers.get("sec-fetch-site") == "cross-site" or (
-        origin and origin.rstrip("/") != str(request.base_url).rstrip("/")
-    ):
-        raise InvariantViolation("ui.origin", "拒绝跨站操作")
-    if not origin and request.headers.get("x-papersteward-ui") != "1":
-        raise InvariantViolation("ui.origin", "需要同源页面操作")
-
-
 @router.post("/actions/{paper_id}")
 async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLResponse:
     try:
-        # form_utils.fields 与本模块互相引用（Q-02 待解环），此处函数内导入。
-        from papersteward.api.form_utils import fields as form_fields
-
         form = await form_fields(request)
         payload: dict[str, Any] = dict(form)
         if "score" in payload:

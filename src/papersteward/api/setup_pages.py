@@ -13,26 +13,31 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from pydantic import ValidationError
 
 from papersteward.api import onboarding as api
 from papersteward.api.deps import SessionDep
 from papersteward.api.form_utils import (
+    PageError,
     conflict_redirect,
     failure,
     fields,
     hidden,
     input_field,
 )
-from papersteward.api.pages import _page
+from papersteward.api.html import page as _page
+from papersteward.api.profile_view import (
+    confirmed_results,
+    draft_card,
+    profile_preview,
+    taxonomy_preview,
+)
 from papersteward.api.settings_pages import llm_form
 from papersteward.api.workflow_pages import run_body
 from papersteward.config import get_settings
 from papersteward.core.entities import Run
 from papersteward.core.enums import RunStatus
 from papersteward.core.errors import DomainError
-from papersteward.documents import parse_profile, parse_taxonomy
-from papersteward.errors import AppError, InvalidRequestError
+from papersteward.errors import InvalidRequestError
 from papersteward.jobs.ui_flow import FlowRequest
 from papersteward.llm.runtime import resolve_llm_config
 from papersteward.onboarding.intake import MAX_MATERIALS, add_feedback
@@ -136,95 +141,6 @@ def _last_extract_note(session: SessionDep) -> str:
     return ""
 
 
-def _tags(values: list[str]) -> str:
-    return "".join(f'<span class="tag">{escape(str(value))}</span>' for value in values)
-
-
-def _profile_preview(review: dict[str, Any]) -> str:
-    profile = parse_profile(review["content_md"], document_id=review["id"])
-    data = dict(profile.parsed_json)
-    positioning = data.get("positioning") or {}
-    body = '<div class="draft-preview">'
-    summary = positioning.get("summary")
-    if summary:
-        body += f"<p>{escape(str(summary))}</p>"
-    meta = [str(positioning[key]) for key in ("domain", "career_stage") if positioning.get(key)]
-    if meta:
-        body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
-    body += "<h3>核心问题</h3><ol>"
-    body += "".join(f"<li>{escape(str(item['text']))}</li>" for item in data["core_questions"])
-    body += "</ol><h3>子方向</h3><table><thead><tr><th>子方向</th><th>优先级</th>"
-    body += "<th>目标占比</th><th>检索关键词</th></tr></thead><tbody>"
-    for item in data["subdirections"]:
-        body += (
-            f"<tr><td>{escape(str(item['name']))}</td>"
-            f"<td>{escape(str(item.get('priority', 'medium')))}</td>"
-            f"<td>{float(item['target_share']):.0%}</td>"
-            f"<td>{_tags(item.get('keywords', []))}</td></tr>"
-        )
-    body += "</tbody></table>"
-    for label, key in (("纳入标准", "include"), ("排除标准", "exclude")):
-        values = data.get(key) or []
-        if values:
-            body += f"<h3>{label}</h3><ul>"
-            body += "".join(f"<li>{escape(str(value))}</li>" for value in values)
-            body += "</ul>"
-    reading = data.get("reading") or {}
-    ratio = reading.get("deep_skim_ratio") or [0, 1]
-    body += (
-        "<h3>阅读节奏</h3><p>"
-        f"每周 {escape(str(reading.get('weekly_capacity', '—')))} 篇，"
-        f"精读/粗读约 {float(ratio[0]):.0%}:{float(ratio[1]):.0%}。"
-        "</p>"
-    )
-    goals = reading.get("reading_goals") or []
-    if goals:
-        body += f"<p>目标：{_tags(goals)}</p>"
-    return body + "</div>"
-
-
-def _taxonomy_preview(review: dict[str, Any]) -> str:
-    taxonomy = parse_taxonomy(review["content_md"], document_id=review["id"])
-    body = '<div class="draft-preview">'
-    for tag in taxonomy.tags:
-        if tag.level.value != "primary":
-            continue
-        body += f"<details><summary>{escape(tag.code)} {escape(tag.name)}</summary>"
-        body += f"<p>{escape(tag.definition)}</p>"
-        body += "<p><strong>纳入</strong></p><ul>"
-        body += "".join(f"<li>{escape(value)}</li>" for value in tag.include)
-        body += "</ul><p><strong>排除</strong></p><ul>"
-        body += "".join(f"<li>{escape(value)}</li>" for value in tag.exclude)
-        body += "</ul><p><strong>正例</strong> " + _tags(list(tag.examples)) + "</p></details>"
-    return body + "</div>"
-
-
-def _draft_card(title: str, review: dict[str, Any], preview: str) -> str:
-    body = (
-        f'<article><h2>{escape(title)} <span class="muted">v{escape(review["version"])}</span></h2>'
-    )
-    if review.get("missing_fields"):
-        body += (
-            '<p class="notice">还需补充：'
-            + escape("、".join(str(field) for field in review["missing_fields"]))
-            + "。可以提意见让 Agent 补全。</p>"
-        )
-    body += (
-        "<details open><summary>渲染视图</summary>"
-        + preview
-        + "</details><details><summary>Markdown 源码</summary><pre>"
-        + escape(str(review["content_md"]))
-        + "</pre></details>"
-    )
-    if review.get("markdown_diff"):
-        body += (
-            "<details><summary>与上一版的差异</summary><pre>"
-            + escape(str(review["markdown_diff"]))
-            + "</pre></details>"
-        )
-    return body + "</article>"
-
-
 def _draft_section(summary: dict[str, Any]) -> str:
     profile, taxonomy = summary["profile"], summary["taxonomy"]
     if profile is None and taxonomy is None:
@@ -235,16 +151,16 @@ def _draft_section(summary: dict[str, Any]) -> str:
     body = "<h2>最新草案</h2>"
     if profile is not None:
         try:
-            preview = _profile_preview(profile)
+            preview = profile_preview(profile)
         except (DomainError, ValueError, KeyError):
             preview = '<p class="notice">渲染预览失败，请查看 Markdown 源码。</p>'
-        body += _draft_card("研究方向档案", profile, preview)
+        body += draft_card("研究方向档案", profile, preview)
     if taxonomy is not None:
         try:
-            preview = _taxonomy_preview(taxonomy)
+            preview = taxonomy_preview(taxonomy)
         except (DomainError, ValueError, KeyError):
             preview = '<p class="notice">渲染预览失败，请查看 Markdown 源码。</p>'
-        body += _draft_card("分类标签", taxonomy, preview)
+        body += draft_card("分类标签", taxonomy, preview)
     return body
 
 
@@ -311,41 +227,6 @@ def _legacy_section(summary: dict[str, Any]) -> str:
         '<form method="post" action="/ui/setup/import-legacy"><button>导入为材料</button></form>'
         "</details>"
     )
-
-
-def confirmed_results(session: SessionDep) -> str:
-    """确认后的研究档案与分类规则继续可见，复用已有安全渲染。"""
-    from papersteward.onboarding.setup import RUNTIME_KEY
-    from papersteward.storage.repositories import (
-        ConfigRepository,
-        ProfileRepository,
-        TaxonomyRepository,
-    )
-
-    profile = ProfileRepository(session).latest_confirmed()
-    taxonomy = TaxonomyRepository(session).latest_confirmed()
-    if profile is None or taxonomy is None:
-        return (
-            "<article><h2>研究档案与分类标签</h2><p>尚未完成首次设置。</p>"
-            '<a href="/ui/setup">开始首次设置</a></article>'
-        )
-    profile_data = {"id": profile.id, "version": profile.version, "content_md": profile.content_md}
-    taxonomy_data = {
-        "id": taxonomy.id,
-        "version": taxonomy.version,
-        "content_md": taxonomy.content_md,
-    }
-    body = "<h2>当前使用的研究设置</h2>"
-    body += _draft_card("已确认的研究方向档案", profile_data, _profile_preview(profile_data))
-    body += _draft_card("已确认的分类标签", taxonomy_data, _taxonomy_preview(taxonomy_data))
-    runtime = ConfigRepository(session).latest(RUNTIME_KEY)
-    if runtime is not None:
-        body += (
-            '<p class="muted">工作区时区：'
-            + escape(str(runtime.value_json.get("timezone", "")))
-            + "。挖掘由你手动发起，阅读容量仅作建议。</p>"
-        )
-    return body
 
 
 @router.get("/setup")
@@ -435,7 +316,7 @@ def setup(
                 )
                 body += _legacy_section(summary)
         return _page("首次设置", flashes + body)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)
 
 
@@ -464,7 +345,7 @@ async def add_material_action(request: Request, session: SessionDep) -> Response
             session,
         )
         return RedirectResponse("/ui/setup", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)
 
 
@@ -474,7 +355,7 @@ async def delete_material_action(request: Request, session: SessionDep) -> Respo
         data = await fields(request)
         api.delete_material(data.get("material_id", ""), session)
         return RedirectResponse("/ui/setup?removed=1", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)
 
 
@@ -484,7 +365,7 @@ async def import_legacy_action(request: Request, session: SessionDep) -> Respons
         await fields(request)
         api.import_legacy(session)
         return RedirectResponse("/ui/setup?imported=1", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)
 
 
@@ -494,7 +375,7 @@ async def generate_action(request: Request, session: SessionDep) -> Response:
         data = await fields(request)
         _enqueue_extraction(request, _run_id(data))
         return RedirectResponse("/ui/setup", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         redirected = conflict_redirect(exc)
         if redirected is not None:
             return redirected
@@ -513,7 +394,7 @@ async def feedback_action(request: Request, session: SessionDep) -> Response:
             add_feedback(session, data.get("comment", ""))
         _enqueue_extraction(request, _run_id(data))
         return RedirectResponse("/ui/setup", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         redirected = conflict_redirect(exc)
         if redirected is not None:
             return redirected
@@ -542,5 +423,5 @@ async def confirm_action(request: Request, session: SessionDep) -> Response:
             session,
         )
         return RedirectResponse("/ui/today", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)

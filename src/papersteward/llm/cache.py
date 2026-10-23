@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -17,6 +18,8 @@ from papersteward.core.entities import utc_now
 from papersteward.llm.gateway import LLMCache, LLMCacheEntry
 from papersteward.storage.db import session_scope
 from papersteward.storage.models import LLMCacheRow
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -47,6 +50,8 @@ class DatabaseLLMCache(LLMCache):
                     generated_at=row.generated_at,
                 )
         except Exception:
+            # 缓存自身故障（写锁/磁盘）按未命中处理，绝不阻塞挖掘；留痕便于发现持续失效。
+            logger.warning("llm cache get failed; treating as miss", exc_info=True)
             return None
 
     def put(
@@ -95,6 +100,7 @@ class DatabaseLLMCache(LLMCache):
                     )
                 )
         except Exception:
+            logger.warning("llm cache put failed; result not cached", exc_info=True)
             return
 
 

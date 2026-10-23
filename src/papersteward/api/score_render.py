@@ -61,9 +61,14 @@ def score_explanation(score: ScoreExplanation | Exclusion) -> str:
         if not isinstance(details, dict):
             continue
         rubric = details.get("rubric") or {}
-        for item in rubric.get("evidence", []) if isinstance(rubric, dict) else []:
-            if isinstance(item, dict) and item.get("valid") and isinstance(item.get("quote"), str):
-                quotes.append(item["quote"])
+        if isinstance(rubric, dict):
+            quotes.extend(
+                item["quote"]
+                for item in rubric.get("evidence", [])
+                if isinstance(item, dict)
+                and item.get("valid")
+                and isinstance(item.get("quote"), str)
+            )
     if quotes:
         body += "<details><summary>相关性依据（论文原文片段）</summary>"
         body += "".join(

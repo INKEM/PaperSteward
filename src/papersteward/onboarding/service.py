@@ -1,8 +1,5 @@
 """初始化阶段迁移；仅 flush，外部事务决定提交，失败操作自身原子回滚。"""
 
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime
 
 from sqlalchemy import update
@@ -16,18 +13,7 @@ from papersteward.core.onboarding import enter_draft as core_enter_draft
 from papersteward.storage.models import OnboardingRow
 from papersteward.storage.onboarding import get_onboarding
 from papersteward.storage.repositories import EventRepository
-
-
-@contextmanager
-def _atomic(session: Session) -> Iterator[None]:
-    # sqlite3 legacy 模式不会为 SELECT 开启事务。裸 SAVEPOINT 被 release 后可能
-    # 提前提交，导致调用方 rollback 无效；先确保实际存在外层事务。
-    connection = session.connection()
-    raw = connection.connection.dbapi_connection
-    if isinstance(raw, sqlite3.Connection) and not raw.in_transaction:
-        connection.exec_driver_sql("BEGIN")
-    with session.begin_nested():
-        yield
+from papersteward.storage.tx import atomic as _atomic
 
 
 def enter_draft(session: Session, *, event_id: str, occurred_at: datetime) -> Onboarding:
@@ -89,4 +75,4 @@ def transition_active(
     return updated
 
 
-__all__ = ["_atomic", "enter_draft", "transition_active"]
+__all__ = ["enter_draft", "transition_active"]

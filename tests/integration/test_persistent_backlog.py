@@ -9,8 +9,8 @@ from test_ui_flows import HEADERS, post, ready, request, wait
 
 from conftest import activate
 from papersteward.core.enums import PaperStatus, RunStatus
-from papersteward.delivery.actions import apply_action
 from papersteward.delivery.contracts import Action
+from papersteward.reading.actions import apply_action
 from papersteward.scoring.contracts import BacklogFilters
 from papersteward.scoring.queue import explain_score, read_backlog, refresh_queue
 from papersteward.storage import create_session_factory, session_scope

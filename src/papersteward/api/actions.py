@@ -7,8 +7,8 @@ from fastapi import APIRouter
 from papersteward.api.deps import SessionDep
 from papersteward.api.domain_errors import domain_errors
 from papersteward.core.entities import utc_now
-from papersteward.delivery.actions import apply_action
 from papersteward.delivery.contracts import Action
+from papersteward.reading.actions import apply_action
 
 router = APIRouter(tags=["reading"])
 

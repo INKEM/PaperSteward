@@ -11,11 +11,10 @@ from sqlalchemy.orm import Session
 from papersteward.core.entities import Event, Rating
 from papersteward.core.enums import EventType, PaperStatus, TagRole
 from papersteward.core.errors import InvariantViolation
-from papersteward.delivery.archive import archive_done
 from papersteward.delivery.contracts import Action
 from papersteward.errors import NotFoundError
-from papersteward.onboarding.service import _atomic
-from papersteward.scoring.queue import _context, _eligibility, explain_score
+from papersteward.reading.archive import archive_done
+from papersteward.scoring.queue import eligibility, explain_score, queue_context
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.repositories import (
     EventRepository,
@@ -23,6 +22,7 @@ from papersteward.storage.repositories import (
     PaperTagRepository,
     RatingRepository,
 )
+from papersteward.storage.tx import atomic
 
 
 def apply_action(
@@ -34,8 +34,8 @@ def apply_action(
     )
     receipt_id = hashlib.sha256(("reading:" + action.request_id).encode()).hexdigest()
     try:
-        with _atomic(session):
-            ctx = _context(session, now)
+        with atomic(session):
+            ctx = queue_context(session, now)
             from papersteward.pipeline.context import runtime_local_day
 
             day = runtime_local_day(session, now, ctx["binding"])
@@ -68,7 +68,7 @@ def apply_action(
                     PaperStatus.READING,
                 }:
                     raise InvariantViolation("action.done", "只能完成已入队、已推送或阅读中的文献")
-                reasons, _, _ = _eligibility(session, paper, ctx, day)
+                reasons, _, _ = eligibility(session, paper, ctx, day)
                 if [r for r in reasons if not r.startswith("ineligible_status:")]:
                     raise InvariantViolation("action.done", "摘要/分类/评分依据未就绪")
                 explain_score(session, paper_id, now=now)

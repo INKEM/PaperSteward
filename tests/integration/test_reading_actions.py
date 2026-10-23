@@ -10,9 +10,9 @@ from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import EventType, PaperStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.delivery.actions import apply_action
 from papersteward.delivery.contracts import Action
 from papersteward.delivery.service import create_digest, deliver
+from papersteward.reading.actions import apply_action
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.models import EventRow, RatingRow
 from papersteward.storage.repositories import EventRepository, PaperRepository, RatingRepository

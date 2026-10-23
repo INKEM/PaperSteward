@@ -10,16 +10,15 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.form_utils import conflict_redirect, failure, fields, hidden
-from papersteward.api.pages import HEADERS, _page
+from papersteward.api.form_utils import PageError, conflict_redirect, failure, fields, hidden
+from papersteward.api.html import HTML_HEADERS as HEADERS
+from papersteward.api.html import page as _page
 from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
 from papersteward.core.enums import RunStatus
-from papersteward.core.errors import DomainError
-from papersteward.errors import AppError, NotFoundError
+from papersteward.errors import NotFoundError
 from papersteward.jobs.ui_flow import FlowRequest, processing_problem
 from papersteward.pipeline.context import bound_context
 from papersteward.scoring.queue import read_backlog
@@ -370,7 +369,7 @@ async def submit_run(request: Request) -> Response:
         )
         identity = request.app.state.ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         redirected = conflict_redirect(exc)
         if redirected is not None:
             return redirected
@@ -383,7 +382,7 @@ async def cancel_run(request: Request, identity: str, session: SessionDep) -> Re
     try:
         await fields(request)
         request.app.state.ui_flows.cancel(identity)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+    except PageError as exc:
         return failure(exc)
     if get_onboarding(session).stage.value == "active":
         return RedirectResponse("/ui/today?cancelled=1", status_code=303)

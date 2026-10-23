@@ -10,12 +10,12 @@ from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.delivery.actions import apply_action
-from papersteward.delivery.archive import read_archive
 from papersteward.delivery.contracts import Action
 from papersteward.delivery.service import create_digest, deliver
 from papersteward.jobs.preference import refresh_weekly
-from papersteward.scoring.queue import _context, _history
+from papersteward.reading.actions import apply_action
+from papersteward.reading.archive import read_archive
+from papersteward.scoring.queue import queue_context, reading_history
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.models import PaperRow, RatingRow, RunRow, ScoreSnapshotRow
 from papersteward.storage.repositories import (
@@ -193,7 +193,7 @@ def test_reading_metadata_used_even_if_current_paper_changes(client, migrated_en
         row = session.get(PaperRow, "read-0")
         row.authors_json, row.venue = ["Later Author"], "Later Venue"
         session.flush()
-        _, feedback = _history(session, _context(session, SUNDAY), SUNDAY.date())
+        _, feedback = reading_history(session, queue_context(session, SUNDAY), SUNDAY.date())
         assert feedback[0].authors == ("Original Author",) and feedback[0].venue == "Original Venue"
 
 

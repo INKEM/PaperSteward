@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from papersteward.delivery.contracts import ArchiveRecord
-from papersteward.delivery.export import export_archives
+from papersteward.reading.export import export_archives
 
 
 def record():

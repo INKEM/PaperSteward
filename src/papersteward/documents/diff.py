@@ -82,10 +82,12 @@ def _diff_lists(path: str, left: list[Any], right: list[Any], out: list[DiffEntr
         right_counter = Counter(_value_key(item) for item in right)
         removed = left_counter - right_counter
         added = right_counter - left_counter
-        for value in sorted(removed.elements()):
-            out.append(DiffEntry(path, "remove", old=json.loads(value)))
-        for value in sorted(added.elements()):
-            out.append(DiffEntry(path, "add", new=json.loads(value)))
+        out.extend(
+            DiffEntry(path, "remove", old=json.loads(value)) for value in sorted(removed.elements())
+        )
+        out.extend(
+            DiffEntry(path, "add", new=json.loads(value)) for value in sorted(added.elements())
+        )
         return
 
     for index in range(max(len(left), len(right))):

@@ -10,9 +10,13 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
-from papersteward.api.pages import _guard, _page
+from papersteward.api.html import error_response, guard, page
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, ConflictError, InvalidRequestError
+
+# 页面路由的统一可恢复异常集合（Q-06）：DomainError 本身是 ValueError 子类，
+# 元组里显式列出 ValueError 兜底 int()/解析等原生错误，避免漏接变 500。
+PageError = (DomainError, AppError, ValidationError, ValueError)
 
 
 def hidden(name: str, value: object) -> str:
@@ -38,23 +42,16 @@ def input_field(name: str, value: str, label: str) -> str:
 
 
 def failure(exc: Exception, *, back: str = "/ui/setup") -> HTMLResponse:
-    if isinstance(exc, ValidationError):
-        details = "；".join(
-            f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
-        )
-        message = "输入无效：" + details
-        status = 422
-    elif isinstance(exc, DomainError | AppError):
-        message = exc.message
-        status = exc.status_code if isinstance(exc, AppError) else 409
-    else:
-        message, status = "输入格式无效，请检查 JSON 或表单后重试。", 422
-    page = _page(
+    """表单失败统一渲染：错误页 + 可配返回链接（校验错误附字段原因）。"""
+    if isinstance(exc, DomainError | AppError | ValidationError):
+        return error_response(exc, back=back)
+    rendered = page(
         "请检查后重试",
-        f'<p role="alert">{escape(message)}</p><a href="{escape(back)}">返回页面检查后重试</a>',
+        '<p role="alert">输入格式无效，请检查 JSON 或表单后重试。</p>'
+        f'<a href="{escape(back)}">返回页面检查后重试</a>',
     )
-    page.status_code = status
-    return page
+    rendered.status_code = 422
+    return rendered
 
 
 def conflict_redirect(exc: Exception) -> RedirectResponse | None:
@@ -67,7 +64,7 @@ def conflict_redirect(exc: Exception) -> RedirectResponse | None:
 
 
 async def fields(request: Request) -> dict[str, str]:
-    _guard(request)
+    guard(request)
     if (
         request.headers.get("content-type", "").split(";", 1)[0]
         != "application/x-www-form-urlencoded"

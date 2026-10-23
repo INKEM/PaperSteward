@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from papersteward.core.entities import Event, Paper, Run, utc_now
 from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.onboarding.service import _atomic
 from papersteward.pipeline.context import bound_context
 from papersteward.pipeline.dedupe import (
     DedupeGroup,
@@ -25,6 +24,7 @@ from papersteward.sources.queries import generate_queries
 from papersteward.storage.ingestion import attach_source, finish_run
 from papersteward.storage.models import EventRow, PaperRow, PaperSourceRow
 from papersteward.storage.repositories import EventRepository, PaperRepository, RunRepository
+from papersteward.storage.tx import atomic
 
 
 def _paper_candidate(paper: Paper) -> PaperCandidate:
@@ -297,7 +297,7 @@ def ingest(
                 )
                 if exc.code != "unsupported_query":
                     break
-            except Exception:
+            except Exception:  # noqa: BLE001 - 单来源故障转为结构化错误报告
                 errors.append(
                     {
                         "source": adapter.source,
@@ -363,16 +363,16 @@ def ingest(
             stats_json=stats,
             errors_json={"sources": errors},
         )
-    with _atomic(session):
+    with atomic(session):
         RunRepository(session).add(Run(id=run_id, run_type="ingest", started_at=started))
         try:
-            with _atomic(session):
+            with atomic(session):
                 if bound_context(session, now())[1] != binding:
                     raise InvariantViolation("ingest.binding", "确认依据已变化")
                 existing_index = _ExistingIndex(session)
                 for group in groups:
                     _write_group(session, group, run_id, now(), config, stats, existing_index)
-        except Exception:
+        except Exception:  # noqa: BLE001 - 半批失败转为脱敏失败报告，事务由savepoint回滚
             # 半批元数据/来源/事件已由savepoint撤销；仅保存脱敏的失败运行报告。
             status = RunStatus.FAILED
             stats.update(new=0, existing=0, source_versions_added=0, filtered=[])

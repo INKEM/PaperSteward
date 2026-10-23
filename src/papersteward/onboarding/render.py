@@ -156,8 +156,7 @@ def render_taxonomy(
         lines.append("- 正例：" + "、".join(tag.examples))
         if tag.aliases:
             lines.append("- 别名：" + "、".join(tag.aliases))
-        for boundary in tag.boundaries:
-            lines.append(f"- 边界：{boundary}")
+        lines.extend(f"- 边界：{boundary}" for boundary in tag.boundaries)
         lines.append("")
     return "\n".join(lines)
 

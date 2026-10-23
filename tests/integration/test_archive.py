@@ -10,9 +10,9 @@ from test_priority_queue import NOW
 from papersteward.cli.main import main
 from papersteward.config import get_settings
 from papersteward.core.enums import PaperStatus
-from papersteward.delivery.actions import apply_action
-from papersteward.delivery.archive import read_archive
 from papersteward.delivery.contracts import Action
+from papersteward.reading.actions import apply_action
+from papersteward.reading.archive import read_archive
 from papersteward.storage import session_scope
 from papersteward.storage.models import ArchiveSnapshotRow, PaperRow
 from papersteward.storage.repositories import (

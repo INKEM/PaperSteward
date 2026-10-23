@@ -6,6 +6,7 @@ LLM 失败或输出不可用时退回 :func:`generate_queries` 的确定性展�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -22,6 +23,8 @@ from papersteward.schemas.models import QueryPlanningOutput
 from papersteward.sources.contracts import QuerySpec
 from papersteward.sources.queries import generate_queries, selected_profile
 from papersteward.storage.models import PaperRow, PaperTagRow, RatingRow
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_QUERY_BUDGET = 6
 FALLBACK_MAX_RESULTS = 30
@@ -78,9 +81,11 @@ class QueryPlan:
 
 def _profile_exclude_terms(profile: ResearchProfile) -> tuple[str, ...]:
     terms: list[str] = []
-    for value in profile.parsed_json.get("exclude") or ():
-        if isinstance(value, str) and value.strip():
-            terms.append(value.strip())
+    terms.extend(
+        value.strip()
+        for value in profile.parsed_json.get("exclude") or ()
+        if isinstance(value, str) and value.strip()
+    )
     return tuple(dict.fromkeys(terms))
 
 
@@ -176,6 +181,8 @@ def _clamp_queries(
                 }
             )
         except Exception:
+            # 单条规划解析失败不拖垮整轮检索；留痕计数便于发现模型输出退化。
+            logger.warning("planned query dropped (invalid item)", exc_info=True)
             continue
         key = (
             spec.field,

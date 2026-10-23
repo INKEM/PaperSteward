@@ -8,9 +8,9 @@ from fastapi.responses import PlainTextResponse
 
 from papersteward.api.deps import SessionDep
 from papersteward.api.domain_errors import domain_errors
-from papersteward.delivery.archive import list_archives, read_archive
 from papersteward.delivery.contracts import ArchiveRecord
-from papersteward.delivery.export import ExportFormat, export_archives
+from papersteward.reading.archive import list_archives, read_archive
+from papersteward.reading.export import ExportFormat, export_archives
 
 router = APIRouter(prefix="/archive", tags=["archive"])
 

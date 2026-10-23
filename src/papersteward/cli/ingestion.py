@@ -18,48 +18,11 @@ from papersteward.core.enums import RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError
 from papersteward.pipeline.ingest import ingest
-from papersteward.sources.arxiv import ArxivAdapter
 from papersteward.sources.contracts import QuerySpec, SourceAdapter
-from papersteward.sources.fixtures import FakeSourceAdapter
 from papersteward.sources.http import SourceHTTP
-from papersteward.sources.openalex import OpenAlexAdapter
-from papersteward.sources.semantic_scholar import SemanticScholarAdapter
+from papersteward.sources.registry import SOURCES, build_adapters, fixture_transport
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
 from papersteward.storage.repositories import RunRepository
-
-SOURCES = ("arxiv", "openalex", "semantic_scholar", "fake")
-
-
-def _fixture_transport(path: Path) -> httpx.MockTransport:
-    """原始响应文件重复回放；`{"responses": [...]}` 按请求顺序回放多页响应。"""
-    body = path.read_bytes()
-    try:
-        cassette = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        cassette = None
-    if not (isinstance(cassette, dict) and isinstance(cassette.get("responses"), list)):
-        return httpx.MockTransport(lambda request: httpx.Response(200, content=body))
-    responses: list[bytes] = []
-    for item in cassette["responses"]:
-        if isinstance(item, str):
-            responses.append(item.encode("utf-8"))
-        elif isinstance(item, (dict, list)):
-            responses.append(json.dumps(item, ensure_ascii=False).encode("utf-8"))
-        else:
-            raise ValueError("fixture responses 只支持对象、数组或字符串")
-    if not responses:
-        raise ValueError("fixture responses 不能为空")
-    pending = iter(responses)
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        try:
-            content = next(pending)
-        except StopIteration:
-            # 不重复最后一页，避免把分页耗尽伪装成可解析的重复候选。
-            return httpx.Response(400, content=b'{"error":"fixture responses exhausted"}')
-        return httpx.Response(200, content=content)
-
-    return httpx.MockTransport(handle)
 
 
 def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -80,6 +43,11 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
     show.add_argument("--last", action="store_true")
 
 
+def _fixture_transport(path: Path) -> httpx.MockTransport:
+    # 兼容别名：测试经由公开边界 sources.registry.fixture_transport 使用。
+    return fixture_transport(path)
+
+
 def _adapters(
     args: argparse.Namespace, settings: Settings, clients: list[SourceHTTP]
 ) -> list[SourceAdapter]:
@@ -94,35 +62,7 @@ def _adapters(
         if source not in args.source or source in fixtures:
             raise ValueError("fixture来源未知或重复")
         fixtures[source] = Path(path)
-    if len(set(args.source)) != len(args.source):
-        raise ValueError("来源不能重复")
-    result: list[SourceAdapter] = []
-    for source in args.source:
-        path = fixtures.get(source)
-        if source == "fake":
-            if path is None:
-                raise ValueError("fake来源必须提供fixture")
-            result.append(FakeSourceAdapter(path))
-            continue
-        if path is None and not args.live:
-            raise ValueError("请提供--fixture；真实HTTP调用须显式--live")
-        transport = _fixture_transport(path) if path else None
-        client = SourceHTTP(
-            source,
-            transport=transport,
-            min_interval=0 if path else 3,
-            api_key=settings.semantic_scholar_api_key
-            if source == "semantic_scholar" and not path
-            else None,
-        )
-        clients.append(client)
-        factory = {
-            "arxiv": ArxivAdapter,
-            "openalex": OpenAlexAdapter,
-            "semantic_scholar": SemanticScholarAdapter,
-        }[source]
-        result.append(factory(client))
-    return result
+    return build_adapters(args.source, settings, clients, fixtures=fixtures, live=args.live)
 
 
 def run(args: argparse.Namespace) -> int:

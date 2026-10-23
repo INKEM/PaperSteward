@@ -17,8 +17,6 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from papersteward.cli.ingestion import _adapters
-from papersteward.cli.processing import _processor_context
 from papersteward.config import Settings
 from papersteward.core.entities import Bucket, ResearchProfile, Run, Taxonomy, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
@@ -40,6 +38,7 @@ from papersteward.pipeline.process import (
     persist_triage,
     reconcile_legacy_reviews,
 )
+from papersteward.pipeline.processor import processor_context
 from papersteward.pipeline.relevance import (
     RelevanceResult,
     evaluate_relevance,
@@ -50,6 +49,7 @@ from papersteward.scoring.queue import refresh_queue
 from papersteward.scoring.service import read_scoring_config
 from papersteward.sources.http import SourceHTTP
 from papersteward.sources.planner import QueryPlan, plan_queries
+from papersteward.sources.registry import build_adapters
 from papersteward.storage import session_scope
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import (
@@ -455,15 +455,9 @@ class UIFlowManager:
         )
 
     def collect(self, request: FlowRequest, plan: QueryPlan) -> None:
-        import argparse
-
         clients: list[SourceHTTP] = []
         try:
-            adapters = _adapters(
-                argparse.Namespace(source=[request.source], fixture=[], live=True),
-                self.settings,
-                clients,
-            )
+            adapters = build_adapters([request.source], self.settings, clients, live=True)
             with session_scope(self.factory) as session:
                 report = ingest(
                     session,
@@ -504,7 +498,7 @@ class UIFlowManager:
     def _run_context(self) -> _RunContext:
         """加载一次只读处理上下文并预计算 profile 片段向量（E-05/E-07）。"""
         with session_scope(self.factory) as session:
-            profile, taxonomy, scoring, buckets, day = _processor_context(
+            profile, taxonomy, scoring, buckets, day = processor_context(
                 session, utc_now(), ensure_buckets=False
             )
         provider = HashingEmbeddingProvider()

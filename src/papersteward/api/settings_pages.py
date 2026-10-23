@@ -10,7 +10,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.pages import _guard, _page
+from papersteward.api.html import guard as _guard
+from papersteward.api.html import page as _page
 from papersteward.config import DEFAULT_LLM_TIMEOUT_S, get_settings
 from papersteward.errors import AppError
 from papersteward.llm.runtime import (
@@ -102,7 +103,7 @@ def settings_page(session: SessionDep, saved: bool = False) -> HTMLResponse:
         "<p>配置保存在本机工作区数据库中，密钥不会上传。"
         '保存后即可在 <a href="/ui/setup">首次设置</a> 继续上传研究材料。</p>'
     )
-    from papersteward.api.setup_pages import confirmed_results
+    from papersteward.api.profile_view import confirmed_results
 
     body += confirmed_results(session)
     body += (

@@ -30,7 +30,6 @@ from papersteward.core.enums import (
 )
 from papersteward.core.errors import InvariantViolation
 from papersteward.errors import NotFoundError
-from papersteward.onboarding.service import _atomic
 from papersteward.pipeline.context import bound_context
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.contracts import (
@@ -63,6 +62,7 @@ from papersteward.storage.repositories import (
     SummaryRepository,
     TaxonomyRepository,
 )
+from papersteward.storage.tx import atomic
 
 ELIGIBLE = frozenset({PaperStatus.CLASSIFIED, PaperStatus.SCORED, PaperStatus.QUEUED})
 # 周任务只读候选：已投递未读同样需要当日U；不重新入队，避免改变投递历史。
@@ -71,7 +71,7 @@ BACKLOG_STATUSES = frozenset({PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatu
 READ_STATUSES = frozenset({PaperStatus.DONE, PaperStatus.ARCHIVED})
 
 
-def _context(
+def queue_context(
     session: Session,
     now: datetime,
     *,
@@ -202,7 +202,7 @@ def _eligibility_core(
     return reasons, tag, static
 
 
-def _eligibility(
+def eligibility(
     session: Session,
     paper: Paper,
     ctx: dict[str, Any],
@@ -214,7 +214,7 @@ def _eligibility(
     return _eligibility_core(pre, paper, ctx, day, eligible=eligible)
 
 
-def _history(
+def reading_history(
     session: Session, ctx: dict[str, Any], day: date
 ) -> tuple[list[Completion], list[Feedback]]:
     timezone = ZoneInfo(ctx["runtime"].value_json["timezone"])
@@ -476,8 +476,8 @@ def create_snapshots(
     其余淘汰理由（特殊桶、无摘要、版本不匹配等）仍一票否决。
     """
     natural_day(day)
-    with _atomic(session):
-        ctx = _context(session, now, execution=True, day=day)
+    with atomic(session):
+        ctx = queue_context(session, now, execution=True, day=day)
         if day > now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date():
             raise InvariantViolation("score_date", "不能生成未来日快照")
         candidates = []
@@ -507,7 +507,7 @@ def create_snapshots(
             if fill_ids:
                 excluded = [item for item in excluded if item.paper_id not in fill_ids]
         backlog = Counter(tag for _, tag, _ in candidates)
-        completions, feedback = _history(session, ctx, day)
+        completions, feedback = reading_history(session, ctx, day)
         created = existing = 0
         for paper, tag, static in candidates:
             repo = ScoreSnapshotRepository(session)
@@ -590,7 +590,7 @@ def read_queue(
     natural_day(day)
     if not 1 <= limit <= 200 or offset < 0:
         raise InvariantViolation("pagination", "limit须为1–200，offset非负")
-    ctx = _context(session, now, day=day)
+    ctx = queue_context(session, now, day=day)
     items = []
     # 状态过滤与资格判定数据都批量取齐（E-01）：查询量从 O(论文×7) 降为常数批查询。
     candidates = [paper for paper in PaperRepository(session).list() if paper.status in ELIGIBLE]
@@ -629,12 +629,12 @@ def read_queue(
 def explain_score(
     session: Session, paper_id: str, *, now: datetime, day: date | None = None
 ) -> ScoreExplanation | Exclusion:
-    ctx = _context(session, now, day=day)
+    ctx = queue_context(session, now, day=day)
     target_day = day or now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
     paper = PaperRepository(session).get(paper_id)
     if paper is None:
         raise NotFoundError("文献不存在")
-    reasons, _, _ = _eligibility(session, paper, ctx, target_day)
+    reasons, _, _ = eligibility(session, paper, ctx, target_day)
     if "special_bucket" in reasons:
         return Exclusion(paper_id=paper_id, reasons=["special_bucket"])
     history = ScoreSnapshotRepository(session).history(paper_id)
@@ -660,7 +660,7 @@ def _backlog_candidates(
     状态过滤下推 SQL、快照与资格数据批量取齐（E-01）；逐篇内部逻辑与
     原逐篇查询实现等价：从新到旧找第一个可用快照，一旦判定即止。
     """
-    ctx = _context(session, now)
+    ctx = queue_context(session, now)
     today = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
     papers = PaperRepository(session).list_statuses(allowed)
     pre = _preload_eligibility(session, [paper.id for paper in papers], include_score_history=True)
@@ -676,7 +676,7 @@ def _backlog_candidates(
             ):
                 continue
             if snapshot.score_date not in contexts:
-                contexts[snapshot.score_date] = _context(session, now, day=snapshot.score_date)
+                contexts[snapshot.score_date] = queue_context(session, now, day=snapshot.score_date)
             reasons, tag, static = _eligibility_core(
                 pre, paper, contexts[snapshot.score_date], snapshot.score_date, eligible=allowed
             )
@@ -752,8 +752,8 @@ def refresh_queue(
 
     ``min_queue_yield`` 仅由挖掘 sync 传入；周任务与手动刷新不启用保底填充。
     """
-    with _atomic(session):
-        ctx = _context(session, now)
+    with atomic(session):
+        ctx = queue_context(session, now)
         day = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
         before = {
             paper.id
