@@ -24,6 +24,7 @@ from papersteward.api.routes import router
 from papersteward.api.setup_pages import router as setup_router
 from papersteward.api.shelves import router as shelves_router
 from papersteward.api.views import router as views_router
+from papersteward.api.workflow_pages import router as workflow_router
 from papersteward.config import Settings, get_settings
 from papersteward.storage import create_db_engine, create_session_factory
 
@@ -42,9 +43,13 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
         resolved_engine = engine or create_db_engine(resolved_settings.db_url)
         app.state.engine = resolved_engine
         app.state.session_factory = create_session_factory(resolved_engine)
+        from papersteward.jobs.ui_flow import UIFlowManager
+
+        app.state.ui_flows = UIFlowManager(app.state.session_factory, resolved_settings)
         try:
             yield
         finally:
+            app.state.ui_flows.close()
             if engine is None:
                 resolved_engine.dispose()
 
@@ -69,6 +74,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(archive_router)
     app.include_router(pages_router)
     app.include_router(setup_router)
+    app.include_router(workflow_router)
     app.include_router(jobs_router)
     return app
 

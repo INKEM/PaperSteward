@@ -59,7 +59,7 @@ def input_field(name: str, value: str, label: str) -> str:
     return f'<label>{escape(label)}<input name="{name}" value="{escape(value)}" required></label>'
 
 
-def failure(exc: Exception) -> HTMLResponse:
+def failure(exc: Exception, *, back: str = "/ui/setup") -> HTMLResponse:
     if isinstance(exc, ValidationError):
         details = "；".join(
             f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
@@ -73,7 +73,7 @@ def failure(exc: Exception) -> HTMLResponse:
         message, status = "输入格式无效，请检查 JSON 或表单后重试。", 422
     page = _page(
         "请检查后重试",
-        f'<p role="alert">{escape(message)}</p><a href="/ui/setup">返回向导重新审阅</a>',
+        f'<p role="alert">{escape(message)}</p><a href="{escape(back)}">返回页面检查后重试</a>',
     )
     page.status_code = status
     return page
