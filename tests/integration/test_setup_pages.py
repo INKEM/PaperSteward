@@ -216,3 +216,14 @@ def test_web_custom_calibration_and_invalid_dry_run_input(client):
     invalid = post(client, "/ui/setup/dry-run/create", {**runtime_form(), "timezone": "INVALID"})
     assert invalid.status_code == 422
     assert client.get("/onboarding").json()["stage"] == "dry_run"
+
+
+def test_responsive_shell_help_and_preserved_paused_state(client):
+    page = client.get("/ui/setup")
+    assert 'class="mobile-nav"' in page.text and 'aria-current="page"' in page.text
+    assert "跳到内容" in page.text and "外部" not in page.headers["content-security-policy"]
+    help_page = client.get("/ui/help")
+    assert help_page.status_code == 200 and "备注不发送到模型" in help_page.text
+    complete_g3(client)
+    preview = post(client, "/ui/setup/dry-run/create", {**runtime_form(), "paused": "yes"})
+    assert 'name="paused" value="yes" checked' in preview.text

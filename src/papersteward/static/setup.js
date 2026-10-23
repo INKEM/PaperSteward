@@ -9,3 +9,25 @@ document.addEventListener("change", async (event) => {
   try { target.value = await file.text(); input.setCustomValidity(""); }
   catch (_) { input.setCustomValidity("无法读取文件，请重新选择"); input.reportValidity(); }
 });
+
+// Native forms navigate away; HTMX forms restore their buttons when the request ends.
+function busy(form, enabled) {
+  form.toggleAttribute("aria-busy", enabled);
+  for (const button of form.querySelectorAll("button")) {
+    if (enabled) { button.dataset.originalLabel = button.textContent; button.textContent = "正在提交…"; }
+    else if (button.dataset.originalLabel) button.textContent = button.dataset.originalLabel;
+    button.disabled = enabled;
+  }
+}
+document.addEventListener("submit", (event) => {
+  if (!event.defaultPrevented && !event.target.hasAttribute("hx-post")) busy(event.target, true);
+});
+document.addEventListener("htmx:beforeRequest", (event) => {
+  const form = event.detail.elt.closest("form");
+  if (form) busy(form, true);
+});
+document.addEventListener("htmx:afterRequest", (event) => {
+  const form = event.detail.elt.closest("form");
+  if (form) busy(form, false);
+});
+window.addEventListener("pageshow", () => document.querySelectorAll("form[aria-busy]").forEach((form) => busy(form, false)));
