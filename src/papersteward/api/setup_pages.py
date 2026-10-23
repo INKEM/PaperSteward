@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from html import escape
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Request
@@ -16,10 +17,19 @@ from pydantic import ValidationError
 
 from papersteward.api import onboarding as api
 from papersteward.api.deps import SessionDep
-from papersteward.api.form_utils import failure, fields, hidden, input_field
+from papersteward.api.form_utils import (
+    conflict_redirect,
+    failure,
+    fields,
+    hidden,
+    input_field,
+)
 from papersteward.api.pages import _page
 from papersteward.api.settings_pages import llm_form
+from papersteward.api.workflow_pages import run_body
 from papersteward.config import get_settings
+from papersteward.core.entities import Run
+from papersteward.core.enums import RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.documents import parse_profile, parse_taxonomy
 from papersteward.errors import AppError, InvalidRequestError
@@ -27,6 +37,7 @@ from papersteward.jobs.ui_flow import FlowRequest
 from papersteward.llm.runtime import resolve_llm_config
 from papersteward.onboarding.intake import MAX_MATERIALS, add_feedback
 from papersteward.storage.onboarding import get_onboarding
+from papersteward.storage.repositories import RunRepository
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
@@ -54,9 +65,10 @@ def _materials_section(summary: dict[str, Any], *, editable: bool) -> str:
             item = f"<li>{escape(material['name'])}（{material['chars']} 字）"
             if editable:
                 item += (
-                    '<form method="post" action="/ui/setup/materials/delete" class="inline">'
+                    '<form method="post" action="/ui/setup/materials/delete" class="inline" '
+                    'data-confirm="删除这份材料？删除后需要重新粘贴内容。">'
                     + hidden("material_id", material["id"])
-                    + "<button>删除</button></form>"
+                    + "<button>删除材料</button></form>"
                 )
             items.append(item + "</li>")
         body += "<ul>" + "".join(items) + "</ul>"
@@ -75,13 +87,14 @@ def _materials_section(summary: dict[str, Any], *, editable: bool) -> str:
             + '<label class="check">从文件导入（.md/.txt，可重复添加）：'
             '<input type="file" accept=".md,.markdown,.txt" data-import-target="content" '
             'data-file-marker="from_file"></label>'
+            + '<span id="import-status" role="status" class="muted"></span>'
             + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
             "超长材料会提示拆分。</p>" + "<button>添加材料</button></form>"
         )
     return body
 
 
-def _generate_section(session: SessionDep, summary: dict[str, Any], stage: str) -> str:
+def _generate_section(session: SessionDep, summary: dict[str, Any]) -> str:
     if not _model_ready(session):
         return (
             '<p class="notice">第一步未完成：请先在「连接模型」保存 API 配置，再回来生成草案。</p>'
@@ -89,13 +102,41 @@ def _generate_section(session: SessionDep, summary: dict[str, Any], stage: str) 
         )
     if not summary["materials"]:
         return '<p class="notice">请先添加至少一份材料，再生成草案。</p>'
-    label = "按意见修改，重新生成草案" if stage == "draft" else "让 Agent 生成研究草案"
+    has_drafts = summary["profile"] is not None or summary["taxonomy"] is not None
+    label = "按意见修改，重新生成草案" if has_drafts else "生成草案"
     return (
         '<form method="post" action="/ui/setup/generate">'
         + hidden("run_id", "ext-" + uuid4().hex[:16])
         + f"<button>{escape(label)}</button></form>"
-        + '<p class="muted">生成由后台任务执行；页面会跳到进度页，完成后回到这里审阅。</p>'
+        + '<p class="muted">生成由后台任务执行；页面会原地显示进度，完成后自动进入审阅。</p>'
     )
+
+
+def _active_run(session: SessionDep) -> Run | None:
+    runs = RunRepository(session).running_ui_runs()
+    return runs[0] if runs else None
+
+
+def _last_extract_note(session: SessionDep) -> str:
+    """最近一次草案生成的失败或停止原因；更早的历史不再展示。"""
+    for run in RunRepository(session).list(limit=20):
+        if run.run_type != "ui.extract":
+            continue
+        if run.status is RunStatus.FAILED and run.errors_json:
+            messages = [
+                str(error.get("message", ""))
+                for error in run.errors_json.get("errors", [])
+                if isinstance(error, dict)
+            ]
+            text = "；".join(message for message in messages if message)
+            if text:
+                return f'<p role="alert">{escape(text)}</p>'
+        if run.status is RunStatus.CANCELLED:
+            return (
+                '<p class="notice">上一次生成已停止，已完成的数据保留。可调整材料后重新生成。</p>'
+            )
+        return ""
+    return ""
 
 
 def _tags(values: list[str]) -> str:
@@ -260,7 +301,7 @@ def _legacy_section(summary: dict[str, Any]) -> str:
     legacy = summary.get("legacy_drafts") or []
     if not legacy:
         return ""
-    labels = {"profile": "研究方向档案", "taxonomy": "分类法"}
+    labels = {"profile": "研究方向档案", "taxonomy": "分类标签"}
     items = "".join(
         f"<li>{labels.get(item['kind'], item['kind'])}："
         f"{escape(item['id'])} v{escape(item['version'])}（{escape(item['status'])}）</li>"
@@ -275,19 +316,72 @@ def _legacy_section(summary: dict[str, Any]) -> str:
     )
 
 
+def confirmed_results(session: SessionDep) -> str:
+    """确认后的研究档案与分类规则继续可见，复用已有安全渲染。"""
+    from papersteward.onboarding.setup import RUNTIME_KEY
+    from papersteward.storage.repositories import (
+        ConfigRepository,
+        ProfileRepository,
+        TaxonomyRepository,
+    )
+
+    profile = ProfileRepository(session).latest_confirmed()
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    if profile is None or taxonomy is None:
+        return (
+            "<article><h2>研究档案与分类标签</h2><p>尚未完成首次设置。</p>"
+            '<a href="/ui/setup">开始首次设置</a></article>'
+        )
+    profile_data = {"id": profile.id, "version": profile.version, "content_md": profile.content_md}
+    taxonomy_data = {
+        "id": taxonomy.id,
+        "version": taxonomy.version,
+        "content_md": taxonomy.content_md,
+    }
+    body = "<h2>当前使用的研究设置</h2>"
+    body += _draft_card("已确认的研究方向档案", profile_data, _profile_preview(profile_data))
+    body += _draft_card("已确认的分类标签", taxonomy_data, _taxonomy_preview(taxonomy_data))
+    runtime = ConfigRepository(session).latest(RUNTIME_KEY)
+    if runtime is not None:
+        body += (
+            '<p class="muted">工作区时区：'
+            + escape(str(runtime.value_json.get("timezone", "")))
+            + "。挖掘由你手动发起，阅读容量仅作建议。</p>"
+        )
+    return body
+
+
 @router.get("/setup")
-def setup(session: SessionDep) -> HTMLResponse:
+def setup(
+    session: SessionDep,
+    reset: bool = False,
+    added: bool = False,
+    removed: bool = False,
+    imported: bool = False,
+) -> HTMLResponse:
     try:
+        flashes = ""
+        if reset:
+            flashes += (
+                '<p class="notice success">工作区已重置，原始数据库备份保存在数据目录的 '
+                "backups/，可重新开始首次设置。</p>"
+            )
+        if added:
+            flashes += '<p class="notice success">材料已添加，生成草案时会合并全部材料。</p>'
+        if removed:
+            flashes += '<p class="notice success">材料已删除。</p>'
+        if imported:
+            flashes += '<p class="notice success">遗留草稿已导入为材料。</p>'
         state = get_onboarding(session)
         stage = state.stage.value
         if stage == "active":
             body = (
-                steps_bar(3) + "<p>初始化已完成。可以随时在 "
+                steps_bar(3) + "<p>首次设置已完成。可以随时在 "
                 '<a href="/ui/settings">设置</a> 中调整模型连接。</p>'
-                '<p><a class="button" href="/ui/today">进入今日</a> '
+                '<p><a class="button" href="/ui/today">进入阅读队列</a> '
                 '<a class="button secondary" href="/ui/settings">模型连接</a></p>'
             )
-            return _page("首次设置", body)
+            return _page("首次设置", body + confirmed_results(session))
 
         summary = api.read_drafts(session)
         ready = _model_ready(session)
@@ -321,24 +415,29 @@ def setup(session: SessionDep) -> HTMLResponse:
                 )
             body += _legacy_section(summary)
             body += _materials_section(summary, editable=True)
-            body += _generate_section(session, summary, stage)
+            body += _generate_section(session, summary)
         else:  # draft
             body = steps_bar(3)
-            if summary["profile"] is None and summary["taxonomy"] is None:
+            active = _active_run(session)
+            if active is not None:
+                # 生成中：单页面只显示进度，完成后片段自动把整页刷成审阅界面。
+                body += run_body(active)
+            elif summary["profile"] is None and summary["taxonomy"] is None:
+                body += _last_extract_note(session)
+                body += _materials_section(summary, editable=True)
+                body += _generate_section(session, summary)
+                body += _legacy_section(summary)
+            else:
+                body += _draft_section(summary)
+                body += _feedback_and_confirm(session, summary)
                 body += (
-                    '<p class="notice">草案尚未生成成功。检查运行进度；'
-                    "也可以调整材料或模型后重试。</p>"
+                    "<details><summary>补充或删除材料</summary>"
+                    + _materials_section(summary, editable=True)
+                    + _generate_section(session, summary)
+                    + "</details>"
                 )
-            body += _draft_section(summary)
-            body += _feedback_and_confirm(session, summary)
-            body += (
-                "<details><summary>补充或删除材料</summary>"
-                + _materials_section(summary, editable=True)
-                + _generate_section(session, summary, stage)
-                + "</details>"
-            )
-            body += _legacy_section(summary)
-        return _page("首次设置", body)
+                body += _legacy_section(summary)
+        return _page("首次设置", flashes + body)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
         return failure(exc)
 
@@ -377,7 +476,7 @@ async def delete_material_action(request: Request, session: SessionDep) -> Respo
     try:
         data = await fields(request)
         api.delete_material(data.get("material_id", ""), session)
-        return RedirectResponse("/ui/setup", status_code=303)
+        return RedirectResponse("/ui/setup?removed=1", status_code=303)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
         return failure(exc)
 
@@ -387,7 +486,7 @@ async def import_legacy_action(request: Request, session: SessionDep) -> Respons
     try:
         await fields(request)
         api.import_legacy(session)
-        return RedirectResponse("/ui/setup", status_code=303)
+        return RedirectResponse("/ui/setup?imported=1", status_code=303)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
         return failure(exc)
 
@@ -396,9 +495,12 @@ async def import_legacy_action(request: Request, session: SessionDep) -> Respons
 async def generate_action(request: Request, session: SessionDep) -> Response:
     try:
         data = await fields(request)
-        identity = _enqueue_extraction(request, _run_id(data))
-        return RedirectResponse(f"/ui/runs/{identity}", status_code=303)
+        _enqueue_extraction(request, _run_id(data))
+        return RedirectResponse("/ui/setup", status_code=303)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
         return failure(exc)
 
 
@@ -406,11 +508,18 @@ async def generate_action(request: Request, session: SessionDep) -> Response:
 async def feedback_action(request: Request, session: SessionDep) -> Response:
     try:
         data = await fields(request)
+        if running := RunRepository(session).running_ui_runs():
+            # 有任务在跑：意见不落库，直接带用户去看进度，避免"已保存却不生成"。
+            return RedirectResponse(f"/ui/runs/{quote(running[0].id, safe='')}", status_code=303)
+        session.rollback()  # 检查开启的只读事务先结束，意见用下面的显式事务写入
         with session.begin():
             add_feedback(session, data.get("comment", ""))
-        identity = _enqueue_extraction(request, _run_id(data))
-        return RedirectResponse(f"/ui/runs/{identity}", status_code=303)
+        _enqueue_extraction(request, _run_id(data))
+        return RedirectResponse("/ui/setup", status_code=303)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
         return failure(exc)
 
 

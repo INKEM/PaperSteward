@@ -131,13 +131,22 @@ def test_weekly_includes_delivered_unread_candidates(client, migrated_engine, tm
 def test_weekly_resumes_due_snoozed_candidate(client, migrated_engine, tmp_path):
     factory = delivered_factory(client, migrated_engine, tmp_path)
     with session_scope(factory) as session:
-        apply_action(
-            session,
-            "unread",
-            Action(request_id="later", kind="snooze", days=3),
-            now=NOW,
+        from papersteward.core.entities import Event
+        from papersteward.core.enums import EventType
+        from papersteward.storage.models import PaperRow
+        from papersteward.storage.repositories import EventRepository
+
+        session.get(PaperRow, "unread").status = "snoozed"
+        session.flush()
+        EventRepository(session).append(
+            Event(
+                "legacy-snooze",
+                EventType.PAPER_SNOOZED,
+                NOW,
+                "unread",
+                {"until": str(NOW.date() + timedelta(days=3))},
+            )
         )
-        assert PaperRepository(session).get("unread").status is PaperStatus.SNOOZED
         result = refresh_weekly(session, now=SUNDAY)
         assert result.stats_json["resumed"] == 1
         assert PaperRepository(session).get("unread").status is PaperStatus.QUEUED

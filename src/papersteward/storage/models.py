@@ -472,6 +472,19 @@ class StaticScoreSnapshotRow(Base):
     )
 
 
+class PaperAnalysisRow(Base):
+    """处理分析与质量标记；独立于历史审核记录。"""
+
+    __tablename__ = "paper_analysis"
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    quality_flags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReviewItemRow(Base):
     """人工审核项；每篇一条，开放/已处理状态可复用。"""
 

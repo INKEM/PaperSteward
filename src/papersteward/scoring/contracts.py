@@ -1,9 +1,11 @@
 """P5冻结的队列/解释传输契约；持久化位于score_snapshot.breakdown_json。"""
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from papersteward.core.enums import PaperStatus
 
 
 class Component(BaseModel):
@@ -67,3 +69,34 @@ class SnapshotResponse(BaseModel):
     created: int
     existing: int
     excluded: list[Exclusion]
+
+
+class BacklogFilters(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    tag: str | None = None
+    min_priority: float = Field(default=0, ge=0, le=100)
+    max_priority: float = Field(default=100, ge=0, le=100)
+    read_status: Literal["unread", "read", "all"] = "unread"
+
+    @model_validator(mode="after")
+    def coherent_range(self) -> "BacklogFilters":
+        if self.min_priority > self.max_priority:
+            raise ValueError("最低分不能高于最高分")
+        return self
+
+
+class BacklogItem(QueueItem):
+    rank: int = Field(ge=1)
+    status: PaperStatus
+
+
+class BacklogResponse(BaseModel):
+    items: list[BacklogItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class RefreshResponse(SnapshotResponse):
+    queue_total: int
+    added_ids: list[str] = Field(default_factory=list)

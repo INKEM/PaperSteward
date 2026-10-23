@@ -21,10 +21,12 @@ document.addEventListener("click", async (event) => {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    const message = data.ok ? data.message : (data.error ? data.error.message : data.message);
-    if (result) result.textContent = message || "未知响应";
+    let message = data.ok ? data.message : (data.error ? data.error.message : data.message);
+    const detail = data.error && Array.isArray(data.error.details) && data.error.details[0];
+    if (detail) message += `（${detail.field || ""}：${detail.message || ""}）`;
+    if (result) result.textContent = message || "测试完成，但服务返回了无法识别的结果";
   } catch (_) {
-    if (result) result.textContent = "无法连接本地服务，请重试";
+    if (result) result.textContent = "测试请求失败，请重试";
   } finally {
     button.disabled = false;
   }
@@ -34,6 +36,7 @@ document.addEventListener("change", async (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || !input.dataset.importTarget) return;
   const target = document.getElementById(input.dataset.importTarget);
+  const status = document.getElementById("import-status");
   const file = input.files && input.files[0];
   if (!file || !target) return;
   if (file.size > 512 * 1024) { input.setCustomValidity("文件不能超过 512 KiB"); input.reportValidity(); return; }
@@ -44,8 +47,12 @@ document.addEventListener("change", async (event) => {
       if (marker instanceof HTMLInputElement) marker.value = "1";
     }
     input.setCustomValidity("");
+    if (status) status.textContent = `已读取 ${file.name}（${target.value.length} 字），检查内容后点「添加材料」。`;
   }
-  catch (_) { input.setCustomValidity("无法读取文件，请重新选择"); input.reportValidity(); }
+  catch (_) {
+    input.setCustomValidity("无法读取文件，请重新选择"); input.reportValidity();
+    if (status) status.textContent = "";
+  }
 });
 
 // Native forms navigate away; HTMX forms restore their buttons when the request ends.
@@ -58,6 +65,14 @@ function busy(form, enabled) {
     button.disabled = enabled;
   }
 }
+// 破坏性操作确认：capture 阶段拦截，原生提交与 htmx 提交都在弹确认后才继续。
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (form instanceof HTMLFormElement && form.dataset.confirm && !window.confirm(form.dataset.confirm)) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}, true);
 document.addEventListener("submit", (event) => {
   if (!event.defaultPrevented && !event.target.hasAttribute("hx-post")) busy(event.target, true);
 });

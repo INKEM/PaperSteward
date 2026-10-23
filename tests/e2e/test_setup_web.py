@@ -65,6 +65,15 @@ def _wait_drafts(client: httpx.Client, version: str) -> dict:
     raise AssertionError(f"draft {version} not generated")
 
 
+def _wait_setup_text(client: httpx.Client, needle: str) -> None:
+    """草案已落库但任务尚未标记完成的瞬间，设置页仍显示进度；轮询等审阅出现。"""
+    for _ in range(200):
+        if needle in client.get("/ui/setup").text:
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"setup page never showed {needle!r}")
+
+
 @pytest.mark.e2e
 def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None:
     mock, llm_base = _start_mock_llm()
@@ -137,9 +146,10 @@ def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None
                 )
                 assert material.status_code == 200
                 generated = client.post("/ui/setup/generate", data={"run_id": "ext-e2e"})
-                assert generated.status_code == 200 and "/ui/runs/ext-e2e" in str(generated.url)
+                # 单页面流程：提交后留在设置页原地显示进度，不跳转独立进度页。
+                assert generated.status_code == 200 and generated.url.path == "/ui/setup"
                 drafts = _wait_drafts(client, "0.1")
-                assert "渲染视图" in client.get("/ui/setup").text
+                _wait_setup_text(client, "渲染视图")
 
                 feedback = client.post(
                     "/ui/setup/feedback",
@@ -147,8 +157,8 @@ def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None
                 )
                 assert feedback.status_code == 200
                 drafts = _wait_drafts(client, "0.2")
+                _wait_setup_text(client, "与上一版的差异")
                 page = client.get("/ui/setup")
-                assert "与上一版的差异" in page.text
                 assert "第二版定位" in page.text
 
                 profile, taxonomy = drafts["profile"], drafts["taxonomy"]
@@ -171,8 +181,9 @@ def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None
                 assert client.get("/onboarding").json() == {"stage": "active", "revision": 2}
                 today = client.get("/ui/today")
                 assert today.status_code == 200
-                assert "已初始化" in today.text
-                assert "初始化已完成" in client.get("/ui/setup").text
+                assert "阅读队列" in today.text and "挖掘新论文" in today.text
+                assert "生成今日日报" not in today.text
+                assert "首次设置已完成" in client.get("/ui/setup").text
         finally:
             process.terminate()
             try:

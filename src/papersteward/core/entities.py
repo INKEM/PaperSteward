@@ -679,6 +679,32 @@ class StaticScoreSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PaperAnalysis:
+    """保存模型分析及质量标记，不构成人工审核关卡。"""
+
+    paper_id: str
+    payload_json: Mapping[str, Any]
+    quality_flags: tuple[str, ...]
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "analysis.paper_id"))
+        object.__setattr__(
+            self, "payload_json", _require_mapping(self.payload_json, "analysis.payload")
+        )
+        object.__setattr__(
+            self,
+            "quality_flags",
+            tuple(_require_text(flag, "analysis.quality_flags") for flag in self.quality_flags),
+        )
+        for name in ("created_at", "updated_at"):
+            object.__setattr__(self, name, _require_aware(getattr(self, name), f"analysis.{name}"))
+        if self.updated_at < self.created_at:
+            raise DomainValidationError("analysis.updated_at", "不能早于 created_at")
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewItem:
     """人工审核项；每篇文献一条，处理低置信度/边界/特殊提名。"""
 

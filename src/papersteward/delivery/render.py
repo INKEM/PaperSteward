@@ -90,7 +90,7 @@ def render_markdown(digest: Digest) -> str:
     lines.extend(
         [
             f"特殊桶：{markdown(digest.special_status)}（预留上限 {digest.special_slots}）",
-            f"待确认：{digest.pending_review} 篇；延期/冷却/配额未选：{len(digest.deferred)} 篇。",
+            f"延期/冷却/配额未选：{len(digest.deferred)} 篇。",
             "",
         ]
     )
@@ -138,7 +138,7 @@ def render_html(digest: Digest) -> str:
         parts.append("<p>今日无可推送条目；不降低质量门槛补量。</p>")
     parts.append(
         f"<footer><p>特殊桶：{escape(digest.special_status)}（预留上限 {digest.special_slots}）</p>"
-        f"<p>待确认：{digest.pending_review} 篇；"
+        "<p>"
         f"延期/冷却/配额未选：{len(digest.deferred)} 篇。</p>"
         "</footer></main></body></html>"
     )

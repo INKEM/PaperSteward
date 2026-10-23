@@ -106,7 +106,7 @@ def confirm_setup(
         Config(
             key=RUNTIME_KEY,
             version=runtime_version,
-            value_json=runtime.model_dump(mode="json"),
+            value_json=runtime.model_dump(mode="json", exclude_unset=True),
             updated_by=AssignedBy.USER,
             updated_at=occurred_at,
         )

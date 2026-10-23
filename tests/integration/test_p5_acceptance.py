@@ -50,14 +50,13 @@ def test_snapshot_golden_and_archived_score_is_frozen(client, migrated_engine):
         assert ScoreSnapshotRepository(session).history("p") == before
 
 
-def test_pause_allows_reading_but_blocks_execution(client, migrated_engine):
+def test_legacy_pause_does_not_block_manual_queue_refresh(client, migrated_engine):
     activate(client, paused=True)
     with session_scope(create_session_factory(migrated_engine)) as session:
         seed(session)
         assert read_queue(session, DAY, now=NOW).total == 0
-        with pytest.raises(InvariantViolation, match="暂停"):
-            create_snapshots(session, DAY, now=NOW)
-        assert list(session.scalars(select(ScoreSnapshotRow))) == []
+        assert create_snapshots(session, DAY, now=NOW).created == 1
+        assert len(list(session.scalars(select(ScoreSnapshotRow)))) == 1
 
 
 def test_invalid_summary_and_static_version_are_excluded(client, migrated_engine):
@@ -70,9 +69,9 @@ def test_invalid_summary_and_static_version_are_excluded(client, migrated_engine
         session.flush()
         result = create_snapshots(session, DAY, now=NOW)
         reasons = {x.paper_id: x.reasons for x in result.excluded}
-        assert "summary_not_passed" in reasons["summary"]
+        assert "summary" not in reasons
         assert "static_version_mismatch" in reasons["version"]
-        assert result.created == 0
+        assert result.created == 1
 
 
 def test_same_day_drift_and_out_of_order_rejected(client, migrated_engine):
@@ -140,7 +139,7 @@ def test_special_reading_and_weekly_rating_revision_without_notes(client, migrat
         assert rating_selects and all("rating.note" not in s for s in rating_selects)
 
 
-def test_low_confidence_and_stale_tag_versions_cannot_bypass_quality_gate(client, migrated_engine):
+def test_low_confidence_is_allowed_but_stale_tag_versions_still_block(client, migrated_engine):
     activate(client)
     with session_scope(create_session_factory(migrated_engine)) as session:
         seed(session, "low-confidence")
@@ -150,6 +149,6 @@ def test_low_confidence_and_stale_tag_versions_cannot_bypass_quality_gate(client
         session.flush()
         result = create_snapshots(session, DAY, now=NOW)
         reasons = {x.paper_id: x.reasons for x in result.excluded}
-        assert "unapproved_low_confidence_classification" in reasons["low-confidence"]
+        assert "low-confidence" not in reasons
         assert "classification_version_mismatch" in reasons["stale-tag"]
-        assert result.created == 0
+        assert result.created == 1

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from html import escape
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
 from papersteward.api.pages import _guard, _page
 from papersteward.core.errors import DomainError
-from papersteward.errors import AppError, InvalidRequestError
+from papersteward.errors import AppError, ConflictError, InvalidRequestError
 
 
 def hidden(name: str, value: object) -> str:
@@ -57,6 +57,15 @@ def failure(exc: Exception, *, back: str = "/ui/setup") -> HTMLResponse:
     return page
 
 
+def conflict_redirect(exc: Exception) -> RedirectResponse | None:
+    """已有任务在运行时跳到该任务的进度页，而不是停在错误页。"""
+    if isinstance(exc, ConflictError) and isinstance(exc.details, dict):
+        run_id = exc.details.get("run_id")
+        if run_id:
+            return RedirectResponse(f"/ui/runs/{quote(str(run_id), safe='')}", status_code=303)
+    return None
+
+
 async def fields(request: Request) -> dict[str, str]:
     _guard(request)
     if (
@@ -90,6 +99,7 @@ def safe_str(value: Any) -> str:
 
 
 __all__ = [
+    "conflict_redirect",
     "failure",
     "fields",
     "form",

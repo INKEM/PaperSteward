@@ -51,15 +51,16 @@ def llm_form(
         + placeholder
         + '" autocomplete="off"></label>'
         + input_field("model", config_model, "模型名称（如 deepseek-chat、gpt-4o-mini）")
-        + input_field("timeout_s", str(int(config_timeout)), "请求超时（秒）")
+        + '<label>请求超时（秒，模型响应慢可调大）<input type="number" name="timeout_s" '
+        f'value="{int(config_timeout)}" min="5" max="600" step="1" required></label>'
     )
     consent = (
         '<label class="check"><input type="checkbox" name="consent" value="yes" required>'
         "我知道论文的标题与摘要会发送给上面配置的模型服务，仅用于筛选和概括</label>"
     )
     actions = (
-        '<div class="actions"><button type="button" data-test-llm data-form="llm-settings">'
-        '测试连接</button><button type="submit">保存并继续</button>'
+        '<div class="actions"><button type="button" data-test-llm="llm-settings">'
+        '测试连接</button><button type="submit">保存模型连接</button>'
         '<span id="llm-test-result" role="status"></span></div>'
     )
     heading = "" if compact else "<h2>连接模型</h2>"
@@ -84,9 +85,11 @@ def _status_block(session: SessionDep) -> str:
 
 
 @router.get("/settings")
-def settings_page(session: SessionDep) -> HTMLResponse:
+def settings_page(session: SessionDep, saved: bool = False) -> HTMLResponse:
     config = resolve_llm_config(session, get_settings())
-    body = "<h1>模型连接</h1>"
+    body = ""
+    if saved:
+        body += '<p class="notice success">模型连接已保存。可点「测试连接」验证是否可用。</p>'
     body += _status_block(session)
     body += llm_form(
         config.base_url,
@@ -99,7 +102,14 @@ def settings_page(session: SessionDep) -> HTMLResponse:
         "<p>配置保存在本机工作区数据库中，密钥不会上传。"
         '保存后即可在 <a href="/ui/setup">首次设置</a> 继续上传研究材料。</p>'
     )
-    return _page("模型连接", body)
+    from papersteward.api.setup_pages import confirmed_results
+
+    body += confirmed_results(session)
+    body += (
+        "<article><h2>工作区管理</h2><p>想重新执行首次设置，可先备份并清空此工作区的数据。</p>"
+        '<a class="button secondary" href="/ui/settings/reset">重置工作区（清空数据）</a></article>'
+    )
+    return _page("设置", body)
 
 
 @router.post("/settings/llm")
@@ -130,3 +140,69 @@ async def save_settings(request: Request, session: SessionDep) -> Response:
 
 
 __all__ = ["router", "llm_form"]
+
+
+@router.get("/settings/reset")
+def reset_preview(session: SessionDep) -> HTMLResponse:
+    from papersteward.storage.repositories import RunRepository
+    from papersteward.storage.workspace import workspace_counts
+
+    counts = workspace_counts(session)
+    busy = bool(RunRepository(session).running_ui_runs())
+    body = (
+        "<article><h2>重置工作区并重新开始</h2>"
+        "<p>将清空论文、阅读反馈、归档、历史日报、运行记录、上传材料、研究档案和分类标签。"
+        "重置前会自动保存本地数据库备份；已有导出文件与备份保留。</p>"
+        f"<p>当前有 {counts.get('paper', 0)} 篇论文、{counts.get('rating', 0)} 条阅读反馈、"
+        f"{counts.get('intake_material', 0)} 份研究材料。</p>"
+    )
+    if busy:
+        body += '<p class="notice">有任务正在运行，完成后才能重置工作区。</p>'
+    disabled = " disabled" if busy else ""
+    body += (
+        '<form method="post" action="/ui/settings/reset">'
+        '<label class="check"><input type="checkbox" name="keep_model" value="yes" checked>'
+        "保留当前模型连接，方便重新执行首次设置（取消勾选会清空已保存的模型配置）</label>"
+        '<label>输入“重置工作区”确认清空<input name="confirmation" required '
+        'autocomplete="off" placeholder="重置工作区"></label>'
+        f'<button class="danger"{disabled}>清空数据并重新开始</button></form>'
+        '<a href="/ui/settings">取消，返回设置</a></article>'
+    )
+    return _page("重置工作区", body)
+
+
+@router.post("/settings/reset")
+async def reset_workspace(request: Request, session: SessionDep) -> Response:
+    from sqlalchemy import text
+
+    from papersteward.core.entities import utc_now
+    from papersteward.errors import ConflictError, InvalidRequestError
+    from papersteward.storage.repositories import RunRepository
+    from papersteward.storage.workspace import backup_workspace, clear_workspace
+
+    try:
+        data = await fields(request)
+        if data.get("confirmation") != "重置工作区":
+            raise InvalidRequestError("请输入“重置工作区”确认清空")
+        manager = request.app.state.ui_flows
+        with manager.lock, session.begin():
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            if RunRepository(session).running_ui_runs():
+                raise ConflictError("有任务正在运行，完成后才能重置工作区")
+            backup_workspace(
+                request.app.state.engine,
+                request.app.state.settings.data_dir / "backups",
+                now=utc_now(),
+            )
+            clear_workspace(session, keep_model=data.get("keep_model") == "yes")
+        return RedirectResponse("/ui/setup?reset=1", status_code=303)
+    except OSError:
+        from papersteward.errors import InvalidRequestError
+
+        return failure(
+            InvalidRequestError("备份失败，原数据保留。请检查数据目录权限和磁盘空间后重试。"),
+            back="/ui/settings/reset",
+        )
+    except (AppError, ValueError) as exc:
+        return failure(exc, back="/ui/settings/reset")

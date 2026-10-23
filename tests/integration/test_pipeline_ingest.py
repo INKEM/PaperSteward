@@ -73,12 +73,12 @@ def test_pre_g4_rejects_without_source_calls(migrated_engine):
     "parameters",
     [{"paused": True}, {"quiet_start": "07:00", "quiet_end": "09:00", "push_time": "10:00"}],
 )
-def test_schedule_rejects_before_network(client, migrated_engine, parameters):
+def test_legacy_schedule_does_not_block_manual_ingestion(client, migrated_engine, parameters):
     activate(client, **parameters)
     with session_scope(create_session_factory(migrated_engine)) as session:
-        with pytest.raises(InvariantViolation, match="schedule"):
-            run(session)
-        assert count(session, RunRow) == 0 and count(session, PaperSourceRow) == 0
+        result = run(session)
+        assert result.status is RunStatus.SUCCEEDED
+        assert count(session, RunRow) == 1 and count(session, PaperSourceRow) > 0
 
 
 def test_exact_config_reference_and_config_drift(client, migrated_engine):
@@ -109,8 +109,7 @@ def test_exact_config_reference_and_config_drift(client, migrated_engine):
         config = session.get(ConfigRow, ("onboarding_runtime", runtime_version))
         config.value_json = {**config.value_json, "paused": True}
         session.flush()
-        with pytest.raises(InvariantViolation, match="schedule"):
-            run(session, run_id="drifted")
+        assert run(session, run_id="drifted").status is RunStatus.SUCCEEDED
 
 
 def test_source_failure_isolated_and_all_failed_reported(client, migrated_engine):

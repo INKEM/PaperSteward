@@ -144,7 +144,7 @@ def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine
     )
     assert confirmed.status_code == 200, confirmed.text
     assert client.get("/onboarding").json() == {"stage": "active", "revision": 2}
-    assert "初始化已完成" in client.get("/ui/setup").text
+    assert "首次设置已完成" in client.get("/ui/setup").text
     assert client.get("/ui/today").status_code == 200
 
 
@@ -188,7 +188,9 @@ def test_generation_failure_surfaces_schema_error(client, migrated_engine, monke
     assert "模型返回不符合要求" in str(report.errors_json)
     page = client.get("/ui/runs/ext-bad")
     assert "模型返回不符合要求" in page.text
-    assert "显式重试" in page.text
+    # extract 失败的恢复路径唯一化：不做原地重试，回设置页调整后重新生成。
+    assert "返回首次设置" in page.text
+    assert "显式重试" not in page.text
 
 
 def test_cross_site_large_and_unconfirmed_input(client, migrated_engine):

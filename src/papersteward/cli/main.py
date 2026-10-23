@@ -236,7 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_ingestion(args)
         if args.command in {"queue", "score", "scores"}:
             return run_ranking(args)
-        if args.command in {"process", "review"}:
+        if args.command == "process":
             return run_processing(args)
         if args.command == "shelf":
             return run_shelf(args)

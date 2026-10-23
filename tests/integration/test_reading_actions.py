@@ -66,23 +66,19 @@ def test_actions_api_gate_done_idempotency_and_revisions(client, migrated_engine
         )
 
 
-@pytest.mark.parametrize("kind,days", [("skip", 7), ("snooze", 3)])
-def test_cooldown_due_day_and_reject(client, migrated_engine, kind, days):
+def test_queue_can_wait_without_date_or_hidden_cooldown(client, migrated_engine):
+    from papersteward.scoring.queue import read_backlog, refresh_queue
+
     factory = prepared(client, migrated_engine)
-    request = Action(request_id=kind, kind=kind, **({"days": days} if kind == "snooze" else {}))
     with session_scope(factory) as session:
-        apply_action(session, "p", request, now=NOW)
-        tomorrow = create_digest(session, DAY + timedelta(days=1), now=NOW + timedelta(days=1))
-        assert not tomorrow.items
-        due = create_digest(session, DAY + timedelta(days=days), now=NOW + timedelta(days=days))
-        assert [i.paper_id for i in due.items] == ["p"]
+        later = NOW + timedelta(days=14)
+        assert read_backlog(session, now=later).total == 1
+        refresh_queue(session, now=later)
         apply_action(
-            session,
-            "p",
-            Action(request_id="reject", kind="reject", note="无关原因"),
-            now=NOW + timedelta(days=days),
+            session, "p", Action(request_id="reject", kind="reject", note="无关原因"), now=later
         )
         assert PaperRepository(session).get("p").status is PaperStatus.REJECTED
+        assert read_backlog(session, now=later).total == 0
         assert session.scalar(select(func.count()).select_from(RatingRow)) == 0
 
 
@@ -110,11 +106,13 @@ def test_actions_atomic_failure_and_outer_rollback(client, migrated_engine, monk
         assert PaperRepository(session).get("p").status is PaperStatus.QUEUED
 
 
-def test_skipped_draft_cannot_be_delivered(client, migrated_engine, tmp_path):
+def test_rejected_legacy_digest_cannot_be_delivered(client, migrated_engine, tmp_path):
     factory = prepared(client, migrated_engine)
     with session_scope(factory) as session:
-        apply_action(session, "p", Action(request_id="skip", kind="skip"), now=NOW)
-    with pytest.raises(InvariantViolation, match="冷却"):
+        apply_action(
+            session, "p", Action(request_id="reject", kind="reject", note="不关注"), now=NOW
+        )
+    with pytest.raises(InvariantViolation, match="拒绝"):
         deliver(factory, DAY, now=NOW, settings=Settings(_env_file=None), out=tmp_path / "no.md")
     assert not (tmp_path / "no.md").exists()
 
@@ -163,3 +161,26 @@ def test_prequeue_cannot_be_done_and_cli_can_read(client, migrated_engine, monke
         assert '"status": "archived"' in capsys.readouterr().out
     finally:
         get_settings.cache_clear()
+
+
+def test_reject_can_be_restored_from_ui(client, migrated_engine):
+    """不感兴趣支持一键撤销：队列卡片就地恢复，详情页也有恢复入口。"""
+    factory = prepared(client, migrated_engine)
+    headers = {"origin": "http://testserver"}
+    rejected = client.post(
+        "/ui/actions/p",
+        data={"kind": "reject", "note": "不关注", "request_id": "rj-1"},
+        headers=headers,
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert "恢复推荐" in rejected.text
+    detail = client.get("/ui/papers/p")
+    assert "已被标记为不感兴趣" in detail.text and "恢复推荐" in detail.text
+    restored = client.post("/papers/p/actions", json={"kind": "restore", "request_id": "rs-1"})
+    assert restored.status_code == 200 and restored.json()["status"] == "screened"
+    with session_scope(factory) as session:
+        assert PaperRepository(session).get("p").status is PaperStatus.SCREENED
+    assert (
+        client.post("/papers/p/actions", json={"kind": "restore", "request_id": "rs-2"}).status_code
+        == 409
+    )

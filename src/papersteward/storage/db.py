@@ -51,7 +51,9 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) 
 def _sqlite_engine(database_url: str, *, echo: bool, memory: bool) -> Engine:
     options: dict[str, Any] = {
         "echo": echo,
-        "connect_args": {"check_same_thread": False},
+        # timeout：写锁被长事务（如处理一篇论文的多次模型调用）占用时，
+        # 其他写方等待而非立刻报 "database is locked"。
+        "connect_args": {"check_same_thread": False, "timeout": 30},
     }
     if memory:
         # 内存库必须共享同一连接，否则 create_all 与后续会话看到不同的库。

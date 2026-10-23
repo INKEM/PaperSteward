@@ -1,10 +1,9 @@
 """显式阅读反馈：客户端幂等、状态/评分/审计同事务，备注不进入模型。"""
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -37,6 +36,9 @@ def apply_action(
     try:
         with _atomic(session):
             ctx = _context(session, now)
+            from papersteward.pipeline.context import runtime_local_day
+
+            day = runtime_local_day(session, now, ctx["binding"])
             receipts = EventRepository(session)
             existing = receipts.get(receipt_id)
             if existing is not None:
@@ -47,7 +49,6 @@ def apply_action(
             paper = repo.get(paper_id)
             if paper is None:
                 raise NotFoundError("文献不存在")
-            day = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
             payload: dict[str, Any] = {"request_id": action.request_id, "kind": action.kind}
 
             def transition(target: PaperStatus) -> None:
@@ -69,7 +70,7 @@ def apply_action(
                     raise InvariantViolation("action.done", "只能完成已入队、已推送或阅读中的文献")
                 reasons, _, _ = _eligibility(session, paper, ctx, day)
                 if [r for r in reasons if not r.startswith("ineligible_status:")]:
-                    raise InvariantViolation("action.done", "摘要/分类/审核/评分依据未就绪")
+                    raise InvariantViolation("action.done", "摘要/分类/评分依据未就绪")
                 explain_score(session, paper_id, now=now)
                 tags = PaperTagRepository(session).list_for_paper(paper_id)
                 primary = [t.tag_code for t in tags if t.role is TagRole.PRIMARY]
@@ -77,9 +78,6 @@ def apply_action(
                     (t for t in tags if t.role is TagRole.SECONDARY),
                     key=lambda t: (-t.confidence, t.tag_code),
                 )
-                if paper.status is PaperStatus.QUEUED:
-                    payload["trigger"] = "user_read"
-                    transition(PaperStatus.PUSHED)
                 if paper.status is not PaperStatus.READING:
                     transition(PaperStatus.READING)
                 transition(PaperStatus.DONE)
@@ -111,31 +109,21 @@ def apply_action(
                         "new": score if action.kind == "score" else note,
                     },
                 )
+            elif action.kind == "restore":
+                if paper.status is not PaperStatus.REJECTED:
+                    raise InvariantViolation(
+                        "action.restore", "只有被标记为不感兴趣的文献才能恢复推荐"
+                    )
+                transition(PaperStatus.SCREENED)
             else:
                 if paper.status not in {
                     PaperStatus.QUEUED,
                     PaperStatus.PUSHED,
                     PaperStatus.READING,
-                    PaperStatus.SNOOZED,
                 }:
-                    raise InvariantViolation("action.status", "此状态不能稍后、跳过或拒绝")
-                if action.kind == "snooze":
-                    assert action.days is not None
-                    payload["until"] = str(day + timedelta(days=action.days))
-                    if paper.status is not PaperStatus.SNOOZED:
-                        transition(PaperStatus.SNOOZED)
-                    else:
-                        event(EventType.PAPER_SNOOZED, {})
-                elif action.kind == "skip":
-                    if paper.status is PaperStatus.READING:
-                        raise InvariantViolation("action.skip", "阅读中的文献请选择稍后或不相关")
-                    payload["until"] = str(day + timedelta(days=7))
-                    if paper.status is not PaperStatus.QUEUED:
-                        transition(PaperStatus.QUEUED)
-                    event(EventType.PAPER_SKIPPED, {})
-                else:
-                    payload["reason"] = action.note
-                    transition(PaperStatus.REJECTED)
+                    raise InvariantViolation("action.status", "只能将阅读队列中的文献标为不感兴趣")
+                payload["reason"] = action.note
+                transition(PaperStatus.REJECTED)
             current = repo.get(paper_id)
             assert current is not None
             result = {

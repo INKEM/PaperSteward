@@ -20,6 +20,7 @@ from papersteward.delivery.compose import DeliveryHistory, compose_digest
 from papersteward.delivery.contracts import Digest
 from papersteward.delivery.render import render_markdown
 from papersteward.onboarding.service import _atomic
+from papersteward.pipeline.context import bound_context
 from papersteward.scoring.queue import _context, create_snapshots, read_queue
 from papersteward.storage import session_scope
 from papersteward.storage.delivery import append_digest, content_hash, read_digest
@@ -31,7 +32,6 @@ from papersteward.storage.repositories import (
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
-    ReviewRepository,
 )
 
 
@@ -84,6 +84,7 @@ def create_digest(
     session: Session, day: date, *, now: datetime, allow_downgrade: bool = False
 ) -> Digest:
     with _atomic(session):
+        bound_context(session, now, action="delivery.digest", enforce_schedule=True)
         ctx = _context(session, now, execution=True)
         if day > now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date():
             raise InvariantViolation("digest.date", "不能生成未来日报")
@@ -160,7 +161,7 @@ def create_digest(
             binding=ctx["binding"],
             config=ctx["config"],
             weekly_capacity=ctx["profile"].parsed_json["reading"]["weekly_capacity"],
-            pending_review=ReviewRepository(session).list_open(limit=1)[1],
+            pending_review=0,
             history=history,
             metadata=metadata,
             allow_downgrade=allow_downgrade,
@@ -190,13 +191,12 @@ def _preflight(session: Session, digest: Digest, channel: str, now: datetime) ->
             raise InvariantViolation("delivery.items", "日报生成后条目已完成/拒绝/冷却；请审阅队列")
     if channel not in {"local_markdown", "smtp"}:
         raise InvariantViolation("delivery.channel", "不支持的投递渠道")
-    if channel == "smtp" and ctx["runtime"].value_json["channel"] != "smtp":
+    if channel == "smtp" and ctx["runtime"].value_json.get("channel") != "smtp":
         raise InvariantViolation("delivery.channel", "初始化时未选择 SMTP 渠道；本地文件仍可用")
     if digest.digest_date != now.astimezone(ZoneInfo(digest.timezone)).date():
         raise InvariantViolation("delivery.date", "只允许发送本地今日日报，历史日报可审阅导出")
-    if (
-        now.astimezone(ZoneInfo(digest.timezone)).strftime("%H:%M")
-        < ctx["runtime"].value_json["push_time"]
+    if now.astimezone(ZoneInfo(digest.timezone)).strftime("%H:%M") < (
+        ctx["runtime"].value_json.get("push_time") or "00:00"
     ):
         raise InvariantViolation("delivery.time", "尚未到已确认的推送时间")
 

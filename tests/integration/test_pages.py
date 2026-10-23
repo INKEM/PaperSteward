@@ -45,18 +45,15 @@ def test_pages_reading_loop_no_external_assets_and_revision(client, migrated_eng
         assert session.get(PaperRow, "p").status == "archived"
 
 
-def test_today_generate_form_uses_selected_day(client, migrated_engine, monkeypatch):
-    """N2：无日报页面的生成表单携带所选日期，而不是总生成今天。"""
+def test_history_is_read_only_and_ui_does_not_create_digests(client, migrated_engine, monkeypatch):
     factory = prepared(client, migrated_engine)
     monkeypatch.setattr("papersteward.api.pages.utc_now", lambda: NOW)
-    selected = NOW.date() - timedelta(days=1)
-    page = client.get(f"/ui/today?day={selected}")
-    assert page.status_code == 200 and f'name="day" value="{selected}"' in page.text
-    generated = client.post("/ui/digests", headers=HEADERS, data={"day": str(selected)})
-    assert generated.status_code == 200
-    assert generated.headers["HX-Redirect"] == f"/ui/today?day={selected}"
+    page = client.get(f"/ui/digests/{NOW.date()}")
+    assert page.status_code == 200 and "只读保留" in page.text
+    assert 'hx-post="/ui/actions' not in page.text
+    assert client.post("/ui/digests", headers=HEADERS, data={}).status_code == 404
     with session_scope(factory) as session:
-        assert session.get(DigestRow, selected) is not None
+        assert session.get(DigestRow, NOW.date()) is not None
 
 
 def test_ui_cross_site_and_malformed_forms_rejected(client, migrated_engine, monkeypatch):

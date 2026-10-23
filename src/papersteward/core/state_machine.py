@@ -59,8 +59,8 @@ PAPER_TRANSITIONS: Final[Mapping[PaperStatus, frozenset[PaperStatus]]] = Mapping
         ),
         PaperStatus.QUEUED: frozenset(
             {
+                PaperStatus.READING,
                 PaperStatus.PUSHED,
-                PaperStatus.SNOOZED,
                 PaperStatus.SHELVED,
                 PaperStatus.REJECTED,
             }
@@ -70,13 +70,10 @@ PAPER_TRANSITIONS: Final[Mapping[PaperStatus, frozenset[PaperStatus]]] = Mapping
             {
                 PaperStatus.READING,
                 PaperStatus.QUEUED,
-                PaperStatus.SNOOZED,
                 PaperStatus.REJECTED,
             }
         ),
-        PaperStatus.READING: frozenset(
-            {PaperStatus.DONE, PaperStatus.SNOOZED, PaperStatus.REJECTED}
-        ),
+        PaperStatus.READING: frozenset({PaperStatus.DONE, PaperStatus.REJECTED}),
         PaperStatus.DONE: frozenset({PaperStatus.ARCHIVED}),
         PaperStatus.ARCHIVED: frozenset(),
         # 用户可从拒绝列表手动恢复；恢复后重新进入筛选，不直接回到队列。

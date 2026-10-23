@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import uuid4
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from papersteward.core.entities import (
@@ -32,11 +33,11 @@ from papersteward.core.enums import (
     BucketType,
     EventType,
     PaperStatus,
-    ReviewStatus,
     SpecialBucketKind,
     SpecialNominationStatus,
     TagRole,
 )
+from papersteward.core.errors import DomainError
 from papersteward.core.invariants import choose_special_filing_kind, ensure_shelvable
 from papersteward.errors import ConflictError, NotFoundError
 from papersteward.pipeline.context import bound_context, runtime_local_day
@@ -50,7 +51,6 @@ from papersteward.storage.repositories import (
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
-    ReviewRepository,
     SpecialNominationRepository,
     StaticScoreSnapshotRepository,
 )
@@ -196,12 +196,7 @@ def _classified_paper(session: Session, paper_id: str) -> tuple[Paper, str]:
     if paper is None:
         raise NotFoundError("文献不存在")
     if paper.status is not PaperStatus.CLASSIFIED:
-        raise ConflictError(
-            "只有 classified 文献能归入特殊桶；请先使用 review approve/relabel 处理其他审核项"
-        )
-    review = ReviewRepository(session).get(paper_id)
-    if review is not None and review.status is ReviewStatus.OPEN:
-        raise ConflictError("存在未完成的普通审核项；请先使用 review approve/relabel")
+        raise ConflictError("只有 classified 文献能归入特殊桶")
     tags = PaperTagRepository(session).list_for_paper(paper_id)
     primary = [tag for tag in tags if tag.role is TagRole.PRIMARY]
     if len(primary) != 1:
@@ -218,6 +213,7 @@ def accept_nomination(
     note: str | None = None,
     force: bool = False,
     now: datetime | None = None,
+    assigned_by: AssignedBy = AssignedBy.USER,
 ) -> ShelfDecision:
     """接受待审提名：special filing + shelved；同一文献其他待审提名作废。"""
     if not reviewed_by.strip():
@@ -257,7 +253,7 @@ def accept_nomination(
             paper_id=paper_id,
             bucket_id=bucket.id,
             role=BucketRole.FILING,
-            assigned_by=AssignedBy.USER,
+            assigned_by=assigned_by,
             reason=f"special nomination accepted: {nomination.kind.value}",
         ),
     )
@@ -321,6 +317,39 @@ def accept_nomination(
         tier=tier,
         superseded=superseded,
     )
+
+
+def auto_decide_special(session: Session, paper_id: str, *, now: datetime) -> bool:
+    """按特殊桶优先级接受有效且高置信提名，其余自动拒绝。"""
+    pending = sorted(
+        _pending_for_paper(session, paper_id),
+        key=lambda item: (-SPECIAL_BUCKET_PRIORITY[item.kind], item.id),
+    )
+    for nomination in pending:
+        if nomination.confidence >= 0.8 and not nomination.reasons:
+            try:
+                # 接受失败时撤销该次归属、状态、档位等所有写入。
+                with session.begin_nested():
+                    accept_nomination(
+                        session,
+                        paper_id,
+                        kind=nomination.kind,
+                        reviewed_by="automatic",
+                        now=now,
+                        assigned_by=AssignedBy.SYSTEM,
+                    )
+                return True
+            except (DomainError, ConflictError, NotFoundError, SQLAlchemyError):
+                pass
+        reject_nomination(
+            session,
+            paper_id,
+            kind=nomination.kind,
+            reviewed_by="automatic",
+            note="低置信、校验未通过或无法自动归入",
+            now=now,
+        )
+    return False
 
 
 def promote_to_topic(

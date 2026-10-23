@@ -79,7 +79,8 @@ class LLMTestRequest(BaseModel):
     base_url: str = Field(min_length=1, max_length=2048)
     api_key: str | None = Field(default=None, max_length=4096)
     model: str = Field(min_length=1, max_length=128)
-    timeout_s: float = Field(default=30.0, gt=0, le=120)
+    # 与保存端点（LLMSettingsPayload le=600）和设置表单 max=600 保持一致。
+    timeout_s: float = Field(default=30.0, gt=0, le=600)
 
 
 class LLMTestResponse(BaseModel):

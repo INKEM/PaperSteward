@@ -25,6 +25,7 @@ from papersteward.core.entities import (
     Event,
     IntakeMaterial,
     Paper,
+    PaperAnalysis,
     PaperBucket,
     PaperTag,
     Rating,
@@ -119,6 +120,7 @@ from papersteward.storage.models import (
     EnrichmentRow,
     EventRow,
     IntakeMaterialRow,
+    PaperAnalysisRow,
     PaperBucketRow,
     PaperRow,
     PaperTagRow,
@@ -447,6 +449,42 @@ class StaticScoreSnapshotRepository(_Repository):
         )
         row = self._session.scalars(statement).first()
         return None if row is None else static_score_snapshot_from_row(row)
+
+
+class PaperAnalysisRepository(_Repository):
+    """每篇文献保存一次完整分析，历史兼容复制不会覆盖新分析。"""
+
+    def get(self, paper_id: str) -> PaperAnalysis | None:
+        row = self._session.get(PaperAnalysisRow, paper_id)
+        if row is None:
+            return None
+        return PaperAnalysis(
+            paper_id=row.paper_id,
+            payload_json=dict(row.payload_json),
+            quality_flags=tuple(row.quality_flags_json),
+            created_at=as_utc(row.created_at),
+            updated_at=as_utc(row.updated_at),
+        )
+
+    def save(
+        self,
+        paper_id: str,
+        payload: Mapping[str, Any],
+        quality_flags: Sequence[str],
+        *,
+        now: datetime,
+    ) -> PaperAnalysis:
+        row = self._session.get(PaperAnalysisRow, paper_id)
+        if row is None:
+            row = PaperAnalysisRow(paper_id=paper_id, created_at=now)
+            self._session.add(row)
+        row.payload_json = dict(payload)
+        row.quality_flags_json = list(dict.fromkeys(quality_flags))
+        row.updated_at = now
+        self._flush()
+        result = self.get(paper_id)
+        assert result is not None
+        return result
 
 
 class ReviewRepository(_Repository):
@@ -965,6 +1003,14 @@ class RunRepository(_Repository):
     def get(self, run_id: str) -> Run | None:
         row = self._session.get(RunRow, run_id)
         return None if row is None else run_from_row(row)
+
+    def running_ui_runs(self) -> list[Run]:
+        statement = (
+            select(RunRow)
+            .where(RunRow.status == RunStatus.RUNNING.value, RunRow.run_type.like("ui.%"))
+            .order_by(RunRow.started_at, RunRow.id)
+        )
+        return [run_from_row(row) for row in self._session.scalars(statement)]
 
     def list(self, *, limit: int = 100, offset: int = 0) -> list[Run]:
         statement = (

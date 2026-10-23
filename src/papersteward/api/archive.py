@@ -7,7 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import PlainTextResponse
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.review import _review_errors
+from papersteward.api.domain_errors import domain_errors
 from papersteward.delivery.archive import list_archives, read_archive
 from papersteward.delivery.contracts import ArchiveRecord
 from papersteward.delivery.export import ExportFormat, export_archives
@@ -25,7 +25,7 @@ def listing(
     query: str | None = None,
     bucket: str | None = None,
 ) -> dict[str, object]:
-    with _review_errors():
+    with domain_errors():
         return dict(
             jsonable_encoder(
                 list_archives(
@@ -43,7 +43,7 @@ def listing(
 
 @router.get("/export", response_class=PlainTextResponse)
 def export(session: SessionDep, format: ExportFormat = "bibtex") -> str:
-    with _review_errors():
+    with domain_errors():
         records = []
         offset = 0
         while True:
@@ -57,5 +57,5 @@ def export(session: SessionDep, format: ExportFormat = "bibtex") -> str:
 
 @router.get("/{paper_id}", response_model=ArchiveRecord)
 def read(paper_id: str, session: SessionDep) -> ArchiveRecord:
-    with _review_errors():
+    with domain_errors():
         return read_archive(session, paper_id)

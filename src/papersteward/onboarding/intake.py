@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, cast
 from uuid import uuid4
@@ -258,8 +259,18 @@ def _previous_drafts(session: Session) -> str:
     return _truncate("\n\n".join(sections), MAX_PREVIOUS_CHARS)
 
 
-def run_extraction(session: Session, settings: Settings) -> dict[str, Any]:
-    """执行一次 Agent 抽取：材料 + 意见 → 新的 profile/taxonomy 草案。"""
+def run_extraction(
+    session: Session,
+    settings: Settings,
+    should_abort: Callable[[], bool] | None = None,
+    note: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """执行一次 Agent 抽取：材料 + 意见 → 新的 profile/taxonomy 草案。
+
+    should_abort 在模型返回后、任何落库前检查；任务已被停止时抛出，
+    本次抽取不产生草案，已提交的数据不受影响。note 在阶段变化时收到
+    一句用户可读的进度说明。
+    """
     _require_draft(session)
     config = resolve_llm_config(session, settings)
     if problem := config.readiness_problem():
@@ -273,6 +284,11 @@ def run_extraction(session: Session, settings: Settings) -> dict[str, Any]:
     provider = build_llm_provider(config)
     try:
         gateway = LLMGateway(provider, max_attempts=config.max_attempts, timeout_s=config.timeout_s)
+        if note is not None:
+            note(
+                "正在调用模型生成草案：这是单次模型调用，期间无法显示更细进度；"
+                "通常需要几十秒，可离开页面，完成后自动继续"
+            )
         result = gateway.complete_json(
             "profile_extraction",
             {
@@ -285,6 +301,10 @@ def run_extraction(session: Session, settings: Settings) -> dict[str, Any]:
         close = getattr(provider, "close", None)
         if callable(close):
             close()
+    if should_abort is not None and should_abort():
+        raise InvalidRequestError("任务已停止，生成结果未保存")
+    if note is not None:
+        note("模型已返回，正在校验并保存草案…")
 
     extraction = cast(ProfileExtractionOutput, result.data)
     timestamp = utc_now()

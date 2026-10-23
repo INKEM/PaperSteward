@@ -22,7 +22,7 @@ from papersteward.core.errors import InvariantViolation
 from papersteward.errors import ConflictError, InvalidRequestError, NotFoundError
 from papersteward.scoring.contracts import QueueItem
 from papersteward.scoring.priority import rank_key
-from papersteward.scoring.queue import read_queue
+from papersteward.scoring.queue import read_backlog, read_queue
 from papersteward.storage.repositories import ViewConfigRepository
 
 COMPONENTS: Final = VIEW_COMPONENT_ORDER
@@ -329,6 +329,7 @@ def preview_view(
     view_id: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    persistent: bool = False,
 ) -> ViewPreview:
     if isinstance(score_date, datetime) or not isinstance(score_date, date):
         raise InvalidRequestError("日期必须是 date")
@@ -337,7 +338,15 @@ def preview_view(
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise InvalidRequestError("offset 不能为负")
     view = resolve_view(session, preset=preset, weights=weights, view_id=view_id)
-    queue_items = _all_queue_items(session, score_date, now or utc_now())
+    if persistent:
+        queue_items: list[QueueItem] = []
+        while True:
+            page = read_backlog(session, now=now or utc_now(), limit=200, offset=len(queue_items))
+            queue_items.extend(page.items)
+            if len(queue_items) >= page.total:
+                break
+    else:
+        queue_items = _all_queue_items(session, score_date, now or utc_now())
     default_rank = {item.paper_id: index + 1 for index, item in enumerate(queue_items)}
     scored: list[tuple[QueueItem, float, dict[str, ViewComponent]]] = []
     for item in queue_items:

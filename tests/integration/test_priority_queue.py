@@ -117,7 +117,7 @@ def test_snapshot_queue_explanation_and_idempotency(client, migrated_engine, mon
     assert client.get("/queue?date=2026-10-22").json()["total"] == 0
     first = client.post("/scores/snapshot", json={"score_date": str(DAY)})
     assert first.status_code == 200, first.text
-    assert first.json()["created"] == 1
+    assert first.json()["created"] == 2
     excluded = {x["paper_id"]: x for x in first.json()["excluded"]}
     assert excluded["special"] == {
         "paper_id": "special",
@@ -125,10 +125,10 @@ def test_snapshot_queue_explanation_and_idempotency(client, migrated_engine, mon
         "excluded_from_priority": True,
     }
     assert "below_relevance_gate" in excluded["low"]["reasons"]
-    assert "open_review" in excluded["review"]["reasons"]
+    assert "review" not in excluded
     response = client.get("/queue?date=2026-10-22&limit=1")
     item = response.json()["items"][0]
-    assert item["paper_id"] == "p" and response.json()["total"] == 1
+    assert item["paper_id"] == "p" and response.json()["total"] == 2
     explanation = item["explanation"]
     assert set(explanation["components"]) == {"R", "A", "E", "F", "H", "U"}
     assert explanation["scores"]["U"] == explanation["dynamic"]["hunger"] == 50
@@ -137,7 +137,7 @@ def test_snapshot_queue_explanation_and_idempotency(client, migrated_engine, mon
     assert "scores" not in client.get("/scores/special/explain").json()
     assert client.get("/scores/absent/explain").status_code == 404
     second = client.post("/scores/snapshot", json={"score_date": str(DAY)}).json()
-    assert second["created"] == 0 and second["existing"] == 1
+    assert second["created"] == 0 and second["existing"] == 2
     assert client.get("/queue?date=2026-10-22").json()["items"][0] == item
     with session_scope(factory) as session:
         assert PaperRepository(session).get("p").status is PaperStatus.QUEUED
@@ -145,7 +145,7 @@ def test_snapshot_queue_explanation_and_idempotency(client, migrated_engine, mon
         assert len(StaticScoreSnapshotRepository(session).history("p")) == 1
         # 特殊MEMBERSHIP徽章不影响主题归属的排序。
         PaperBucketRepository(session).add(PaperBucket("p", "b-review", BucketRole.MEMBERSHIP))
-        assert read_queue(session, DAY, now=NOW).total == 1
+        assert read_queue(session, DAY, now=NOW).total == 2
 
 
 def test_atomic_failure_outer_rollback_and_history(client, migrated_engine, monkeypatch):
@@ -223,7 +223,7 @@ def _pending_nomination(paper_id: str) -> SpecialNominationRecord:
     )
 
 
-def test_pending_special_nomination_is_excluded_from_priority(client, migrated_engine, monkeypatch):
+def test_pending_special_nomination_does_not_block_priority(client, migrated_engine, monkeypatch):
     activate(client)
     monkeypatch.setattr("papersteward.api.queue.utc_now", lambda: NOW)
     factory = create_session_factory(migrated_engine)
@@ -232,8 +232,51 @@ def test_pending_special_nomination_is_excluded_from_priority(client, migrated_e
         SpecialNominationRepository(session).upsert(_pending_nomination("pending-special"))
     response = client.post("/scores/snapshot", json={"score_date": str(DAY)})
     assert response.status_code == 200, response.text
-    excluded = {item["paper_id"]: item for item in response.json()["excluded"]}
-    assert "pending_special_nomination" in excluded["pending-special"]["reasons"]
+    assert response.json()["created"] == 1
+    assert client.get("/queue?date=2026-10-22").json()["total"] == 1
     explanation = client.get("/scores/pending-special/explain").json()
-    assert explanation["reasons"] == ["pending_special_nomination"]
-    assert explanation["excluded_from_priority"] is False
+    assert "components" in explanation
+
+
+def test_quality_flags_low_confidence_and_analysis_evidence_do_not_block_queue(
+    client, migrated_engine
+):
+    from papersteward.storage.models import PaperTagRow, SummaryRow
+    from papersteward.storage.repositories import PaperAnalysisRepository
+
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "quality")
+        session.get(SummaryRow, "quality").validation_status = "needs_review"
+        tag = session.scalars(select(PaperTagRow).where(PaperTagRow.paper_id == "quality")).one()
+        tag.confidence = 0.4
+        flags = ("classification:low_primary_confidence", "relevance:boundary")
+        PaperAnalysisRepository(session).save(
+            "quality",
+            {
+                "relevance": {"rubric": {"confidence": 0.63}},
+                "classification": {"primary_tag": "T01"},
+            },
+            flags,
+            now=NOW,
+        )
+        ReviewRepository(session).open("quality", ["legacy"], {}, now=NOW)
+        session.flush()
+        assert create_snapshots(session, DAY, now=NOW).created == 1
+        queue = read_queue(session, DAY, now=NOW)
+        assert queue.total == 1
+        assert queue.items[0].explanation.components["R"].confidence == 0.63
+        assert PaperAnalysisRepository(session).get("quality").quality_flags == flags
+
+
+def test_completely_missing_summary_is_excluded(client, migrated_engine):
+    from papersteward.storage.models import SummaryRow
+
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "missing")
+        session.delete(session.get(SummaryRow, "missing"))
+        session.flush()
+        report = create_snapshots(session, DAY, now=NOW)
+        assert report.created == 0
+        assert report.excluded[0].reasons == ["summary_unavailable"]

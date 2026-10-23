@@ -82,7 +82,7 @@ curl -s localhost:8000/config/scoring/changes/<id>
 - 迁移 `0014` 新增 `scoring_change`：status、base/config version、preview_day、
   effective_on、proposed/preview JSON、preview_hash、确认人/时间/备注；迁移 `0015`
   为特殊桶人工改档补 `special_tier_snapshot.reviewed_by`（见[特殊桶](shelves.md)）。
-- 当前 head 为 `0016`；从 head 依次降级会先重建旧版初始化状态，再移除后续表。
+- 当前 head 为 `0018`；0018 的降级不恢复历史延期状态；再降级会移除论文分析表，再重建旧版初始化状态，再移除后续表。
   降级到 0014 只删除档位审核人列，再降至 0013 才删除权重变更记录。
   已保存的评分配置版本与静态快照不回退。
   若需撤销一次激活，应新建更高版本并按预览/确认流程生效，不删除历史。

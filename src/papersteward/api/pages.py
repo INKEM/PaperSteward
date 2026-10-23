@@ -4,7 +4,7 @@ import json
 from datetime import date
 from html import escape
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs, quote
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -21,7 +21,6 @@ from papersteward.delivery.actions import apply_action
 from papersteward.delivery.archive import list_archives, read_archive
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
-from papersteward.delivery.service import create_digest
 from papersteward.delivery.shelf_view import (
     ShelfItem,
     ShelfPage,
@@ -32,8 +31,8 @@ from papersteward.delivery.shelf_view import (
     shelf_summaries,
 )
 from papersteward.errors import AppError, NotFoundError
-from papersteward.scoring.contracts import QueueItem
-from papersteward.scoring.queue import _context, explain_score, read_queue
+from papersteward.scoring.contracts import BacklogFilters, BacklogItem, QueueItem, ScoreExplanation
+from papersteward.scoring.queue import _context, explain_score, read_backlog
 from papersteward.scoring.views import (
     ViewPreview,
     get_view_config,
@@ -43,7 +42,13 @@ from papersteward.scoring.views import (
 )
 from papersteward.storage.delivery import read_digest
 from papersteward.storage.onboarding import get_onboarding
-from papersteward.storage.repositories import PaperRepository, SummaryRepository
+from papersteward.storage.repositories import (
+    EnrichmentRepository,
+    PaperRepository,
+    RunRepository,
+    SummaryRepository,
+    TaxonomyRepository,
+)
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 STATIC = Path(__file__).resolve().parents[1] / "static"
@@ -55,7 +60,8 @@ HEADERS = {
 }
 
 
-def _page(title: str, body: str) -> HTMLResponse:
+def _page(title: str, body: str, *, nav: str | None = None) -> HTMLResponse:
+    """页面外壳。nav 为该页在主导航中的键；缺省用 title 匹配。"""
     config = {
         "allowEval": False,
         "allowScriptTags": False,
@@ -68,19 +74,18 @@ def _page(title: str, body: str) -> HTMLResponse:
         ],
     }
     links = (
-        ("/ui/today", "今日", "今日阅读"),
-        ("/ui/review", "审核", "待审核"),
         ("/ui/queue", "阅读队列", "阅读队列"),
         ("/ui/shelves", "特殊桶", "特殊桶"),
-        ("/ui/views", "视图", "自定义视图"),
-        ("/ui/archive", "归档", "阅读归档"),
+        ("/ui/views", "排序视图", "排序视图"),
+        ("/ui/archive", "归档", "归档"),
         ("/ui/setup", "首次设置", "首次设置"),
-        ("/ui/settings", "设置", "模型连接"),
+        ("/ui/settings", "设置", "设置"),
         ("/ui/help", "帮助", "使用帮助"),
     )
+    active = nav or title
     navigation = "".join(
-        f'<a href="{url}"' + (' aria-current="page"' if title == active else "") + f">{label}</a>"
-        for url, label, active in links
+        f'<a href="{url}"' + (' aria-current="page"' if active == key else "") + f">{label}</a>"
+        for url, label, key in links
     )
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -91,7 +96,7 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<script src="/ui/static/htmx.js" defer></script>'
         '<script src="/ui/static/setup.js" defer></script></head><body>'
         '<a class="skip-link" href="#main">跳到内容</a><header>'
-        '<a class="brand" href="/ui/today"><span class="brand-mark" aria-hidden="true">P</span>'
+        '<a class="brand" href="/ui/queue"><span class="brand-mark" aria-hidden="true">P</span>'
         "PaperSteward<small>留一点时间，读重要的论文</small></a>"
         f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
         '<details class="mobile-nav"><summary>导航菜单</summary>'
@@ -112,16 +117,20 @@ def help_page() -> HTMLResponse:
         "<article><h2>从这里开始</h2><p>第一次打开时，先在「首次设置」连接模型服务，再粘贴或上传"
         "描述研究方向的材料。Agent 会生成研究方向档案和分类标签草案；你可以用自然语言提意见，"
         "查看每版差异，满意后确认开始使用。</p>"
-        "<p>日常顺序：同步 / 处理 → 处理审核 → 生成日报 → 阅读并记录反馈。</p>"
-        "<p>运行中可关闭页面，稍后从今日页查看；失败后检查原因，再显式重试。</p></article>"
+        "<p>日常顺序：手动挖掘 → 长期阅读队列 → 随时阅读。</p>"
+        "<p>运行中可关闭页面，稍后从阅读队列查看；想中途退出点「停止任务」，已完成的数据保留。失败后检查原因，再用原参数重试。</p></article>"
         "<article><h2>模型与隐私</h2><p>模型地址、模型名和密钥在浏览器「设置」页填写，"
         "保存在本机工作区数据库。保存即表示同意把论文标题与摘要发送给该模型服务，"
         "用于分类、概括和评分；阅读备注不发送到模型，也不包含在同步请求中。</p>"
-        "<p>采集论文时会访问所选文献来源；打开今日页不会自动联网或发邮件。"
+        "<p>采集论文时会访问所选文献来源；打开阅读队列不会自动联网或发邮件。"
         "密钥不会回显，也不会写入研究材料。</p><p>新工作区：停止后使用 "
         "<code>papersteward start --data-dir 新目录</code>，原数据保留。</p></article>"
-        "<article><h2>常见状态</h2><p>没有候选：检查模型连接，先同步处理，再处理审核。"
-        "没有日报：完成上述步骤后点击生成。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
+        "<article><h2>怎么看运行进度</h2><p>队列顶部显示当前任务、处理篇数、当前论文和已用时；"
+        "每 2 秒更新，任务结束自动刷新。运行页保留失败阶段与重试入口。"
+        "合格论文会直接进入长期队列；排名是当前列表中的名次，评分是推荐参考；"
+        "阅读容量只提供建议，不隐藏论文。任务运行时请等待完成后再提交。</p></article>"
+        "<article><h2>常见状态</h2><p>没有候选：检查模型连接，先手动挖掘，再到阅读队列查看。"
+        "队列为空：调整检索词再次挖掘。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
         "<p>本地单用户工具，请使用默认 127.0.0.1 地址。"
         "关闭服务后再复制整个数据目录保存副本。</p></article>",
     )
@@ -134,7 +143,8 @@ def _error(exc: DomainError | AppError | ValidationError) -> HTMLResponse:
         else "输入无效，请检查评分、方式或备注。"
     )
     return HTMLResponse(
-        f'<article><p role="alert">{escape(message)}</p><a href="/ui/today">返回今日</a></article>',
+        f'<article><p role="alert" tabindex="-1" autofocus>{escape(message)}</p>'
+        '<a href="/ui/today">返回队列</a></article>',
         status_code=422 if isinstance(exc, ValidationError) else 409,
         headers=HEADERS,
     )
@@ -151,10 +161,14 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
         "done": "完成并归档",
         "score": "修订评分",
         "note": "修订备注",
-        "snooze": "稍后",
-        "skip": "跳过7天",
-        "reject": "不相关",
+        "reject": "标记为不感兴趣",
+        "restore": "恢复推荐",
     }
+    confirm = (
+        ' data-confirm="标记后这篇论文不再出现在队列。确认标记为不感兴趣？"'
+        if kind == "reject"
+        else ""
+    )
     fields = ""
     if kind == "done":
         fields += (
@@ -177,65 +191,107 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
         fields += (
             " required" if kind == "reject" else ""
         ) + f">{escape(note or '')}</textarea></label>"
-    if kind == "snooze":
-        fields += '<label>延后<select name="days"><option>3</option><option>7</option>'
-        fields += "<option>14</option></select>天</label>"
     return (
         f'<form method="post" action="{url}" hx-post="{url}" hx-target="closest article" '
-        'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
+        'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\''
+        f"{confirm}>"
         f'<input type="hidden" name="kind" value="{kind}">'
         f'<input type="hidden" name="request_id" value="{uuid4().hex}">'
         f'{fields}<button type="submit">{labels[kind]}</button></form>'
     )
 
 
-def _card(session: SessionDep, item: QueueItem) -> str:
+def _paper_links(session: SessionDep, paper_id: str) -> str:
+    paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        return ""
+    enrichment = EnrichmentRepository(session).get(paper_id)
+    body = f'<p class="muted">{escape(", ".join(paper.authors[:3]) or "作者未知")}'
+    if paper.venue:
+        body += " · " + escape(paper.venue)
+    body += "</p><p>"
+    for label, raw in (
+        ("原文", paper.url),
+        ("PDF", paper.pdf_url),
+        ("代码", enrichment.signals.code_url if enrichment else None),
+    ):
+        if url := safe_url(raw):
+            body += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
+    return body + "</p>"
+
+
+def _card(
+    session: SessionDep, item: QueueItem, *, is_new: bool = False, readonly: bool = False
+) -> str:
     paper = PaperRepository(session).get(item.paper_id)
     mode = item.read_mode.value if isinstance(item, DigestCard) else "skim"
-    meta = ""
-    if isinstance(item, DigestCard):
-        meta = f'<p class="muted">{escape(", ".join(item.authors[:3]) or "作者未知")} · '
-        meta += f"{escape(item.venue or 'venue未知')}</p>"
-        meta += "<p>" + escape(" / ".join([item.primary_tag, *item.secondary_tags])) + "</p>"
-        for label, raw in (("原文", item.url), ("PDF", item.pdf_url), ("代码", item.code_url)):
-            if url := safe_url(raw):
-                meta += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
-    body = (
-        f'<article><span class="tag">{escape(item.primary_tag)}</span>'
-        f"<h2>{escape(item.title)}</h2>{meta}<blockquote>{escape(item.summary_100)}</blockquote>"
+    rank = item.rank if isinstance(item, BacklogItem) else None
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    label = (
+        next((tag.name for tag in taxonomy.tags if tag.code == item.primary_tag), item.primary_tag)
+        if taxonomy
+        else item.primary_tag
     )
-    if isinstance(item, DigestCard):
-        body += f"<p><strong>{'建议精读' if mode == 'deep' else '建议粗读'}</strong> · "
-        body += f"{escape(item.reason)}</p>"
+    body = f'<article class="paper-card{" newly-added" if is_new else ""}">'
+    if is_new:
+        body += '<span class="tag new-badge">本次新增</span> '
+    body += f'<span class="tag">{escape(label)}</span>'
     body += (
-        '<details class="score-detail"><summary>分数与排序</summary>'
-        f"<p>综合 {item.priority:.1f} · 排序 {item.rank_score:.1f}</p></details>"
+        f'<h2><a href="/ui/papers/{quote(item.paper_id, safe="")}">{escape(item.title)}</a></h2>'
     )
-    body += f'<a href="/ui/papers/{quote(item.paper_id, safe="")}">详情与评分解释</a>'
+    body += _paper_links(session, item.paper_id)
+    body += f"<blockquote>{escape(item.summary_100)}</blockquote>"
+    body += '<p class="paper-score">'
+    if rank is not None:
+        body += f"<strong>第 {rank} 名</strong> · "
+    body += (
+        f"综合评分 {item.priority:.1f} / 100 · "
+        f'<span class="muted">评分于 {item.score_date}</span></p>'
+    )
+    body += f'<a href="/ui/papers/{quote(item.paper_id, safe="")}">查看论文与推荐依据</a>'
+    if readonly:
+        return body + "</article>"
     if paper and paper.status in {PaperStatus.DONE, PaperStatus.ARCHIVED}:
         body += '<p class="success">已完成归档</p>'
     elif paper and paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
         body += (
-            "<details><summary>记录阅读与反馈</summary>"
+            "<details><summary>完成并记录阅读</summary>"
             + _form(item.paper_id, "done", mode=mode)
             + "</details>"
         )
         body += (
-            "<details><summary>稍后、跳过或不相关</summary>"
-            + "".join(_form(item.paper_id, k) for k in ("snooze", "skip", "reject"))
-            + "</details>"
+            "<details><summary>不感兴趣</summary>" + _form(item.paper_id, "reject") + "</details>"
         )
-    else:
-        body += "<p>此条目当前已延期或不在阅读队列。</p>"
     return body + "</article>"
+
+
+STATUS_LABELS = {
+    "discovered": "已发现",
+    "deduped": "已去重",
+    "screened": "已筛选",
+    "enriched": "已归纳",
+    "summarized": "已概括",
+    "classified": "已归类",
+    "scored": "已评分",
+    "queued": "队列中",
+    "reading": "阅读中",
+    "done": "已完成",
+    "archived": "已归档",
+    "rejected": "不感兴趣",
+    "shelved": "特殊桶",
+    "pushed": "已推送",
+}
+
+TIER_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
 
 def _shelf_inner(item: ShelfItem) -> str:
     tier_value = item.tier.tier.value if item.tier is not None else "unrated"
-    tier_label = item.tier.tier.value if item.tier is not None else "未评估"
+    tier_label = TIER_LABELS.get(tier_value, "未评估")
+    status_label = STATUS_LABELS.get(item.paper.status.value, item.paper.status.value)
     body = (
         f'<p><span class="tag tier-{tier_value}">{escape(tier_label)}</span> '
-        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(item.paper.status.value)}</p>"
+        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(status_label)}</p>"
     )
     meta = []
     if item.paper.authors:
@@ -249,7 +305,10 @@ def _shelf_inner(item: ShelfItem) -> str:
     if item.nomination is not None:
         body += f"<p>{escape(item.nomination.reason)}</p>"
     if item.needs_assessment:
-        body += '<p class="muted">尚未评估档位，请运行 papersteward shelf assess。</p>'
+        body += (
+            '<p class="muted">尚未评估档位；运行命令行 <code>papersteward shelf assess</code> '
+            "后会显示高/中/低档位。</p>"
+        )
     for evidence in item.evidence:
         label = "有效证据" if evidence.valid else "未核对证据"
         body += (
@@ -283,7 +342,7 @@ def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | No
         f"<section><h2>{escape(summary.name)} "
         f'<span class="tag">{escape(summary.kind.value)}</span></h2>'
         f'<p class="muted">周上限 {summary.quota} · 共 {summary.total} 篇 · '
-        f"high {summary.high} / medium {summary.medium} / low {summary.low} / "
+        f"高 {summary.high} · 中 {summary.medium} · 低 {summary.low} · "
         f"未评估 {summary.unrated}</p>"
     )
     for item in page.items:
@@ -292,7 +351,7 @@ def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | No
             f"{escape(item.paper.title)}</a></h2>{_shelf_inner(item)}</article>"
         )
     if not page.items:
-        body += '<p class="muted">暂无内容（不占位）。</p>'
+        body += '<p class="muted">该桶暂无论文。</p>'
     if next_url is not None:
         body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
     return body + "</section>"
@@ -316,7 +375,7 @@ def _view_table(preview: ViewPreview) -> str:
             f"{escape(item.title)}</a></td><td>{item.view_score:.1f}</td>{cells}</tr>"
         )
     if not rows:
-        return '<p class="muted">当前合格候选为空；先生成当日快照或检查日期。</p>'
+        return '<p class="muted">当前队列为空；先挖掘论文或刷新排序。</p>'
     return (
         "<table><thead><tr><th>#</th><th>默认</th><th>变化</th><th>标题</th>"
         f"<th>视图分</th>{headers}</tr></thead><tbody>{rows}</tbody></table>"
@@ -342,7 +401,10 @@ def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None)
             )
         links += " · ".join(parts)
     else:
-        links += '<span class="muted">尚无；用 papersteward view save 保存。</span>'
+        links += (
+            '<span class="muted">还没有保存的排序视图；可在命令行用 '
+            "papersteward view save 保存自定义公式。</span>"
+        )
     links += "</p>"
     formula_text = preview.view.as_json()["formula"]
     links += (
@@ -372,11 +434,12 @@ def views(
             preset=preset,
             view_id=view_id,
             limit=limit,
+            persistent=score_date is None,
         )
         body = _view_links(preview, saved, score_date) + _view_table(preview)
-        return _page("自定义排序", body)
+        return _page("排序视图", body)
     except (DomainError, AppError) as exc:
-        return _page("自定义排序", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("排序视图", f'<p role="alert">{escape(exc.message)}</p>')
 
 
 @router.get("/static/htmx.js")
@@ -394,61 +457,142 @@ def style() -> FileResponse:
     return FileResponse(STATIC / "style.css", media_type="text/css")
 
 
-@router.get("/today")
-def today(request: Request, session: SessionDep, day: date | None = None) -> Response:
+def _backlog_page(
+    request: Request, session: SessionDep, filters: BacklogFilters, offset: int
+) -> Response:
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
     try:
-        selected = _day(session, day)
-        current = _day(session)
         from papersteward.api.workflow_pages import dashboard
 
-        intro = dashboard(session, request.app.state.settings, selected)
-        try:
-            digest = read_digest(session, selected)
-        except NotFoundError:
-            if selected == current:
-                return _page(
-                    "今日阅读",
-                    intro + '<article class="empty"><h2>从一份好奇开始</h2>'
-                    "<p>还没有今日日报。先同步处理论文、完成审核，再点击上方生成日报。</p>"
-                    '<p>第一次使用请先完成 <a href="/ui/setup">首次设置</a>。</p></article>',
-                )
-            label = "该日"
-            return _page(
-                "今日阅读",
-                intro + f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'
-                '<form action="/ui/digests" method="post" hx-post="/ui/digests" '
-                'hx-target="main" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
-                f'<input type="hidden" name="day" value="{selected.isoformat()}">'
-                f"<button>生成{label}日报</button></form>",
+        now = utc_now()
+        page = read_backlog(session, now=now, limit=50, offset=offset, filters=filters)
+        body = dashboard(session, request.app.state.settings, _day(session))
+        if "cancelled" in request.query_params:
+            body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        body += (
+            '<form action="/ui/queue" class="queue-filters"><label>研究标签'
+            '<select name="tag"><option value="">全部标签</option>'
+        )
+        for tag in taxonomy.tags if taxonomy else ():
+            if tag.level.value == "primary" and tag.active:
+                selected = " selected" if filters.tag == tag.code else ""
+                body += f'<option value="{escape(tag.code)}"{selected}>{escape(tag.name)}</option>'
+        body += '</select></label><label>阅读状态<select name="read_status">'
+        for value, label in (("unread", "未读"), ("read", "已读"), ("all", "全部")):
+            selected = " selected" if filters.read_status == value else ""
+            body += f'<option value="{value}"{selected}>{label}</option>'
+        body += "</select></label>"
+        for name, number, label in (
+            ("min_priority", filters.min_priority, "最低分"),
+            ("max_priority", filters.max_priority, "最高分"),
+        ):
+            body += (
+                f'<label>{label}<input type="number" name="{name}" value="{number:g}" '
+                'min="0" max="100" step="0.1"></label>'
             )
-        body = intro + f'<p class="muted">{selected} · 队列 {digest.queue_total} 篇 · '
-        body += f"待确认 {digest.pending_review} 篇</p>"
-        body += (
-            "".join(_card(session, item) for item in digest.items)
-            or "<article>今日暂无合格候选，给阅读留一点空白。</article>"
+        body += "<button>应用筛选</button></form>"
+        latest = next(
+            (
+                run
+                for run in RunRepository(session).list(limit=100)
+                if run.run_type == "ui.sync" and run.status.value == "succeeded"
+            ),
+            None,
         )
-        body += (
-            f"<p>{escape(digest.special_status)} · 延期/冷却/配额未选 {len(digest.deferred)} 篇</p>"
-        )
-        return _page("今日阅读", body)
+        added = set(latest.stats_json.get("added_ids", [])) if latest else set()
+        if page.items:
+            dates = sorted({item.score_date for item in page.items})
+            date_label = str(dates[0]) if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
+            body += (
+                f'<p class="muted">共 {page.total} 篇 · 排序基于 {date_label} 的评分。'
+                "可随时刷新排序。</p>"
+            )
+            body += "".join(
+                _card(session, item, is_new=item.paper_id in added) for item in page.items
+            )
+        else:
+            filtered = bool(
+                filters.tag
+                or filters.read_status != "unread"
+                or filters.min_priority > 0
+                or filters.max_priority < 100
+            )
+            if filtered:
+                body += (
+                    '<article class="empty"><h2>没有论文符合当前筛选</h2>'
+                    "<p>可调整或清除上方筛选条件；也可以「挖掘新论文」补充新论文。</p></article>"
+                )
+            else:
+                body += (
+                    '<article class="empty"><h2>留一点时间，读重要的论文</h2>'
+                    "<p>队列还是空的。点击上方「挖掘新论文」：采集、处理、评分完成后，"
+                    "论文会直接出现在这里。</p></article>"
+                )
+        if offset or offset + 50 < page.total:
+            from urllib.parse import urlencode
+
+            for target, label in ((max(0, offset - 50), "上一页"), (offset + 50, "下一页")):
+                if (label == "上一页" and offset) or (label == "下一页" and target < page.total):
+                    query = urlencode({**filters.model_dump(exclude_none=True), "offset": target})
+                    body += (
+                        f'<a class="button secondary" href="/ui/queue?{escape(query)}">{label}</a> '
+                    )
+        return _page("阅读队列", body)
     except (DomainError, AppError) as exc:
-        return _page("今日阅读", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
+
+
+@router.get("/today")
+def today(request: Request, session: SessionDep, day: date | None = None) -> Response:
+    if day is not None:
+        return RedirectResponse(f"/ui/digests/{day}", status_code=303)
+    return _backlog_page(request, session, BacklogFilters(), 0)
 
 
 @router.get("/queue")
-def queue(session: SessionDep, offset: int = 0) -> HTMLResponse:
-    try:
-        page = read_queue(session, _day(session), now=utc_now(), limit=50, offset=offset)
-        body = f"<p>待阅读 {page.total} 篇</p>" + "".join(
-            _card(session, item) for item in page.items
+def queue(
+    request: Request,
+    session: SessionDep,
+    tag: str | None = None,
+    min_priority: Annotated[float, Query(ge=0, le=100)] = 0,
+    max_priority: Annotated[float, Query(ge=0, le=100)] = 100,
+    read_status: Literal["unread", "read", "all"] = "unread",
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Response:
+    if min_priority > max_priority:
+        return _page(
+            "阅读队列",
+            '<p role="alert">最低分不能高于最高分。请调整分数范围后重新筛选。</p>',
         )
-        if offset + 50 < page.total:
-            body += f'<a href="/ui/queue?offset={offset + 50}">下一页</a>'
-        return _page("阅读队列", body or "<p>队列为空。</p>")
-    except (DomainError, AppError) as exc:
-        return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
+    return _backlog_page(
+        request,
+        session,
+        BacklogFilters(
+            tag=tag or None,
+            min_priority=min_priority,
+            max_priority=max_priority,
+            read_status=read_status,
+        ),
+        offset,
+    )
+
+
+@router.get("/digests/{day}")
+def historical_digest(day: date, session: SessionDep) -> HTMLResponse:
+    try:
+        digest = read_digest(session, day)
+    except NotFoundError:
+        return _page(
+            "历史日报",
+            f'<p role="alert">{day} 没有历史日报。</p>'
+            "<p>现在的论文会直接进入长期阅读队列，不再按天生成日报；"
+            '已有数据保留只读。<a href="/ui/queue">返回阅读队列</a></p>',
+        )
+    body = f"<p>历史日报 · {day} · 只读保留</p>"
+    body += "".join(_card(session, item, readonly=True) for item in digest.items)
+    return _page("历史日报", body)
 
 
 @router.get("/shelves")
@@ -490,12 +634,45 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             raise NotFoundError("文献不存在")
         if paper.status is PaperStatus.ARCHIVED:
             record = read_archive(session, paper_id)
-            body = (
-                '<p class="success">已完成归档</p><pre>'
-                + escape(json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2))
-                + "</pre>"
+            from papersteward.api.score_render import score_explanation
+
+            summary_data = record.content.get("summary", {})
+            body = '<p class="success">已完成归档</p>'
+            body += _paper_links(session, paper_id)
+            body += (
+                "<blockquote>"
+                + escape(str(summary_data.get("summary_100", "历史概括不可用")))
+                + "</blockquote>"
             )
+            score_data = record.content.get("score")
+            if isinstance(score_data, dict):
+                body += score_explanation(ScoreExplanation.model_validate(score_data))
+            rating_label = record.score if record.score is not None else "未评分"
+            body += (
+                f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · "
+                f"完成于 {record.archived_at.date()}</p>"
+            )
+            body += "<p>" + escape(record.note or "暂无备注") + "</p>"
             body += _form(paper_id, "score") + _form(paper_id, "note", note=record.note)
+            if record.revision_history:
+                body += "<details><summary>反馈修订记录</summary><ul>"
+                for revision in record.revision_history:
+                    body += (
+                        "<li>"
+                        + escape(str(revision.get("created_at", "")))
+                        + " · "
+                        + escape(
+                            str(
+                                revision.get("score")
+                                if revision.get("score") is not None
+                                else "未评分"
+                            )
+                        )
+                        + " · "
+                        + escape(str(revision.get("note") or ""))
+                        + "</li>"
+                    )
+                body += "</ul></details>"
             return _page(
                 str(record.content.get("metadata", {}).get("title", paper_id)),
                 "<article>" + body + "</article>",
@@ -509,21 +686,41 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
                 body += _form(paper_id, "done")
             return _page(paper.title, body + "</article>")
+        if paper.status is PaperStatus.REJECTED:
+            summary = SummaryRepository(session).get(paper_id)
+            body = "<article><blockquote>"
+            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+            body += _paper_links(session, paper_id)
+            body += (
+                '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
+                "恢复后会重新参与评分并排队。</p>"
+            )
+            body += _form(paper_id, "restore")
+            return _page(paper.title, body + "</article>")
         _day(session)
         score = explain_score(session, paper_id, now=utc_now())
         summary = SummaryRepository(session).get(paper_id)
         body = "<article><blockquote>"
         body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
-        body += (
-            "<details open><summary>评分解释</summary><pre>"
-            + escape(score.model_dump_json(indent=2))
-            + "</pre></details>"
-        )
+        from papersteward.api.score_render import score_explanation
+
+        body += _paper_links(session, paper_id)
+        body += score_explanation(score)
         if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
-            body += _form(paper_id, "done")
+            body += (
+                "<details><summary>完成并记录阅读</summary>"
+                + _form(paper_id, "done")
+                + "</details>"
+            )
+            body += (
+                "<details><summary>不感兴趣</summary>" + _form(paper_id, "reject") + "</details>"
+            )
         return _page(paper.title, body + "</article>")
     except (DomainError, AppError) as exc:
-        return _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
+        page = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
+        if isinstance(exc, NotFoundError):
+            page.status_code = 404
+        return page
 
 
 @router.get("/archive")
@@ -539,11 +736,22 @@ def archive(
         body = (
             '<form method="get"><label>搜索<input name="query" value="'
             + escape(query or "")
-            + '"></label><button>查找</button></form>'
+            + '"></label><button>在归档中搜索</button></form>'
         )
         body += '<p>导出：<a href="/archive/export?format=bibtex">BibTeX</a> · '
         body += '<a href="/archive/export?format=csv">CSV</a> · '
         body += '<a href="/archive/export?format=markdown">Markdown</a></p>'
+        if not page["items"]:
+            if query:
+                body += (
+                    f'<p class="muted">没有匹配「{escape(query)}」的归档记录。'
+                    "可更换关键词，或清除搜索查看全部。</p>"
+                )
+            else:
+                body += (
+                    '<p class="muted">归档还没有内容。在队列中读完论文并点「完成并归档」后，'
+                    "会出现在这里。</p>"
+                )
         for record in page["items"]:
             title = record.content.get("metadata", {}).get("title", record.paper_id)
             rating = record.score if record.score is not None else "未评分"
@@ -553,11 +761,12 @@ def archive(
         if offset + 50 < page["total"]:
             from urllib.parse import urlencode
 
-            body += (
-                '<a href="/ui/archive?'
-                + escape(urlencode({"query": query or "", "offset": offset + 50}))
-                + '">下一页</a>'
-            )
+            params: dict[str, str | int] = {"query": query or "", "offset": offset + 50}
+            if tag:
+                params["tag"] = tag
+            if min_score is not None:
+                params["min_score"] = min_score
+            body += f'<a href="/ui/archive?{escape(urlencode(params))}">下一页</a>'
         return _page(f"阅读归档 · {page['total']} 篇", body)
     except (DomainError, AppError) as exc:
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>')
@@ -573,38 +782,6 @@ def _guard(request: Request) -> None:
         raise InvariantViolation("ui.origin", "需要同源页面操作")
 
 
-@router.post("/digests")
-async def generate(request: Request, session: SessionDep) -> Response:
-    try:
-        _guard(request)
-        raw = await request.body()
-        if len(raw) > 10000:
-            raise InvariantViolation("ui.body", "表单过大")
-        fields = parse_qs(raw.decode(), keep_blank_values=True)
-        explicit = fields.get("day", [""])[-1]
-        try:
-            explicit_day = date.fromisoformat(explicit) if explicit else None
-        except ValueError:
-            raise InvariantViolation("digest.date", "日期无效") from None
-        with session.begin():
-            selected = _day(session, explicit_day)
-            create_digest(session, selected, now=utc_now())
-            target = "/ui/today" if selected == _day(session) else f"/ui/today?day={selected}"
-        return (
-            Response(status_code=200, headers={"HX-Redirect": target})
-            if request.headers.get("hx-request")
-            else RedirectResponse(target, status_code=303)
-        )
-    except (DomainError, AppError) as exc:
-        return _error(exc)
-    except (ValueError, UnicodeError):
-        return HTMLResponse(
-            '<article><p role="alert">表单须为UTF-8，日期须为有效日期。</p></article>',
-            status_code=422,
-            headers=HEADERS,
-        )
-
-
 @router.post("/actions/{paper_id}")
 async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLResponse:
     try:
@@ -618,23 +795,40 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
         }
         if "score" in fields:
             fields["score"] = int(fields["score"]) if fields["score"] else None
-        if "days" in fields:
-            fields["days"] = int(fields["days"])
         if "note" in fields and not fields["note"]:
             fields["note"] = None
         body = Action.model_validate(fields)
         with session.begin():
-            result = apply_action(session, paper_id, body, now=utc_now())
+            apply_action(session, paper_id, body, now=utc_now())
+        messages = {
+            "done": "已归档这篇论文：阅读记录已保存，之后可在「归档」页找到它。",
+            "reject": "已标记不感兴趣，这篇论文不会再出现在队列里。",
+            "restore": "已恢复推荐，下次「挖掘新论文」处理时会重新进入队列。",
+            "score": "已保存新评分，之前的评分保留在修订记录里。",
+            "note": "已保存新备注，之前的备注保留在修订记录里。",
+        }
+        headers = {**HEADERS}
+        if body.kind == "reject":
+            # 不整页刷新：卡片原地替换为确认与「恢复推荐」入口，误点可一键撤销。
+            fragment = (
+                f'<article><p class="success" tabindex="-1" autofocus>'
+                f"{escape(messages['reject'])}</p>"
+                + _form(paper_id, "restore")
+                + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a></article>'
+            )
+            return HTMLResponse(fragment, headers=headers)
+        if request.headers.get("hx-request") and body.kind in {"done", "score", "note"}:
+            headers["HX-Refresh"] = "true"
         return HTMLResponse(
-            '<article><p class="success">已保存阅读记录：' + escape(result["status"]) + "</p>"
+            f'<article><p class="success" tabindex="-1" autofocus>{escape(messages[body.kind])}</p>'
             f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a></article>',
-            headers=HEADERS,
+            headers=headers,
         )
     except (DomainError, AppError, ValidationError) as exc:
         return _error(exc)
     except (ValueError, UnicodeError):
         return HTMLResponse(
-            '<article><p role="alert">评分/天数须为整数，表单须为UTF-8。</p></article>',
+            '<article><p role="alert">评分须为整数，表单须为UTF-8。</p></article>',
             status_code=422,
             headers=HEADERS,
         )

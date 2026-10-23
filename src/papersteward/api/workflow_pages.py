@@ -1,10 +1,9 @@
-"""Today actions, durable run progress, and human review forms."""
+"""队列操作与可恢复的运行进度。"""
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
-from datetime import date
+from contextlib import suppress
+from datetime import date, datetime
 from html import escape
 from urllib.parse import quote
 from uuid import uuid4
@@ -12,164 +11,296 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
-from sqlalchemy import func, select
 
-from papersteward.api import review as api
 from papersteward.api.deps import SessionDep
-from papersteward.api.form_utils import failure, fields, hidden, input_field
+from papersteward.api.form_utils import conflict_redirect, failure, fields, hidden, input_field
 from papersteward.api.pages import HEADERS, _page
 from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
-from papersteward.core.enums import RunStatus, SpecialBucketKind
+from papersteward.core.enums import RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, NotFoundError
 from papersteward.jobs.ui_flow import FlowRequest, processing_problem
 from papersteward.pipeline.context import bound_context
-from papersteward.pipeline.review import list_open_reviews
-from papersteward.pipeline.shelf import (
-    accept_nomination,
-    list_pending_nominations,
-    reject_nomination,
-)
-from papersteward.scoring.queue import read_queue
-from papersteward.storage.models import PaperRow
-from papersteward.storage.repositories import RunRepository, TaxonomyRepository
+from papersteward.scoring.queue import read_backlog
+from papersteward.storage.mappers import as_utc
+from papersteward.storage.onboarding import get_onboarding
+from papersteward.storage.repositories import RunRepository
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 LABELS = {
-    "queued": "等待运行",
+    "queued": "排队",
     "collecting": "采集",
     "processing": "处理",
-    "digest": "生成日报",
+    "digest": "历史日报任务",
+    "refreshing": "刷新队列",
+    "ui.refresh": "刷新排序",
     "extracting": "生成研究草案",
-    "completed": "已完成",
+    "completed": "完成",
     "running": "运行中",
-    "succeeded": "成功",
+    "succeeded": "已完成",
     "failed": "失败",
-    "ui.sync": "同步 / 处理",
-    "ui.digest": "生成日报",
+    "cancelled": "已取消",
+    "ui.sync": "挖掘新论文",
+    "ui.digest": "历史日报任务",
     "ui.extract": "生成研究草案",
 }
 
 
-def _run_form(kind: str, body: str, label: str) -> str:
+def _run_form(kind: str, body: str, label: str, *, disabled: bool = False) -> str:
     return (
         '<form method="post" action="/ui/runs">'
         + hidden("run_id", uuid4().hex)
         + hidden("kind", kind)
         + body
-        + f"<button>{escape(label)}</button></form>"
+        + f"<button{' disabled' if disabled else ''}>{escape(label)}</button></form>"
     )
 
 
-def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
-    profile, binding = bound_context(
-        session, utc_now(), action="ui.dashboard", enforce_schedule=False, day=day
-    )
-    _, pending = list_open_reviews(session, limit=1)
-    _, special_pending = list_pending_nominations(session, limit=1)
-    screened = (
-        session.scalar(
-            select(func.count()).select_from(PaperRow).where(PaperRow.status == "screened")
-        )
-        or 0
-    )
-    qualified = read_queue(session, day, now=utc_now(), limit=1).total
-    body = (
-        f'<section class="dashboard"><p>已初始化 · 合格队列 {qualified} · '
-        f"待处理 {screened} · 待审核 {pending + special_pending}</p>"
-    )
-    body += '<a class="button secondary" href="/ui/review">处理审核</a>'
-    if problem := processing_problem(session, settings):
-        body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">打开设置</a></p>'
-    else:
-        default_query = next(
-            (
-                str(keyword)
-                for direction in profile.parsed_json.get("subdirections", [])
-                for keyword in direction.get("keywords", [])
-                if str(keyword).strip()
-            ),
-            "retrieval",
-        )
-        controls = '<details><summary>采集参数</summary><label>来源<select name="source">'
-        controls += "".join(
-            f'<option value="{value}">{label}</option>'
-            for value, label in (
-                ("arxiv", "arXiv"),
-                ("openalex", "OpenAlex"),
-                ("semantic_scholar", "Semantic Scholar"),
+def _number(values: dict[str, object], key: str) -> int:
+    try:
+        return max(0, int(str(values.get(key, 0))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _timing(run: Run) -> str:
+    """已用时；只在确有异常时补充卡住提示，不再重复展示刷新时刻。"""
+    now = utc_now()
+    elapsed = max(0, int(((run.finished_at or now) - run.started_at).total_seconds()))
+    body = f'<p class="muted">已用时 {elapsed // 60} 分 {elapsed % 60} 秒</p>'
+    if run.status is RunStatus.RUNNING:
+        stats = dict(run.stats_json)
+        updated = run.finished_at or run.started_at
+        with suppress(ValueError, TypeError):
+            updated = as_utc(datetime.fromisoformat(str(stats.get("updated_at"))))
+        if max(0, int((now - updated).total_seconds())) > 300:
+            body += (
+                '<p class="notice">超过 5 分钟没有新进展，可能是模型响应过慢或网络中断。'
+                "可停止任务，到「设置」页点「测试连接」检查后再重新开始。</p>"
             )
-        )
-        controls += "</select></label>" + input_field("query", default_query, "检索词（字面短语）")
-        controls += (
-            '<label>每次上限<input type="number" name="limit" value="10" '
-            'min="1" max="50"></label></details>'
-        )
-        body += _run_form("sync", controls, "同步 / 处理")
-    body += _run_form("digest", "", "生成今日日报")
-    body += "<p>候选不足时：先同步/处理，再解决待审核项，最后生成日报。</p>"
-    recent = [
-        run for run in RunRepository(session).list(limit=50) if run.run_type.startswith("ui.")
-    ][:3]
-    for run in recent:
-        body += (
-            f'<p>上次运行：<a href="/ui/runs/{quote(run.id, safe="")}">'
-            f"{escape(LABELS.get(run.run_type, run.run_type))} · "
-            f"{escape(LABELS.get(run.status.value, run.status.value))}</a></p>"
-        )
-    return body + "</section>"
+    return body
 
 
-def run_body(run: Run) -> str:
+def run_body(
+    run: Run,
+    *,
+    card: bool = False,
+    current: Run | None = None,
+    home: tuple[str, str] | None = None,
+) -> str:
+    """运行进度片段。home 为终端状态下唯一的返回链接（路径, 文案）。
+
+    运行中唯一的动作是「停止任务」；ui.extract 的前进（审阅）由
+    run_progress 在成功后自动跳转，不在这里渲染导航链接。
+    """
     identity = quote(run.id, safe="")
     active = run.status is RunStatus.RUNNING
-    poll = (
-        f' hx-get="/ui/runs/{identity}?fragment=true" hx-trigger="every 1s" hx-swap="outerHTML"'
-        if active
-        else ""
-    )
-    stage = str(run.stats_json.get("stage", "queued"))
-    body = (
-        f'<section id="run-status"{poll}><p role="status">'
-        f"{escape(LABELS.get(stage, stage))} · "
-        f"{escape(LABELS.get(run.status.value, run.status.value))}</p>"
-    )
-    body += (
-        "<p>已完成："
-        + escape(
-            " / ".join(LABELS.get(step, step) for step in run.stats_json.get("completed", []))
-            or "暂无"
+    path = f"/ui/current-run?identity={identity}" if card else f"/ui/runs/{identity}?fragment=true"
+    poll = f' hx-get="{path}" hx-trigger="every 2s" hx-swap="outerHTML"' if active else ""
+    stats = dict(run.stats_json)
+    stage = str(stats.get("stage", "queued"))
+    total, processed = _number(stats, "processing_total"), _number(stats, "processed")
+    index = _number(stats, "current_index") or min(processed + 1, total)
+    kind = LABELS.get(run.run_type, run.run_type)
+    if not active:
+        title = kind + (
+            "完成"
+            if run.status is RunStatus.SUCCEEDED
+            else LABELS.get(run.status.value, run.status.value)
         )
-        + "</p>"
+    else:
+        title = {
+            "queued": "正在开始…",
+            "collecting": "正在采集论文",
+            "processing": f"正在处理论文 {index} / {total}",
+            "digest": "历史日报任务",
+            "refreshing": "正在刷新阅读队列",
+            "extracting": "正在生成研究草案",
+            "completed": "正在保存运行结果",
+        }.get(stage, "任务正在运行")
+    body = f'<section class="run-progress" id="{"current-run" if card else "run-status"}"{poll}>'
+    status_label = LABELS.get(run.status.value, run.status.value)
+    body += f'<p class="muted">{escape(kind)} · {escape(status_label)}</p>'
+    body += f'<h2 role="status">{escape(title)}</h2>'
+    stages = (
+        ["queued", "collecting", "processing", "refreshing", "completed"]
+        if run.run_type == "ui.sync"
+        else ["queued", "refreshing" if run.run_type == "ui.refresh" else "extracting", "completed"]
     )
-    if "processed" in run.stats_json:
+    body += '<ol class="steps" aria-label="运行步骤">'
+    for step in stages:
+        attributes = ' class="current" aria-current="step"' if step == stage else ""
+        label = "生成" if step in {"digest", "extracting"} else LABELS[step]
+        body += f"<li{attributes}>{label}</li>"
+    body += "</ol>"
+    queued_note = stats.get("queued_note")
+    if active and stage == "queued" and isinstance(queued_note, str) and queued_note:
+        body += f'<p class="notice">{escape(queued_note)}</p>'
+    extract_note = stats.get("extract_note")
+    if active and stage == "extracting" and isinstance(extract_note, str) and extract_note:
+        body += f"<p>{escape(extract_note)}</p>"
+    if stage == "collecting":
+        request = stats.get("request", {})
+        if isinstance(request, dict):
+            body += (
+                f"<p>来源：{escape(str(request.get('source', '未知')))} · "
+                f"检索词：{escape(str(request.get('query', '')))}</p>"
+            )
+    if total:
+        percent = min(100, round(processed / total * 100))
         body += (
-            f"<p>文献处理 {run.stats_json['processed']} / {run.stats_json['processing_total']}</p>"
+            f'<progress max="{total}" value="{min(processed, total)}" '
+            f'aria-label="论文处理进度">{percent}%</progress>'
+            f"<p>已处理 {processed} / {total} 篇（{percent}%） · "
+            f"剩余 {max(0, total - processed)} 篇</p>"
         )
+    elif active and stage != "queued":
+        body += '<progress aria-label="任务进行中"></progress>'
+    if stats.get("current_paper_title"):
+        body += f"<p>当前论文：{escape(str(stats['current_paper_title']))}</p>"
+    body += _timing(run)
+    if active:
+        caption = {
+            "ui.sync": "停止会在当前这一篇处理完后生效；已采集、已处理的论文都会保留。",
+            "ui.refresh": "停止后已保存的评分保留，排序可重新执行。",
+            "ui.extract": (
+                "停止会在本次模型调用结束后生效；上传的材料、修改意见和已生成的"
+                "草案版本都保留，本次结果不保存。"
+            ),
+        }.get(run.run_type, "停止后已完成的数据保留。")
+        body += (
+            f'<form method="post" action="/ui/runs/{identity}/cancel" class="inline">'
+            "<button>停止任务</button></form>"
+            f'<p class="muted">{caption}</p>'
+        )
+    if not active:
+        body += f"<p>最后阶段：{escape(LABELS.get(stage, stage))}</p>"
+        if run.run_type == "ui.sync":
+            collected = stats.get("collected", {})
+            collected = collected if isinstance(collected, dict) else {}
+            filtered = collected.get("filtered", [])
+            filtered_count = (
+                len(filtered) if isinstance(filtered, list) else _number(collected, "filtered")
+            )
+            body += (
+                f"<p>采集 {_number(collected, 'candidates')} 篇 · "
+                f"新增 {_number(collected, 'new')} · 已存在 {_number(collected, 'existing')} · "
+                f"去重 {_number(collected, 'deduplicated')} · 过滤 {filtered_count} · "
+                f"处理 {processed} 篇 · 自动归类 {_number(stats, 'auto_classified')} · "
+                f"特殊桶 {_number(stats, 'auto_shelved')} · "
+                f"跳过（无摘要）{_number(stats, 'skipped_no_summary')} 篇</p>"
+            )
+    flags = stats.get("quality_flags", {})
+    if isinstance(flags, dict) and flags:
+        body += (
+            "<details><summary>质量标记</summary><ul>"
+            + "".join(
+                f"<li>{escape(str(paper))}：{escape(' / '.join(map(str, values)))}</li>"
+                for paper, values in flags.items()
+                if isinstance(values, list)
+            )
+            + "</ul></details>"
+        )
+    if "queue_total" in stats:
+        body += (
+            f'<p class="success">队列共 {_number(stats, "queue_total")} 篇 · '
+            f"本次新增 {len(stats.get('added_ids', []))} 篇</p>"
+        )
+        if stats.get("queue_total") == 0:
+            body += "<p>暂无合格候选。可以调整检索词后再次挖掘。</p>"
     if run.errors_json:
         messages = [
-            str(error.get("message", "步骤失败，请检查运行配置后重试。"))
+            str(error.get("message", "步骤失败，请检查设置后重试。"))
             for error in run.errors_json.get("errors", [])
             if isinstance(error, dict)
         ]
         body += (
-            '<p role="alert">' + escape("；".join(messages) or "步骤失败，请检查后重试。") + "</p>"
+            '<p role="alert">'
+            + escape("；".join(messages) or "步骤失败，请检查后重试。")
+            + '</p><a href="/ui/settings">检查模型与设置</a>'
         )
-    if run.status is RunStatus.FAILED and "request" in run.stats_json:
-        payload = dict(run.stats_json["request"])
-        kind = payload.pop("kind")
-        controls = "".join(
-            hidden(key, "yes" if value is True else value) for key, value in payload.items()
+    if (
+        run.run_type not in {"ui.digest", "ui.extract"}
+        and run.status in (RunStatus.FAILED, RunStatus.CANCELLED)
+        and isinstance(stats.get("request"), dict)
+    ):
+        payload = dict(stats["request"])
+        retry_kind = str(payload.pop("kind", run.run_type.removeprefix("ui.")))
+        body += _run_form(
+            retry_kind,
+            "".join(hidden(key, value) for key, value in payload.items()),
+            "用原参数重试",
+            disabled=current is not None and current.id != run.id,
         )
-        body += _run_form(kind, controls, "显式重试")
-    if run.run_type == "ui.extract":
-        body += '<p><a href="/ui/setup">回到草案审阅</a></p>'
-    body += (
-        f'<p><a href="/ui/runs/{identity}">刷新进度</a> · '
-        '<a href="/ui/today">返回今日</a> · '
-        '<a href="/ui/review">处理审核</a></p>'
+    if home is not None and not active:
+        # 运行中唯一的动作是「停止任务」；返回链接只在终态出现。
+        body += f'<p><a href="{escape(home[0])}">{escape(home[1])}</a></p>'
+    return body + "</section>"
+
+
+def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
+    profile, _ = bound_context(
+        session, utc_now(), action="ui.dashboard", enforce_schedule=False, day=day
     )
+    repository = RunRepository(session)
+    running = repository.running_ui_runs()
+    busy = bool(running)
+    body = run_body(running[0], card=True) if busy else ""
+    backlog = read_backlog(session, now=utc_now(), limit=1)
+    capacity = int(profile.parsed_json["reading"]["weekly_capacity"])
+    suggested = min(backlog.total, max(1, (capacity + 6) // 7))
+    body += '<section class="dashboard">'
+    body += (
+        f"<h2>队列共 {backlog.total} 篇</h2><p>按你的容量，今天建议先看 {suggested} 篇。"
+        "全部论文会一直保留，随时可读。</p>"
+    )
+    problem = processing_problem(session, settings)
+    if problem:
+        body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">连接模型</a></p>'
+    elif busy:
+        body += "<p>等待当前任务，完成后再开始新任务。</p>"
+    elif not backlog.total:
+        body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
+    default_query = next(
+        (
+            str(keyword)
+            for direction in profile.parsed_json.get("subdirections", [])
+            for keyword in direction.get("keywords", [])
+            if str(keyword).strip()
+        ),
+        "retrieval",
+    )
+    controls = '<details><summary>采集参数</summary><label>来源<select name="source">'
+    controls += "".join(
+        f'<option value="{value}">{label}</option>'
+        for value, label in (
+            ("arxiv", "arXiv"),
+            ("openalex", "OpenAlex"),
+            ("semantic_scholar", "Semantic Scholar"),
+        )
+    )
+    controls += "</select></label>" + input_field("query", default_query, "检索词（字面短语）")
+    controls += (
+        '<label>每次上限<input type="number" name="limit" value="10" '
+        'min="1" max="50"></label></details>'
+    )
+    body += _run_form("sync", controls, "挖掘新论文", disabled=busy or bool(problem))
+    body += _run_form("refresh", "", "刷新排序", disabled=busy)
+    body += '<p class="muted">刷新排序只在本地计算，不调用模型。同一天已保存的评分会复用。</p>'
+    recent = [run for run in repository.list(limit=100) if run.run_type == "ui.sync"]
+    if recent:
+        run = recent[0]
+        stats = dict(run.stats_json)
+        collected = stats.get("collected", {})
+        collected = collected if isinstance(collected, dict) else {}
+        body += (
+            f'<p>上一次挖掘：<a href="/ui/runs/{quote(run.id, safe="")}">'
+            f"{escape(LABELS.get(run.status.value, run.status.value))}</a> · "
+            f"采集新增 {_number(collected, 'new')} 篇 · "
+            f"已存在 {_number(collected, 'existing')} 篇 · 处理 {_number(stats, 'processed')} 篇 · "
+            f"队列新增 {len(stats.get('added_ids', []))} 篇</p>"
+        )
     return body + "</section>"
 
 
@@ -187,156 +318,49 @@ async def submit_run(request: Request) -> Response:
         identity = request.app.state.ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)
     except (DomainError, AppError, ValidationError, ValueError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
         return failure(exc, back="/ui/today")
+
+
+@router.post("/runs/{identity}/cancel")
+async def cancel_run(request: Request, identity: str, session: SessionDep) -> Response:
+    """停止任务并回到当前阶段的页面；任务已结束时同样回退（幂等）。"""
+    try:
+        await fields(request)
+        request.app.state.ui_flows.cancel(identity)
+    except (DomainError, AppError, ValidationError, ValueError) as exc:
+        return failure(exc)
+    if get_onboarding(session).stage.value == "active":
+        return RedirectResponse("/ui/today?cancelled=1", status_code=303)
+    return RedirectResponse("/ui/setup", status_code=303)
+
+
+@router.get("/current-run")
+def current_run(identity: str, session: SessionDep) -> HTMLResponse:
+    run = RunRepository(session).get(identity)
+    if run is None or run.status is not RunStatus.RUNNING:
+        return HTMLResponse("", headers={**HEADERS, "HX-Refresh": "true"})
+    return HTMLResponse(run_body(run, card=True), headers=HEADERS)
 
 
 @router.get("/runs/{identity}")
-def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> HTMLResponse:
-    run = RunRepository(session).get(identity)
+def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> Response:
+    repository = RunRepository(session)
+    run = repository.get(identity)
     if run is None:
         raise NotFoundError("运行记录不存在")
-    body = run_body(run)
+    onboarding_active = get_onboarding(session).stage.value == "active"
+    if run.run_type == "ui.extract" and run.status is RunStatus.SUCCEEDED and not onboarding_active:
+        # 草案生成成功即单向往前：直接进入设置页的审阅界面。
+        if fragment:
+            return HTMLResponse(
+                '<p class="success">草案已生成，正在打开审阅…</p>',
+                headers={**HEADERS, "HX-Redirect": "/ui/setup"},
+            )
+        return RedirectResponse("/ui/setup", status_code=303)
+    running = repository.running_ui_runs()
+    home = ("/ui/today", "返回队列") if onboarding_active else ("/ui/setup", "返回首次设置")
+    body = run_body(run, current=running[0] if running else None, home=home)
     return HTMLResponse(body, headers=HEADERS) if fragment else _page("运行进度", body)
-
-
-@router.get("/review")
-def review_page(session: SessionDep) -> HTMLResponse:
-    try:
-        _, binding = bound_context(session, utc_now(), action="review", enforce_schedule=False)
-        taxonomy = TaxonomyRepository(session).get(
-            binding["taxonomy_id"], binding["taxonomy_version"]
-        )
-        assert taxonomy is not None
-        pairs, total = list_open_reviews(session, limit=200)
-        nominations, special_total = list_pending_nominations(session, limit=200)
-        body = f"<p>文献审核 {total} · 特殊桶提名 {special_total}</p>"
-        if not pairs and not nominations:
-            body += (
-                '<article>当前没有待审核项。<a href="/ui/today">'
-                "返回今日同步或生成日报</a></article>"
-            )
-        for item, paper in pairs:
-            body += (
-                "<article><h2>"
-                + escape(paper.title)
-                + "</h2><p>"
-                + escape(" / ".join(item.reasons))
-                + "</p>"
-            )
-            body += (
-                "<details><summary>审核依据</summary><pre>"
-                + escape(json.dumps(dict(item.payload_json), ensure_ascii=False, indent=2))
-                + "</pre></details>"
-            )
-            common = (
-                hidden("paper_id", paper.id)
-                + input_field("reviewed_by", "local-user", "审核人")
-                + '<label>审核备注<textarea name="note"></textarea></label>'
-            )
-            body += (
-                '<form method="post" action="/ui/review/approve">'
-                + common
-                + "<button>批准现有分类</button></form>"
-            )
-            choices = "".join(
-                f'<option value="{escape(tag.code)}">{escape(tag.code + " · " + tag.name)}</option>'
-                for tag in taxonomy.tags
-                if tag.level.value == "primary" and tag.active
-            )
-            body += (
-                "<details><summary>修改标签后批准</summary>"
-                '<form method="post" action="/ui/review/relabel">' + common
-            )
-            body += (
-                '<label>主标签<select name="primary_tag">'
-                + choices
-                + "</select></label><label>副标签（逗号分隔，最多5个）"
-                '<input name="secondary_tags"></label><button>修改标签并批准</button>'
-                "</form></details></article>"
-            )
-        for nomination, paper in nominations:
-            body += (
-                "<article><h2>"
-                + escape(paper.title)
-                + "</h2><p>"
-                + escape(nomination.kind.value + " · " + nomination.reason)
-                + "</p>"
-            )
-            body += (
-                "<details><summary>提名证据与桥接说明</summary><pre>"
-                + escape(json.dumps(asdict(nomination), ensure_ascii=False, indent=2, default=str))
-                + "</pre></details>"
-            )
-            common = (
-                hidden("paper_id", paper.id)
-                + hidden("kind", nomination.kind.value)
-                + input_field("reviewed_by", "local-user", "审核人")
-            )
-            common += '<label>理由<textarea name="note"></textarea></label>'
-            body += (
-                '<form method="post" action="/ui/review/special-accept">'
-                + common
-                + '<label><input type="checkbox" name="force" value="yes">'
-                "证据存在问题时，我明确覆盖并提供理由</label>"
-                "<button>确认归入此特殊桶</button></form>"
-            )
-            body += (
-                '<form method="post" action="/ui/review/special-reject">'
-                + common
-                + '<button class="secondary">保留主题归属，拒绝此提名</button></form></article>'
-            )
-        return _page("人工审核", body)
-    except (DomainError, AppError) as exc:
-        return failure(exc, back="/ui/today")
-
-
-@router.post("/review/{action}")
-async def review_action(action: str, request: Request, session: SessionDep) -> Response:
-    try:
-        values = await fields(request)
-        identity = values.get("paper_id", "")
-        arguments = {
-            "reviewed_by": values.get("reviewed_by", ""),
-            "note": values.get("note") or None,
-        }
-        if action == "approve":
-            api.approve(identity, api.ReviewAction(**arguments), session)
-        elif action == "relabel":
-            api.relabel(
-                identity,
-                api.ReviewRelabel(
-                    primary_tag=values.get("primary_tag", ""),
-                    secondary_tags=[
-                        tag.strip()
-                        for tag in values.get("secondary_tags", "").split(",")
-                        if tag.strip()
-                    ],
-                    **arguments,
-                ),
-                session,
-            )
-        elif action in {"special-accept", "special-reject"}:
-            kind = SpecialBucketKind(values.get("kind", ""))
-            with api._review_errors(), session.begin():
-                if action == "special-accept":
-                    accept_nomination(
-                        session,
-                        identity,
-                        kind=kind,
-                        force=values.get("force") == "yes",
-                        reviewed_by=values.get("reviewed_by", ""),
-                        note=values.get("note") or None,
-                    )
-                else:
-                    reject_nomination(
-                        session,
-                        identity,
-                        kind=kind,
-                        reviewed_by=values.get("reviewed_by", ""),
-                        note=values.get("note") or None,
-                    )
-        else:
-            raise NotFoundError("未知审核操作")
-        return RedirectResponse("/ui/review", status_code=303)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
-        return failure(exc, back="/ui/review")

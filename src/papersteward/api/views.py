@@ -12,7 +12,7 @@ from fastapi import APIRouter, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.review import _review_errors
+from papersteward.api.domain_errors import domain_errors
 from papersteward.core.entities import ViewConfig, utc_now
 from papersteward.scoring.views import (
     ResolvedView,
@@ -220,7 +220,7 @@ def delete(view_id: str, session: SessionDep) -> Response:
 
 @router.post("/preview", response_model=ViewPreviewRead, summary="预览自定义排序")
 def preview(body: ViewPreviewRequest, session: SessionDep) -> ViewPreviewRead:
-    with _review_errors():
+    with domain_errors():
         result = preview_view(
             session,
             body.score_date or utc_now().date(),

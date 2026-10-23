@@ -17,8 +17,6 @@ from papersteward.core.enums import (
     BucketType,
     EventType,
     PaperStatus,
-    ReviewStatus,
-    SummaryValidationStatus,
     TagLevel,
     TagRole,
 )
@@ -28,10 +26,14 @@ from papersteward.onboarding.service import _atomic
 from papersteward.pipeline.context import bound_context
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.contracts import (
+    BacklogFilters,
+    BacklogItem,
+    BacklogResponse,
     Component,
     Exclusion,
     QueueItem,
     QueueResponse,
+    RefreshResponse,
     ScoreExplanation,
     SnapshotResponse,
 )
@@ -44,12 +46,11 @@ from papersteward.storage.models import ArchiveSnapshotRow, EventRow, RatingRow
 from papersteward.storage.repositories import (
     BucketRepository,
     ConfigRepository,
+    PaperAnalysisRepository,
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
-    ReviewRepository,
     ScoreSnapshotRepository,
-    SpecialNominationRepository,
     StaticScoreSnapshotRepository,
     SummaryRepository,
     TaxonomyRepository,
@@ -58,6 +59,8 @@ from papersteward.storage.repositories import (
 ELIGIBLE = frozenset({PaperStatus.CLASSIFIED, PaperStatus.SCORED, PaperStatus.QUEUED})
 # 周任务只读候选：已投递未读同样需要当日U；不重新入队，避免改变投递历史。
 WEEKLY_ELIGIBLE = ELIGIBLE | {PaperStatus.PUSHED}
+BACKLOG_STATUSES = frozenset({PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING})
+READ_STATUSES = frozenset({PaperStatus.DONE, PaperStatus.ARCHIVED})
 
 
 def _context(
@@ -101,8 +104,6 @@ def _eligibility(
     bucket = BucketRepository(session).get(filing[0].bucket_id) if len(filing) == 1 else None
     if bucket is not None and bucket.bucket_type is not BucketType.TOPIC:
         return ["special_bucket"], None, None
-    if SpecialNominationRepository(session).has_pending(paper.id):
-        reasons.append("pending_special_nomination")
     if paper.status not in eligible:
         reasons.append("ineligible_status:" + paper.status.value)
     assigned = PaperTagRepository(session).list_for_paper(paper.id)
@@ -110,18 +111,11 @@ def _eligibility(
     tag = primary[0] if len(primary) == 1 else None
     if tag not in ctx["shares"] or bucket is None or not bucket.active or bucket.tag_code != tag:
         reasons.append("invalid_classification_or_filing")
-    review = ReviewRepository(session).get(paper.id)
     if any(t.taxonomy_version != ctx["binding"]["taxonomy_version"] for t in assigned):
         reasons.append("classification_version_mismatch")
-    if any(t.role is TagRole.PRIMARY and t.confidence < 0.7 for t in assigned) and (
-        review is None or review.status is ReviewStatus.OPEN
-    ):
-        reasons.append("unapproved_low_confidence_classification")
-    if review is not None and review.status is ReviewStatus.OPEN:
-        reasons.append("open_review")
     summary = SummaryRepository(session).get(paper.id)
-    if summary is None or summary.validation_status is not SummaryValidationStatus.PASSED:
-        reasons.append("summary_not_passed")
+    if summary is None or not summary.summary_100.strip():
+        reasons.append("summary_unavailable")
     static = next(
         (
             s
@@ -142,17 +136,6 @@ def _eligibility(
             reasons.append("static_version_mismatch")
         if static.relevance < max(55, ctx["config"].gates.min_relevance_for_push):
             reasons.append("below_relevance_gate")
-        # 改主标签须重算；不能把旧分类对应的静态分快照用于新分类。
-        if review is not None:
-            original = review.payload_json.get("classification", {}).get("primary_tag")
-            if isinstance(original, dict):
-                original = original.get("tag_code")
-            if (
-                original
-                and original != tag
-                and static.created_at <= (review.resolved_at or review.updated_at)
-            ):
-                reasons.append("relabel_requires_static_rescore")
     return reasons, tag, static
 
 
@@ -308,23 +291,21 @@ def _build(
         "H": min(1, dynamic.total_completed / max(1, config.dynamic.prior_strength)),
         "U": quasi.confidence,
     }
-    review = ReviewRepository(session).get(paper.id)
     summary = SummaryRepository(session).get(paper.id)
     evidence: list[dict[str, Any]] = [{"stage": "static", "details": dict(static.breakdown_json)}]
     if summary is not None:
         evidence.append({"stage": "summary", "quotes": list(summary.evidence)})
-    if review is not None:
+    analysis = PaperAnalysisRepository(session).get(paper.id)
+    if analysis is not None:
         evidence.extend(
-            [
-                {"stage": name, "details": review.payload_json.get(name)}
-                for name in ("relevance", "classification")
-            ]
+            {"stage": name, "details": analysis.payload_json.get(name)}
+            for name in ("relevance", "classification")
         )
         confidence["R"] = (
-            review.payload_json.get("relevance", {}).get("rubric", {}).get("confidence", 0.0)
+            analysis.payload_json.get("relevance", {}).get("rubric", {}).get("confidence", 0.0)
         )
     reasons = list(dynamic.reasons + quasi.reasons)
-    if review is None:
+    if analysis is None:
         reasons.append("relevance_evidence_unavailable")
     if priority.delta_limited:
         reasons.append("large_daily_change_limited")
@@ -423,10 +404,13 @@ def create_snapshots(
                         "score_date", "同日依据已变化；保留旧快照，请使用新日期"
                     )
                 existing += 1
-                continue
-            repo.append(
-                _build(session, paper, tag, static, ctx, day, completions, feedback, backlog[tag])
-            )
+            else:
+                repo.append(
+                    _build(
+                        session, paper, tag, static, ctx, day, completions, feedback, backlog[tag]
+                    )
+                )
+                created += 1
             for target in (
                 (PaperStatus.SCORED, PaperStatus.QUEUED)
                 if paper.status is PaperStatus.CLASSIFIED
@@ -441,7 +425,6 @@ def create_snapshots(
                     occurred_at=now,
                     payload={"stage": "priority", "score_date": day.isoformat()},
                 )
-            created += 1
         return SnapshotResponse(
             score_date=day, created=created, existing=existing, excluded=excluded
         )
@@ -515,21 +498,110 @@ def explain_score(
     reasons, _, _ = _eligibility(session, paper, ctx, target_day)
     if "special_bucket" in reasons:
         return Exclusion(paper_id=paper_id, reasons=["special_bucket"])
-    if "pending_special_nomination" in reasons:
-        return Exclusion(
-            paper_id=paper_id,
-            reasons=["pending_special_nomination"],
-            excluded_from_priority=False,
-        )
     history = ScoreSnapshotRepository(session).history(paper_id)
     snapshot = next(
         (
             s
             for s in reversed(history)
-            if (day is None or s.score_date == day) and "scores" in s.breakdown_json
+            if (s.score_date <= target_day if day is None else s.score_date == day)
+            and "scores" in s.breakdown_json
         ),
         None,
     )
     if snapshot is None:
         raise NotFoundError("没有该日优先级快照；请先执行 scores snapshot")
     return ScoreExplanation.model_validate(snapshot.breakdown_json)
+
+
+def read_backlog(
+    session: Session,
+    *,
+    now: datetime,
+    limit: int = 50,
+    offset: int = 0,
+    filters: BacklogFilters | None = None,
+) -> BacklogResponse:
+    """长期阅读队列：最新可用快照，不受当天日报、容量或历史冷却限制。"""
+    if not 1 <= limit <= 200 or offset < 0:
+        raise InvariantViolation("pagination", "limit须为1–200，offset非负")
+    filters = filters or BacklogFilters()
+    ctx = _context(session, now)
+    today = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
+    allowed = (
+        BACKLOG_STATUSES
+        if filters.read_status == "unread"
+        else READ_STATUSES
+        if filters.read_status == "read"
+        else BACKLOG_STATUSES | READ_STATUSES
+    )
+    candidates: list[tuple[QueueItem, PaperStatus]] = []
+    contexts = {today: ctx}
+    for paper in PaperRepository(session).list():
+        if paper.status not in allowed:
+            continue
+        for snapshot in reversed(ScoreSnapshotRepository(session).history(paper.id)):
+            if (
+                snapshot.score_date > today
+                or snapshot.priority is None
+                or "scores" not in snapshot.breakdown_json
+            ):
+                continue
+            if snapshot.score_date not in contexts:
+                contexts[snapshot.score_date] = _context(session, now, day=snapshot.score_date)
+            reasons, tag, static = _eligibility(
+                session, paper, contexts[snapshot.score_date], snapshot.score_date, eligible=allowed
+            )
+            if reasons or static is None:
+                continue
+            if (
+                snapshot.breakdown_json.get("static_input_hash") != static.input_hash
+                or snapshot.breakdown_json.get("primary_tag") != tag
+            ):
+                continue
+            item = _item(session, paper, snapshot)
+            if (
+                filters.tag is None or item.primary_tag == filters.tag
+            ) and filters.min_priority <= item.priority <= filters.max_priority:
+                candidates.append((item, paper.status))
+            break
+    candidates.sort(
+        key=lambda pair: rank_key(
+            rank_score=pair[0].rank_score,
+            relevance=pair[0].explanation.components["R"].score,
+            published_on=pair[0].published_on,
+            authority=pair[0].explanation.components["A"].score,
+            title=pair[0].title,
+            paper_id=pair[0].paper_id,
+        )
+    )
+    items = [
+        BacklogItem(**item.model_dump(), rank=index, status=status)
+        for index, (item, status) in enumerate(candidates, 1)
+    ]
+    return BacklogResponse(
+        items=items[offset : offset + limit], total=len(items), limit=limit, offset=offset
+    )
+
+
+def refresh_queue(session: Session, *, now: datetime) -> RefreshResponse:
+    """本地刷新排序并将新合格论文入队；日内幂等，不创建日报。"""
+    with _atomic(session):
+        ctx = _context(session, now)
+        day = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
+        before = {
+            paper.id
+            for paper in PaperRepository(session).list()
+            if paper.status in BACKLOG_STATUSES
+        }
+        report = create_snapshots(session, day, now=now, eligible=ELIGIBLE | BACKLOG_STATUSES)
+        after: set[str] = set()
+        offset = 0
+        while True:
+            page = read_backlog(session, now=now, limit=200, offset=offset)
+            after.update(item.paper_id for item in page.items)
+            offset += len(page.items)
+            if offset >= page.total:
+                break
+        return RefreshResponse(
+            **report.model_dump(), queue_total=len(after), added_ids=sorted(after - before)
+        )

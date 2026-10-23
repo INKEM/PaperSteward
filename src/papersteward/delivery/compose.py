@@ -156,7 +156,7 @@ def compose_digest(
         binding=binding,
         items=sorted(chosen, key=item_key),
         queue_total=len(candidates),
-        pending_review=pending_review,
+        pending_review=0,
         deferred=deferred,
         inventory_mode=inventory,
         special_slots=min(2, gates.max_special_push),

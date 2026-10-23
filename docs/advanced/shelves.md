@@ -52,7 +52,8 @@ curl -s localhost:8000/shelves/review/p001
 - `shelf show <paper_id>`：任意特殊桶文献详情；不在特殊桶返回非 0。
 - JSON 输出与 API 字段一致，可直接脚本处理；不含 V/P/rank。
 
-`shelf review` 仍是 S1 的待审提名队列；查看综述桶请用
+处理时有效且置信度不低于 0.8 的提名自动归入特殊桶，其余拒绝，不阻塞主队列。
+`shelf review` 仅供可选的历史提名整理；日常阅读综述桶请用
 `shelf list --kind review` 或 `shelf show <paper_id>`。
 
 ## 页面

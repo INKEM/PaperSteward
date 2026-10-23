@@ -25,7 +25,7 @@ def bound_context(
     now: datetime,
     *,
     action: str = "ingest",
-    enforce_schedule: bool = True,
+    enforce_schedule: bool = False,
     day: date | None = None,
 ) -> tuple[ResearchProfile, dict[str, Any]]:
     ensure_active(session, action=action)
@@ -67,7 +67,7 @@ def bound_context(
     quiet = bool(
         start and end and (start <= clock < end if start < end else clock >= start or clock < end)
     )
-    if enforce_schedule and (runtime.paused or quiet):
+    if enforce_schedule and action.startswith("delivery") and (runtime.paused or quiet):
         raise InvariantViolation(
             "ingest.schedule", "当前处于暂停或安静时段，未执行处理；请稍后重试"
         )

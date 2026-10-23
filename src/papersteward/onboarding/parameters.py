@@ -14,13 +14,13 @@ Share = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 class RuntimeParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    push_time: ClockTime
+    push_time: ClockTime | None = None
     timezone: str = Field(min_length=1, max_length=64)
-    quiet_start: ClockTime | None
-    quiet_end: ClockTime | None
+    quiet_start: ClockTime | None = None
+    quiet_end: ClockTime | None = None
     paused: bool = Field(default=False, strict=True)
     target_shares: dict[str, Share] = Field(min_length=1, max_length=9)
-    channel: Literal["local_markdown", "smtp"] = "local_markdown"
+    channel: Literal["local_markdown", "smtp"] | None = None
     external_model_data: Literal["disabled", "metadata_abstract"]
     share_notes: Literal[False] = False
 
@@ -38,7 +38,7 @@ class RuntimeParameters(BaseModel):
         start, end = self.quiet_start, self.quiet_end
         if (start is None) != (end is None):
             raise ValueError("安静时段起止必须同时提供或同时关闭")
-        if start is not None and end is not None:
+        if start is not None and end is not None and self.push_time is not None:
             if start == end:
                 raise ValueError("安静时段起止不能相同")
             within = (
@@ -61,13 +61,8 @@ def default_runtime_parameters(
 ) -> RuntimeParameters:
     """确认完成时的默认运行参数；后续治理流程可单独调整评分权重。"""
     return RuntimeParameters(
-        push_time="08:00",
         timezone=timezone,
-        quiet_start=None,
-        quiet_end=None,
-        paused=False,
         target_shares=target_shares,
-        channel="local_markdown",
         external_model_data=external_model_data,
     )
 

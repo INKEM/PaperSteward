@@ -192,5 +192,5 @@ def test_upgraded_active_workspace_can_render_today(sqlite_engine: Engine) -> No
         assert client.get("/onboarding").json() == {"stage": "active", "revision": 2}
         page = client.get("/ui/today")
         assert page.status_code == 200, page.text
-        assert "同步 / 处理" in page.text
+        assert "挖掘新论文" in page.text
         assert 'value="long-document retrieval"' in page.text

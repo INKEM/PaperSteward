@@ -219,7 +219,7 @@ def test_page_empty_shelves_show_no_placeholder(migrated_engine):
     with _client(migrated_engine) as client:
         page = client.get("/ui/shelves")
         assert page.status_code == 200
-        assert "暂无内容（不占位）" in page.text
+        assert "该桶暂无论文" in page.text
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
         assert BucketRepository(session).list() == []
