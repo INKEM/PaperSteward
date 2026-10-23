@@ -121,6 +121,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         "special_scoring",
         "special_nomination",
         "event",
+        "profile_extraction",
     }
 
     classification = schema_for("classification")
@@ -312,3 +313,13 @@ def test_special_nomination_bucket_specific_requirements() -> None:
     payload["nominations"].append(dict(payload["nominations"][0]))
     with pytest.raises(SchemaError, match="只能提名一次"):
         validate_mapping("special_nomination", payload)
+
+
+def test_profile_extraction_fixture_validates() -> None:
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/llm/profile_extraction.valid.json"
+    model = validate_json_text("profile_extraction", fixture.read_text(encoding="utf-8"))
+    data = model.model_dump(mode="json")
+    assert len(data["tags"]) == 5
+    assert abs(sum(item["target_share"] for item in data["profile"]["subdirections"]) - 1) < 1e-9

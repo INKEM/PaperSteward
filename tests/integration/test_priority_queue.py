@@ -2,9 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import get_settings
 from papersteward.core.entities import (
@@ -94,7 +93,7 @@ def seed(session, key="p", r=80, special=False):
 
 def test_gate_and_api_validation(client, migrated_engine):
     with session_scope(create_session_factory(migrated_engine)) as session:
-        with pytest.raises(InvariantViolation, match="G4"):
+        with pytest.raises(InvariantViolation, match="初始化确认"):
             create_snapshots(session, DAY, now=NOW)
         assert session.scalar(select(func.count()).select_from(ScoreSnapshotRow)) == 0
     response = client.get("/queue?date=2026-10-22", headers={"X-Request-ID": "queue-test"})

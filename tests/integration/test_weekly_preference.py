@@ -3,10 +3,9 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import event, func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import EventType, PaperStatus, RunStatus

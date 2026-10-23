@@ -16,6 +16,7 @@ from papersteward.core.entities import (
     Enrichment,
     EnrichmentSignals,
     Event,
+    IntakeMaterial,
     NominationEvidence,
     Paper,
     PaperBucket,
@@ -61,6 +62,7 @@ from papersteward.storage.models import (
     ConfigRow,
     EnrichmentRow,
     EventRow,
+    IntakeMaterialRow,
     PaperBucketRow,
     PaperRow,
     PaperTagRow,
@@ -542,6 +544,28 @@ def scoring_change_from_row(row: ScoringChangeRow) -> ScoringChange:
     )
 
 
+def intake_material_to_row(material: IntakeMaterial) -> IntakeMaterialRow:
+    return IntakeMaterialRow(
+        id=material.id,
+        name=material.name,
+        kind=material.kind,
+        content=material.content,
+        sha256=material.sha256,
+        created_at=material.created_at,
+    )
+
+
+def intake_material_from_row(row: IntakeMaterialRow) -> IntakeMaterial:
+    return IntakeMaterial(
+        id=row.id,
+        name=row.name,
+        kind=row.kind,
+        content=row.content,
+        sha256=row.sha256,
+        created_at=as_utc(row.created_at),
+    )
+
+
 def view_config_to_row(view: ViewConfig) -> ViewConfigRow:
     return ViewConfigRow(
         id=view.id,
@@ -830,6 +854,8 @@ __all__ = [
     "config_to_row",
     "event_from_row",
     "event_to_row",
+    "intake_material_from_row",
+    "intake_material_to_row",
     "optional_utc",
     "paper_bucket_from_row",
     "paper_bucket_to_row",

@@ -1,11 +1,11 @@
 # 日报、阅读与归档
 
-先完成G1–G4、采集、process/review。日报生成会调用评分快照；不会调用真实LLM。
+先完成初始化确认、采集、process/review。日报生成会调用评分快照；不会调用真实LLM。
 
 ```bash
 papersteward digest --date 2026-10-22 --json
 papersteward digest --date 2026-10-22 --out out/digest.md --json
-# 只有G4明确选择smtp，并配置PAPERSTEWARD_SMTP_*后才允许邮件
+# 只有初始化确认选择 smtp，并配置 PAPERSTEWARD_SMTP_* 后才允许邮件
 papersteward digest --date 2026-10-22 --send-smtp --json
 ```
 
@@ -16,23 +16,24 @@ POST /digests body `{"digest_date":"2026-10-22"}` 生成不可变日报；GET /d
 默认主队列最多7、每标签2、精读2/粗读5；特殊桶为空占位。候选不足/冷却/精读满时
 记录deferred原因；`--allow-downgrade`显式允许精读降级粗读。生成同一日期返回原日报。
 
-日期按G4选定时区；正式发送只能发送本地今日、到达已确认push_time后且非暂停/安静时段。
+日期按已确认运行参数时区；正式发送只能发送本地今日、到达已确认push_time后且非暂停/安静时段。
 日报按日期唯一；投递按日期/渠道唯一。输出文件0600、不覆盖不同内容；路径冲突后先核对
 文件，解决后用相同目标 `--recover-file` 显式恢复。外部I/O前的第二次复核失败会记为
 `failed` 并明确“未尝试投递”，不会写成 `uncertain`：SMTP修正后可直接重试同一预约，
 本地文件仍需 `--recover-file`。只有实际进入文件写入或SMTP发送后的异常/崩溃才可能留下
 `failed`（文件）或 `uncertain`（SMTP）；SMTP预约/uncertain禁止自动重发，须人工核对；
 无提供绕过SMTP幂等的重置命令。
-同日第二渠道可以独立发送；SMTP失败不会阻止本地文件。G4选择local_markdown时不发邮件。
+同日第二渠道可以独立发送；SMTP失败不会阻止本地文件。运行参数选择 local_markdown 时不发邮件。
 
 SMTP配置：HOST、PORT（默认465）、FROM、TO、SECURITY（ssl/starttls）、TIMEOUT_S；
 可选USERNAME/PASSWORD须成对。所有变量加PAPERSTEWARD_SMTP_前缀；密码SecretStr且不入报告。
-未配置时不发邮件；真实测试只手动运行，CI使用替身。旧G4只确认本地渠道的部署不能
-直接切到SMTP；需未来再协商流程或在全新初始化G4时明确选择smtp，不手改确认快照。
+未配置时不发邮件；真实测试只手动运行，CI使用替身。已确认渠道为本地 Markdown 的工作区不能直接切到 SMTP；
+需要走运行参数治理流程，不能手改确认快照。
 
-数据库head0015：0009新增digest/delivery，0010扩展归档content_json，
+数据库 head0016：0009新增digest/delivery，0010扩展归档content_json，
 0011新增special_nomination，0012新增special_tier_snapshot，0013新增view_config，
-0014新增scoring_change，0015为档位快照增加reviewed_by；停服务备份后降0014删除
+0014新增scoring_change，0015为档位快照增加reviewed_by，0016 重建初始化状态并
+新增材料表；停服务备份后降0015会重建旧初始化表并移除材料表，降0014删除
 档位审核人列，降0013删除权重变更记录，降0012删除自定义视图，降0011删除档位历史，
 降0010删除特殊桶提名，降0009删除完整归档内容列，降0008删除日报与投递记录。
 事件/文献状态不会自动撤销，完整回滚使用操作前备份；删除投递记录可能导致重发，禁止
@@ -57,7 +58,7 @@ POST /papers/{id}/actions 接收request_id和kind。done必填mode，可选score
 用户主动完成尚未投递的队列文献时，会在 `queued→pushed` 迁移中写 `paper.pushed`
 事件，并在 payload 标记 `trigger=user_read`；已处于 `pushed` 的条目不会重复写该事件。
 没有独立的 `user_read` 事件，`paper.pushed` 也不表示邮件已送达。
-阅读操作只需要G4、不受暂停影响；发送已生成但随后被跳过/拒绝/完成的条目会拒绝。
+阅读操作只需要初始化确认、不受暂停影响；发送已生成但随后被跳过/拒绝/完成的条目会拒绝。
 已支持同事务即时归档；归档写入失败将撤销done、Rating和事件。返回status=archived。
 
 ## 归档查询与导出
@@ -94,7 +95,7 @@ papersteward jobs preference-weekly --run-id weekly-recheck-20261025 --json
 
 POST /jobs/preference/weekly body `{}` 或 `{"run_id":"weekly-recheck-20261025"}`；调用的
 create_snapshots/周偏好算法，按已确认时区和update_weekday的00:00排他截止；同周后续评分
-下周生效。默认ID由周截止+G4绑定组成，重复任务返回原Run，不重复更新候选或归档P。
+下周生效。默认ID由周截止+已确认运行参数版本组成，重复任务返回原Run，不重复更新候选或归档P。
 候选是未读合格主题集合加上已投递未读（PUSHED）；PUSHED不重新入队，日报投递历史不受
 影响。snooze到期的SNOOZED与日报一致恢复为QUEUED，报告以 `resumed` 计数。
 建议按设计在 update_weekday **20:00、当日日报投递后**运行周任务：这样本周已投递未读也
@@ -108,5 +109,5 @@ Run报告含完成/评分数、覆盖率/弱信号、修订数、非法评分/�
 
 反馈优先使用归档时作者/venue/标签，旧归档缺完整内容才用既有元数据回退；只SQL投影
 这些字段，不读取Rating.note、ArchiveSnapshot.note或完整归档正文。备注从不传入模型。
-任务尊重G4与暂停/安静时段；应用启动不自动调度。可由外部调度器在已确认时段调用CLI，
+任务尊重已确认运行参数与暂停/安静时段；应用启动不自动调度。可由外部调度器在已确认时段调用CLI，
 该周任务不会启动采集或真实LLM调用。任务报告可用 `papersteward runs show --last` 查看。

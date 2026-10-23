@@ -74,7 +74,8 @@ def _page(title: str, body: str) -> HTMLResponse:
         ("/ui/shelves", "特殊桶", "特殊桶"),
         ("/ui/views", "视图", "自定义视图"),
         ("/ui/archive", "归档", "阅读归档"),
-        ("/ui/setup", "设置", "首次设置"),
+        ("/ui/setup", "首次设置", "首次设置"),
+        ("/ui/settings", "设置", "模型连接"),
         ("/ui/help", "帮助", "使用帮助"),
     )
     navigation = "".join(
@@ -108,16 +109,18 @@ def _page(title: str, body: str) -> HTMLResponse:
 def help_page() -> HTMLResponse:
     return _page(
         "使用帮助",
-        "<article><h2>从这里开始</h2><p>先在设置页依次审阅并确认研究方向、"
-        "分类法、校准和试运行。Starter 是合成示例，只验证流程。</p>"
+        "<article><h2>从这里开始</h2><p>第一次打开时，先在「首次设置」连接模型服务，再粘贴或上传"
+        "描述研究方向的材料。Agent 会生成研究方向档案和分类标签草案；你可以用自然语言提意见，"
+        "查看每版差异，满意后确认开始使用。</p>"
         "<p>日常顺序：同步 / 处理 → 处理审核 → 生成日报 → 阅读并记录反馈。</p>"
         "<p>运行中可关闭页面，稍后从今日页查看；失败后检查原因，再显式重试。</p></article>"
-        "<article><h2>模型与隐私</h2><p>默认不授权论文数据外发。只有在试运行确认授权范围、配置模型，"
-        "并勾选本次同步授权后，才会访问文献源并发送论文元数据和摘要。备注不发送到模型。</p>"
-        "<p>模型地址、名称和密钥通过 PAPERSTEWARD_LLM_* 环境变量或本地 .env 配置，修改后重启。"
-        "密钥不要粘贴到研究方向、备注或页面表单。</p><p>新工作区：停止后使用 "
+        "<article><h2>模型与隐私</h2><p>模型地址、模型名和密钥在浏览器「设置」页填写，"
+        "保存在本机工作区数据库。保存即表示同意把论文标题与摘要发送给该模型服务，"
+        "用于分类、概括和评分；阅读备注不发送到模型，也不包含在同步请求中。</p>"
+        "<p>采集论文时会访问所选文献来源；打开今日页不会自动联网或发邮件。"
+        "密钥不会回显，也不会写入研究材料。</p><p>新工作区：停止后使用 "
         "<code>papersteward start --data-dir 新目录</code>，原数据保留。</p></article>"
-        "<article><h2>常见状态</h2><p>没有候选：检查模型配置与隐私授权，先同步处理，再处理审核。"
+        "<article><h2>常见状态</h2><p>没有候选：检查模型连接，先同步处理，再处理审核。"
         "没有日报：完成上述步骤后点击生成。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
         "<p>本地单用户工具，请使用默认 127.0.0.1 地址。"
         "关闭服务后再复制整个数据目录保存副本。</p></article>",
@@ -381,6 +384,11 @@ def htmx() -> FileResponse:
     return FileResponse(STATIC / "htmx-2.0.11.min.js", media_type="application/javascript")
 
 
+@router.get("/static/setup.js")
+def setup_script() -> FileResponse:
+    return FileResponse(STATIC / "setup.js", media_type="application/javascript", headers=HEADERS)
+
+
 @router.get("/static/style.css")
 def style() -> FileResponse:
     return FileResponse(STATIC / "style.css", media_type="text/css")
@@ -404,7 +412,7 @@ def today(request: Request, session: SessionDep, day: date | None = None) -> Res
                     "今日阅读",
                     intro + '<article class="empty"><h2>从一份好奇开始</h2>'
                     "<p>还没有今日日报。先同步处理论文、完成审核，再点击上方生成日报。</p>"
-                    "<p>首次体验可回设置页查看已确认的合成试运行预览。</p></article>",
+                    '<p>第一次使用请先完成 <a href="/ui/setup">首次设置</a>。</p></article>',
                 )
             label = "该日"
             return _page(

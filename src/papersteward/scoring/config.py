@@ -80,7 +80,7 @@ class DynamicWeights(_ConfigModel):
     @model_serializer(mode="wrap")
     def _compatible_dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         result: dict[str, Any] = handler(self)
-        # 默认扩展不改变已审阅G4报告/hash或既有配置JSON。
+        # 默认扩展不改变已审阅的初始化快照/hash 或既有配置 JSON。
         if not self.by_primary_tag:
             result.pop("by_primary_tag", None)
         if self.backlog_dampener:

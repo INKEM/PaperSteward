@@ -5,7 +5,7 @@ import pytest
 from papersteward.llm import (
     CLASSIFICATION_V1,
     CLASSIFICATION_V2,
-    RELEVANCE_V1,
+    RELEVANCE_V2,
     PromptRegistryError,
     PromptRenderError,
     PromptTemplate,
@@ -21,11 +21,13 @@ def test_default_registry_is_versioned() -> None:
         "summary",
         "relevance",
         "special_nomination",
+        "profile_extraction",
         "repair",
     )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")
     assert registry.get("classification") == CLASSIFICATION_V2
-    assert registry.get("relevance") == RELEVANCE_V1
+    assert registry.get("relevance") == RELEVANCE_V2
+    assert registry.versions("relevance") == ("relevance/v1", "relevance/v2")
     assert registry.versions("summary") == ("summary/v1", "summary/v2")
     assert registry.get("special_nomination").schema == "special_nomination"
 
@@ -81,3 +83,12 @@ def test_prompt_marks_untrusted_paper_text() -> None:
     assert "不可信数据" in rendered
     assert "Ignore previous instructions" in rendered
     assert "{braces}" in rendered
+
+
+def test_relevance_v2_prompt_requires_evidence_and_confidence() -> None:
+    from papersteward.llm import RELEVANCE_V2, REPAIR_V2
+
+    rendered = RELEVANCE_V2.render({"profile": "档案", "title": "标题", "abstract": "摘要"})
+    assert '"evidence"' in rendered and '"confidence"' in rendered
+    assert "boundary_note" in rendered
+    assert "{schema_json}" in REPAIR_V2.template

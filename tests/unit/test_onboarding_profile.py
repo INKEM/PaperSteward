@@ -9,19 +9,18 @@ from papersteward.onboarding.profile import MAX_PROFILE_BYTES, parse_draft, prof
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "profiles"
 
 
-def test_complete_draft_has_review_questions_and_both_diffs() -> None:
+def test_complete_draft_has_ready_review_and_both_diffs() -> None:
     base = parse_draft((FIXTURES / "basic.md").read_text(), "demo-profile")
     edited = parse_draft((FIXTURES / "v2.md").read_text(), "demo-profile")
     result = profile_review(edited, base)
-    assert result["g1_ready"]
+    assert result["ready"]
     assert result["missing_fields"] == []
-    assert 3 <= len(result["questions"]) <= 5
     assert "core_questions.Q2.text" in result["diff"]
     assert "-version:" in result["markdown_diff"]
     assert len(result["content_hash"]) == 64
 
 
-def test_incomplete_draft_lists_missing_fields_and_limits_questions() -> None:
+def test_incomplete_draft_lists_missing_fields() -> None:
     text = (FIXTURES / "basic.md").read_text()
     front, body = text[4:].split("\n---\n", 1)
     data = yaml.safe_load(front)
@@ -31,9 +30,8 @@ def test_incomplete_draft_lists_missing_fields_and_limits_questions() -> None:
         direction["keywords"] = []
     draft = parse_draft("---\n" + yaml.safe_dump(data) + "---\n" + body, "demo-profile")
     result = profile_review(draft)
-    assert not result["g1_ready"]
+    assert not result["ready"]
     assert len(result["missing_fields"]) == 6
-    assert len(result["questions"]) == 5
 
 
 @pytest.mark.parametrize(

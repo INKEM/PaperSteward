@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import event, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
+from conftest import activate
 from papersteward.core.entities import Rating
 from papersteward.core.errors import InvariantViolation
 from papersteward.scoring.queue import create_snapshots, explain_score, read_queue

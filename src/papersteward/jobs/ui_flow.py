@@ -7,7 +7,6 @@ import logging
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import inspect, select
@@ -16,13 +15,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from papersteward.cli.ingestion import _adapters
 from papersteward.cli.processing import _processor_context
-from papersteward.config import LLMProviderKind, Settings
+from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.delivery.service import create_digest
 from papersteward.errors import AppError, ConflictError, InvalidRequestError
 from papersteward.llm import LLMGateway, build_llm_provider
+from papersteward.llm.errors import LLMError, LLMValidationError
+from papersteward.llm.runtime import resolve_llm_config
+from papersteward.onboarding.intake import ensure_draft_stage, materials_text, run_extraction
 from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
 from papersteward.pipeline.ingest import ingest
@@ -31,7 +33,7 @@ from papersteward.sources.contracts import QuerySpec
 from papersteward.sources.http import SourceHTTP
 from papersteward.storage import session_scope
 from papersteward.storage.models import PaperRow, RunRow
-from papersteward.storage.repositories import ConfigRepository, PaperRepository, RunRepository
+from papersteward.storage.repositories import PaperRepository, RunRepository
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +41,32 @@ logger = logging.getLogger(__name__)
 class FlowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    kind: Literal["sync", "digest"]
+    kind: Literal["sync", "digest", "extract"]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
-    query: str = Field(default="retrieval augmented generation", min_length=1, max_length=500)
+    query: str = Field(default="", max_length=500)
     limit: int = Field(default=10, ge=1, le=50)
-    allow_external: bool = Field(default=False, strict=True)
 
 
-def processing_problem(session: Session, settings: Settings, binding: dict[str, Any]) -> str | None:
-    runtime = ConfigRepository(session).get("onboarding_runtime", binding["runtime_version"])
-    assert runtime is not None
-    if runtime.value_json["external_model_data"] != "metadata_abstract":
-        return "初始化未授权论文元数据/摘要外发。请用新工作区重新设置并明确授权。"
-    if settings.llm_provider is LLMProviderKind.FAKE or not settings.llm_model:
-        return "尚未配置真实 LLM。请配置 PAPERSTEWARD_LLM_PROVIDER/MODEL 并重启。"
-    if (
-        urlsplit(settings.llm_base_url).hostname not in {"localhost", "127.0.0.1", "::1"}
-        and not settings.llm_api_key
-    ):
-        return "缺少 PAPERSTEWARD_LLM_API_KEY，请配置后重启；本机模型可不需要 key。"
-    return None
+def processing_problem(session: Session, settings: Settings) -> str | None:
+    """同步/处理前置检查：模型服务就绪即可运行；授权随设置页保存。"""
+    return resolve_llm_config(session, settings).readiness_problem()
+
+
+def llm_failure_message(exc: LLMError) -> str:
+    """把网关/provider 错误转成用户可操作的中文提示，不包含 prompt 或密钥。"""
+    text = str(exc)
+    if isinstance(exc, LLMValidationError):
+        return f"模型返回不符合要求：{text}。可以重试，或在「设置」页换一个模型。"
+    if "认证失败" in text:
+        return (
+            "模型认证失败：API 密钥或地址不正确。"
+            "请到「设置」页检查密钥后点「测试连接」，再重试同步。"
+        )
+    if "超时" in text:
+        return "模型请求超时。可到「设置」页增大超时时间，或稍后重试；已完成数据保留。"
+    return (
+        f"模型服务调用失败：{text}。请到「设置」页用「测试连接」检查 API 地址、密钥和模型名后重试。"
+    )
 
 
 class UIFlowManager:
@@ -79,7 +87,8 @@ class UIFlowManager:
                     return
                 rows = session.scalars(
                     select(RunRow).where(
-                        RunRow.run_type.in_(["ui.sync", "ui.digest"]), RunRow.status == "running"
+                        RunRow.run_type.in_(["ui.sync", "ui.digest", "ui.extract"]),
+                        RunRow.status == "running",
                     )
                 ).all()
                 for row in rows:
@@ -106,12 +115,18 @@ class UIFlowManager:
                     if dict(existing.stats_json).get("request") != payload:
                         raise ConflictError("同一运行 ID 不能用于不同操作")
                     return request.run_id
-                _, binding = bound_context(session, utc_now(), action="ui." + request.kind)
-                if request.kind == "sync":
-                    if not request.allow_external:
-                        raise InvalidRequestError("请明确勾选允许访问来源并调用配置的模型")
-                    if problem := processing_problem(session, self.settings, binding):
+                if request.kind == "extract":
+                    if problem := resolve_llm_config(session, self.settings).readiness_problem():
                         raise InvalidRequestError(problem)
+                    ensure_draft_stage(session, occurred_at=utc_now())
+                    if not materials_text(session).strip():
+                        raise InvalidRequestError("请先上传至少一份描述研究方向的材料")
+                else:
+                    bound_context(session, utc_now(), action="ui." + request.kind)
+                if request.kind == "sync" and (
+                    problem := processing_problem(session, self.settings)
+                ):
+                    raise InvalidRequestError(problem)
                 if self.pending.full():
                     raise ConflictError("已有较多待运行操作，请等待当前流程完成")
                 RunRepository(session).add(
@@ -166,6 +181,18 @@ class UIFlowManager:
                 self._update(identity, stage="processing", completed=["collecting"])
                 self.process(request)
                 completed = ["collecting", "processing"]
+            elif request.kind == "extract":
+                self._update(identity, stage="extracting")
+                with session_scope(self.factory) as session:
+                    outcome = run_extraction(session, self.settings)
+                self._update(
+                    identity,
+                    generated={
+                        "profile_version": outcome["profile"]["version"],
+                        "taxonomy_version": outcome["taxonomy"]["version"],
+                    },
+                )
+                completed = ["extracting"]
             else:
                 self._update(identity, stage="digest")
                 with session_scope(self.factory) as session:
@@ -197,8 +224,12 @@ class UIFlowManager:
                             "message": exc.message
                             if isinstance(exc, DomainError | AppError)
                             else (
-                                "该步骤失败。已完成的数据保留。"
-                                "请检查来源/模型/运行时段后显式重试，也可先处理审核项。"
+                                llm_failure_message(exc)
+                                if isinstance(exc, LLMError)
+                                else (
+                                    "该步骤失败。已完成的数据保留。"
+                                    "请检查来源/模型/运行时段后显式重试，也可先处理审核项。"
+                                )
                             ),
                         }
                     ]
@@ -207,6 +238,8 @@ class UIFlowManager:
     def collect(self, request: FlowRequest) -> None:
         import argparse
 
+        if not request.query.strip():
+            raise InvalidRequestError("请填写检索词后再同步")
         clients: list[SourceHTTP] = []
         try:
             adapters = _adapters(
@@ -228,12 +261,16 @@ class UIFlowManager:
                 client.close()
 
     def process(self, request: FlowRequest) -> None:
-        provider = build_llm_provider(self.settings, live=True)
+        with session_scope(self.factory) as session:
+            llm_config = resolve_llm_config(session, self.settings)
+        if problem := llm_config.readiness_problem():
+            raise InvalidRequestError(problem)
+        provider = build_llm_provider(llm_config)
         try:
             gateway = LLMGateway(
                 provider,
-                max_attempts=self.settings.llm_max_attempts,
-                timeout_s=self.settings.llm_timeout_s,
+                max_attempts=llm_config.max_attempts,
+                timeout_s=llm_config.timeout_s,
             )
             with session_scope(self.factory) as session:
                 identities = list(
@@ -249,7 +286,7 @@ class UIFlowManager:
                     raise InvalidRequestError("应用正在停止")
                 with session_scope(self.factory) as session:
                     now = utc_now()
-                    profile, taxonomy, config, buckets, day = _processor_context(session, now)
+                    profile, taxonomy, scoring, buckets, day = _processor_context(session, now)
                     paper = PaperRepository(session).get(paper_id)
                     assert paper is not None
                     process_paper(
@@ -257,7 +294,7 @@ class UIFlowManager:
                         paper,
                         profile=profile,
                         taxonomy=taxonomy,
-                        config=config,
+                        config=scoring,
                         topic_buckets=buckets,
                         gateway=gateway,
                         embedding_provider=HashingEmbeddingProvider(),

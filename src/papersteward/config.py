@@ -35,7 +35,7 @@ class LogFormat(StrEnum):
 
 
 class LLMProviderKind(StrEnum):
-    """LLM 接入方式；默认离线 FakeLLM，真实调用必须显式授权。"""
+    """LLM 接入方式；浏览器设置页只提供真实兼容服务，fake 仅供测试/CLI 回放。"""
 
     FAKE = "fake"
     OPENAI_COMPATIBLE = "openai_compatible"

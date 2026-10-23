@@ -1,12 +1,50 @@
 "use strict";
+// 模型连接表单：不提交表单，用表单当前值即时测试连通性。
+document.addEventListener("click", async (event) => {
+  const button = event.target;
+  if (!(button instanceof HTMLButtonElement) || !button.dataset.testLlm) return;
+  const formEl = document.getElementById(button.dataset.testLlm);
+  if (!(formEl instanceof HTMLFormElement)) return;
+  const result = document.getElementById("llm-test-result");
+  const payload = {
+    base_url: formEl.elements.namedItem("base_url")?.value || "",
+    api_key: formEl.elements.namedItem("api_key")?.value || "",
+    model: formEl.elements.namedItem("model")?.value || "",
+    timeout_s: Number(formEl.elements.namedItem("timeout_s")?.value || "30") || 30,
+  };
+  button.disabled = true;
+  if (result) result.textContent = "正在测试连接…";
+  try {
+    const response = await fetch("/settings/llm/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-papersteward-ui": "1" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    const message = data.ok ? data.message : (data.error ? data.error.message : data.message);
+    if (result) result.textContent = message || "未知响应";
+  } catch (_) {
+    if (result) result.textContent = "无法连接本地服务，请重试";
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.addEventListener("change", async (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || !input.dataset.importTarget) return;
   const target = document.getElementById(input.dataset.importTarget);
   const file = input.files && input.files[0];
   if (!file || !target) return;
-  if (file.size > 256 * 1024) { input.setCustomValidity("文件不能超过 256 KiB"); input.reportValidity(); return; }
-  try { target.value = await file.text(); input.setCustomValidity(""); }
+  if (file.size > 512 * 1024) { input.setCustomValidity("文件不能超过 512 KiB"); input.reportValidity(); return; }
+  try {
+    target.value = await file.text();
+    if (input.dataset.fileMarker) {
+      const marker = document.querySelector(`input[name="${input.dataset.fileMarker}"]`);
+      if (marker instanceof HTMLInputElement) marker.value = "1";
+    }
+    input.setCustomValidity("");
+  }
   catch (_) { input.setCustomValidity("无法读取文件，请重新选择"); input.reportValidity(); }
 });
 

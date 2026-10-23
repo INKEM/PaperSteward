@@ -1,4 +1,4 @@
-"""G4绑定的可解释主题队列；日快照追加、同日幂等，读取不写库。"""
+"""绑定已确认运行参数的可解释主题队列；日快照追加、同日幂等，读取不写库。"""
 
 from collections import Counter
 from collections.abc import Set

@@ -4,7 +4,6 @@ from datetime import timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
-from test_api_dry_run import client as client
 from test_digest_delivery import prepared
 from test_priority_queue import NOW
 

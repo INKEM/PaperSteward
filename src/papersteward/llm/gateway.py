@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from papersteward.llm.errors import (
 )
 from papersteward.llm.prompts import PromptRegistry, default_registry
 from papersteward.llm.provider import LLMCompletion, LLMProvider
-from papersteward.schemas import SchemaError, validate_json_text
+from papersteward.schemas import SchemaError, schema_for, validate_json_text
 
 
 @dataclass(slots=True)
@@ -192,6 +193,9 @@ class LLMGateway:
                 {
                     "schema": prompt.schema,
                     "error": f"{first_error.field}: {first_error.message}",
+                    "schema_json": json.dumps(
+                        schema_for(prompt.schema), ensure_ascii=False, indent=2
+                    ),
                     "raw": raw_text,
                 }
             )

@@ -1,4 +1,4 @@
-"""初始化状态读取与统一执行门禁；缺少状态时默认关闭。"""
+"""初始化状态读取与统一执行前置检查；缺少状态时默认未激活。"""
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ def ensure_active(session: Session, *, action: str) -> None:
     state = get_onboarding(session)
     if state.stage is not OnboardingStage.ACTIVE:
         raise InvariantViolation(
-            "onboarding.g4",
-            f"尚未完成 G4，禁止 {action}；当前 {state.stage.value}，请先完成初始化确认",
+            "onboarding.confirm",
+            f"尚未完成初始化确认，禁止 {action}；当前 {state.stage.value}，"
+            "请在「首次设置」页完成研究草案确认",
         )

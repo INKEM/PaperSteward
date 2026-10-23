@@ -5,8 +5,8 @@
 
 ## 前置
 
-- 已完成 G1–G4 且阶段为 active；
-- 已运行 `alembic upgrade head`（当前 `0015`）；
+- 已完成初始化确认且阶段为 active；
+- 已运行 `alembic upgrade head`（当前 `0016`）；
 - 离线用 `--llm-fixture`，真实 LLM 必须显式 `--live` 且配置 provider/model/key。
 
 ## 处理一篇

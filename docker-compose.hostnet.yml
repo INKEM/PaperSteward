@@ -1,0 +1,7 @@
+# 仅用于 scripts/docker-up.sh：构建阶段复用宿主机网络。
+# BuildKit 默认需要额外 entitlement 才允许 build.network=host，因此该脚本
+# 同时使用 legacy builder；普通 Docker 环境仍可直接 docker compose up --build。
+services:
+  papersteward:
+    build:
+      network: host

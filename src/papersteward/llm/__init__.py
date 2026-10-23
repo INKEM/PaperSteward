@@ -18,8 +18,11 @@ from papersteward.llm.openai_compatible import OpenAICompatibleProvider
 from papersteward.llm.prompts import (
     CLASSIFICATION_V1,
     CLASSIFICATION_V2,
+    PROFILE_EXTRACTION_V1,
     RELEVANCE_V1,
+    RELEVANCE_V2,
     REPAIR_V1,
+    REPAIR_V2,
     SPECIAL_NOMINATION_V1,
     SUMMARY_V1,
     SUMMARY_V2,
@@ -32,8 +35,11 @@ from papersteward.llm.provider import FakeLLM, LLMCompletion, LLMProvider, timeo
 __all__ = [
     "CLASSIFICATION_V1",
     "CLASSIFICATION_V2",
+    "PROFILE_EXTRACTION_V1",
     "REPAIR_V1",
+    "REPAIR_V2",
     "RELEVANCE_V1",
+    "RELEVANCE_V2",
     "SPECIAL_NOMINATION_V1",
     "SUMMARY_V1",
     "SUMMARY_V2",

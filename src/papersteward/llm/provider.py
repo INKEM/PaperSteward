@@ -1,7 +1,7 @@
 """LLM provider 协议与 FakeLLM。
 
-真实 provider（OpenAI-compatible 等）不属于 P1-S5；FakeLLM 用于契约测试、CLI
-演示以及 P3/P4 的确定性回放。网关只依赖 ``LLMProvider``。
+真实 provider（OpenAI-compatible 等）是用户路径；FakeLLM 只用于测试、CLI 回放与
+确定性契约验证，不代表用户可见的离线模式。网关只依赖 ``LLMProvider``。
 """
 
 from __future__ import annotations

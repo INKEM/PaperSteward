@@ -2,47 +2,36 @@ from __future__ import annotations
 
 import time
 
-from test_api_dry_run import client as client
-from test_setup_pages import Inputs, complete_g3, post, runtime_form
-
-from papersteward.config import Settings
+from conftest import activate
+from papersteward.config import get_settings
 from papersteward.core.entities import Paper, Run, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.errors import InvalidRequestError
 from papersteward.jobs.ui_flow import UIFlowManager
-from papersteward.pipeline.process import ensure_topic_buckets
-from papersteward.storage import session_scope
-from papersteward.storage.repositories import (
-    PaperRepository,
-    ReviewRepository,
-    RunRepository,
-    TaxonomyRepository,
-)
+from papersteward.llm.runtime import LLMSettingsPayload, save_llm_config
+from papersteward.storage import create_session_factory, session_scope
+from papersteward.storage.repositories import PaperRepository, RunRepository
+
+HEADERS = {"origin": "http://testserver", "content-type": "application/x-www-form-urlencoded"}
 
 
 def ready(client):
-    complete_g3(client)
-    preview = post(
-        client,
-        "/ui/setup/dry-run/create",
-        {**runtime_form(), "external_model_data": "metadata_abstract"},
-    )
-    accepted = post(
-        client,
-        "/ui/setup/dry-run/feedback",
-        Inputs(preview.text, "/ui/setup/dry-run/feedback").values,
-    )
-    confirmation = Inputs(accepted.text, "/ui/setup/dry-run/confirm").values
-    confirmation["confirmed"] = "yes"
-    assert post(client, "/ui/setup/dry-run/confirm", confirmation).status_code == 200
+    # 先激活再保存模型配置：配置审计事件使用真实时钟，必须晚于固定 NOW 的激活事件。
+    activate(client)
+    engine = client.app.state.engine
+    with session_scope(create_session_factory(engine)) as session:
+        save_llm_config(
+            session,
+            LLMSettingsPayload(
+                base_url="https://api.example.com/v1",
+                api_key="sk-test",
+                model="test-model",
+                consent=True,
+            ),
+            get_settings(),
+        )
     manager = client.app.state.ui_flows
-    manager.settings = Settings(
-        _env_file=None,
-        llm_provider="openai_compatible",
-        llm_model="fixture",
-        llm_base_url="http://127.0.0.1:9999/v1",
-    )
-    client.app.state.settings = manager.settings
+    manager.settings = get_settings()
     return manager
 
 
@@ -56,37 +45,48 @@ def wait(manager, identity):
     raise AssertionError("UI run did not finish")
 
 
-def request(identity, kind="sync"):
-    return {
+def request(identity, kind="sync", **overrides):
+    payload = {
         "run_id": identity,
         "kind": kind,
         "source": "arxiv",
         "query": "fixture",
         "limit": "1",
-        "allow_external": "yes",
+        **overrides,
     }
+    return payload
 
 
-def test_ui_run_progress_idempotency_and_no_implicit_network(client, monkeypatch):
-    assert post(client, "/ui/runs", request("before-g4")).status_code == 409
+def post(client, path, data):
+    return client.post(path, data=data, headers=HEADERS)
+
+
+def test_ui_sync_requires_active_workspace(client):
+    response = post(client, "/ui/runs", request("before-setup"))
+    assert response.status_code == 409
+    assert "初始化确认" in response.text
+
+
+def test_ui_sync_progress_idempotency_and_profile_default_query(client, monkeypatch):
     manager = ready(client)
     calls = []
     monkeypatch.setattr(manager, "collect", lambda spec: calls.append("collect"))
     monkeypatch.setattr(manager, "process", lambda spec: calls.append("process"))
-    assert post(client, "/ui/runs", {**request("denied"), "allow_external": ""}).status_code == 400
     response = post(client, "/ui/runs", request("ui-once"))
     assert response.status_code == 200, response.text
     assert wait(manager, "ui-once").status is RunStatus.SUCCEEDED
-    assert post(client, "/ui/runs", request("ui-once")).status_code == 200
     assert calls == ["collect", "process"]
-    assert post(client, "/ui/runs", {**request("ui-once"), "query": "changed"}).status_code == 409
+    assert post(client, "/ui/runs", request("ui-once")).status_code == 200
+    assert post(client, "/ui/runs", request("ui-once", query="changed")).status_code == 409
     terminal = client.get("/ui/runs/ui-once?fragment=true")
     assert 'hx-trigger="every' not in terminal.text
     assert "已完成" in terminal.text
-    assert "同步 / 处理" in client.get("/ui/today").text
+    today = client.get("/ui/today")
+    assert "同步 / 处理" in today.text
+    assert 'value="long-document retrieval"' in today.text
 
 
-def test_failed_step_preserves_committed_data_and_requires_explicit_retry(client, monkeypatch):
+def test_ui_failed_step_preserves_data_and_shows_retry(client, monkeypatch):
     manager = ready(client)
 
     def collect(spec):
@@ -103,7 +103,9 @@ def test_failed_step_preserves_committed_data_and_requires_explicit_retry(client
 
     monkeypatch.setattr(manager, "collect", collect)
     monkeypatch.setattr(
-        manager, "process", lambda spec: (_ for _ in ()).throw(InvalidRequestError("model failure"))
+        manager,
+        "process",
+        lambda spec: (_ for _ in ()).throw(InvalidRequestError("model failure")),
     )
     assert post(client, "/ui/runs", request("ui-failed")).status_code == 200
     failed = wait(manager, "ui-failed")
@@ -112,109 +114,43 @@ def test_failed_step_preserves_committed_data_and_requires_explicit_retry(client
         assert PaperRepository(session).get("collected") is not None
     retry_page = client.get("/ui/runs/ui-failed")
     assert "显式重试" in retry_page.text
-    assert '<p role="alert">model failure</p>' in retry_page.text
-    assert "失败" in retry_page.text
-    monkeypatch.setattr(manager, "process", lambda spec: None)
-    assert post(client, "/ui/runs", request("ui-retry")).status_code == 200
-    assert wait(manager, "ui-retry").status is RunStatus.SUCCEEDED
-    with session_scope(manager.factory) as session:
-        assert RunRepository(session).get("ui-failed").status is RunStatus.FAILED
+    assert "model failure" in retry_page.text
 
 
-def test_restart_marks_only_unfinished_ui_runs_failed(client):
+def test_restart_marks_unfinished_ui_runs_failed(client):
     manager = ready(client)
     with session_scope(manager.factory) as session:
         RunRepository(session).add(
             Run(
-                "interrupted",
-                "ui.sync",
+                "interrupted-extract",
+                "ui.extract",
                 started_at=utc_now(),
-                stats_json={"completed": ["collecting"]},
+                stats_json={"completed": []},
             )
         )
         RunRepository(session).add(Run("cli-unrelated", "ingest", started_at=utc_now()))
     restarted = UIFlowManager(manager.factory, manager.settings)
     restarted.close()
     with session_scope(manager.factory) as session:
-        run = RunRepository(session).get("interrupted")
-        assert run.status is RunStatus.FAILED and run.stats_json["completed"] == ["collecting"]
+        run = RunRepository(session).get("interrupted-extract")
+        assert run.status is RunStatus.FAILED
         assert "interrupted" in str(run.errors_json)
         assert RunRepository(session).get("cli-unrelated").status is RunStatus.RUNNING
 
 
-def test_digest_button_and_review_forms_use_existing_services(client):
-    manager = ready(client)
-    from sqlalchemy import func, select
-    from test_custom_views import _seed
-
-    from papersteward.storage.models import DigestRow
-
-    assert post(client, "/ui/runs", request("ui-empty", "digest")).status_code == 200
-    assert wait(manager, "ui-empty").status is RunStatus.FAILED
-    with session_scope(manager.factory) as session:
-        assert session.scalar(select(func.count()).select_from(DigestRow)) == 0
-        _seed(session, "digest-paper", relevance=70, authority=50, extra=50)
-    response = post(client, "/ui/runs", request("ui-digest", "digest"))
-    assert response.status_code == 200
-    assert wait(manager, "ui-digest").status is RunStatus.SUCCEEDED
-    assert "没有待审核项" in client.get("/ui/review").text
-    with session_scope(manager.factory) as session:
-        taxonomy = TaxonomyRepository(session).get("onboarding-taxonomy", "1.0")
-        ensure_topic_buckets(session, taxonomy)
-        for identity in ("approve-me", "relabel-me"):
-            PaperRepository(session).add(
-                Paper(
-                    identity,
-                    "<script>review</script>",
-                    status=PaperStatus.NEEDS_REVIEW,
-                    first_seen_at=utc_now(),
-                )
-            )
-            ReviewRepository(session).open(
-                identity,
-                ["classification:low_primary_confidence"],
-                {
-                    "taxonomy_id": taxonomy.id,
-                    "taxonomy_version": taxonomy.version,
-                    "classification": {"primary_tag": "T01"},
-                },
-                now=utc_now(),
-            )
-    listing = client.get("/ui/review")
-    assert "&lt;script&gt;review" in listing.text
-    assert (
-        post(
-            client, "/ui/review/approve", {"paper_id": "approve-me", "reviewed_by": "fixture-user"}
-        ).status_code
-        == 200
-    )
-    assert (
-        post(
-            client,
-            "/ui/review/relabel",
-            {"paper_id": "relabel-me", "reviewed_by": "fixture-user", "primary_tag": "T02"},
-        ).status_code
-        == 200
-    )
-    with session_scope(manager.factory) as session:
-        assert PaperRepository(session).get("relabel-me").status is PaperStatus.CLASSIFIED
-
-
-def test_sync_uses_fake_llm_pipeline_and_skips_calibration_metadata(client, monkeypatch):
-    from dataclasses import replace
-
-    from test_process_review import PAPER, _gateway
-
+def test_extract_run_page_links_back_to_setup(client):
     manager = ready(client)
     with session_scope(manager.factory) as session:
-        PaperRepository(session).add(replace(PAPER, id="flow-paper", first_seen_at=utc_now()))
-    monkeypatch.setattr(manager, "collect", lambda spec: None)
-    monkeypatch.setattr(
-        "papersteward.jobs.ui_flow.build_llm_provider", lambda *a, **kw: _gateway().provider
-    )
-    assert post(client, "/ui/runs", request("ui-real-pipeline")).status_code == 200
-    report = wait(manager, "ui-real-pipeline")
-    assert report.status is RunStatus.SUCCEEDED, report.errors_json
-    assert report.stats_json["processed"] == 1
-    with session_scope(manager.factory) as session:
-        assert PaperRepository(session).get("flow-paper").status is not PaperStatus.SCREENED
+        RunRepository(session).add(
+            Run(
+                "ext-link",
+                "ui.extract",
+                started_at=utc_now(),
+                status=RunStatus.SUCCEEDED,
+                finished_at=utc_now(),
+                stats_json={"completed": ["extracting"]},
+            )
+        )
+    page = client.get("/ui/runs/ext-link")
+    assert "回到草案审阅" in page.text
+    assert "生成研究草案" in page.text

@@ -16,8 +16,8 @@ from sqlalchemy import func, select
 
 from papersteward.api import review as api
 from papersteward.api.deps import SessionDep
+from papersteward.api.form_utils import failure, fields, hidden, input_field
 from papersteward.api.pages import HEADERS, _page
-from papersteward.api.setup_pages import failure, fields, hidden, input_field
 from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
 from papersteward.core.enums import RunStatus, SpecialBucketKind
@@ -41,12 +41,14 @@ LABELS = {
     "collecting": "采集",
     "processing": "处理",
     "digest": "生成日报",
+    "extracting": "生成研究草案",
     "completed": "已完成",
     "running": "运行中",
     "succeeded": "成功",
     "failed": "失败",
     "ui.sync": "同步 / 处理",
     "ui.digest": "生成日报",
+    "ui.extract": "生成研究草案",
 }
 
 
@@ -78,8 +80,8 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
         f"待处理 {screened} · 待审核 {pending + special_pending}</p>"
     )
     body += '<a class="button secondary" href="/ui/review">处理审核</a>'
-    if problem := processing_problem(session, settings, binding):
-        body += f'<p class="notice">{escape(problem)}</p>'
+    if problem := processing_problem(session, settings):
+        body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">打开设置</a></p>'
     else:
         default_query = next(
             (
@@ -104,14 +106,9 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
             '<label>每次上限<input type="number" name="limit" value="10" '
             'min="1" max="50"></label></details>'
         )
-        controls += (
-            '<label class="check"><input type="checkbox" name="allow_external" '
-            'value="yes" required>允许本次访问来源，'
-            "并将论文元数据/摘要发给配置的模型</label>"
-        )
         body += _run_form("sync", controls, "同步 / 处理")
     body += _run_form("digest", "", "生成今日日报")
-    body += "<p>候选不足时：先同步/处理，再解决待审核项，最后生成日报。示例试运行只验证流程。</p>"
+    body += "<p>候选不足时：先同步/处理，再解决待审核项，最后生成日报。</p>"
     recent = [
         run for run in RunRepository(session).list(limit=50) if run.run_type.startswith("ui.")
     ][:3]
@@ -165,9 +162,9 @@ def run_body(run: Run) -> str:
         controls = "".join(
             hidden(key, "yes" if value is True else value) for key, value in payload.items()
         )
-        body += _run_form(
-            kind, controls, "显式重试" + ("（访问来源与模型）" if kind == "sync" else "生成日报")
-        )
+        body += _run_form(kind, controls, "显式重试")
+    if run.run_type == "ui.extract":
+        body += '<p><a href="/ui/setup">回到草案审阅</a></p>'
     body += (
         f'<p><a href="/ui/runs/{identity}">刷新进度</a> · '
         '<a href="/ui/today">返回今日</a> · '
@@ -184,9 +181,8 @@ async def submit_run(request: Request) -> Response:
             run_id=values.get("run_id", ""),
             kind=values.get("kind"),
             source=values.get("source", "arxiv"),
-            query=values.get("query", "retrieval augmented generation"),
+            query=values.get("query", ""),
             limit=values.get("limit", "10"),
-            allow_external=values.get("allow_external") == "yes",
         )
         identity = request.app.state.ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)

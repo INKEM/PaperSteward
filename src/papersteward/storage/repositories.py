@@ -23,6 +23,7 @@ from papersteward.core.entities import (
     Config,
     Enrichment,
     Event,
+    IntakeMaterial,
     Paper,
     PaperBucket,
     PaperTag,
@@ -78,6 +79,8 @@ from papersteward.storage.mappers import (
     enrichment_to_row,
     event_from_row,
     event_to_row,
+    intake_material_from_row,
+    intake_material_to_row,
     paper_bucket_from_row,
     paper_bucket_to_row,
     paper_from_row,
@@ -115,6 +118,7 @@ from papersteward.storage.models import (
     ConfigRow,
     EnrichmentRow,
     EventRow,
+    IntakeMaterialRow,
     PaperBucketRow,
     PaperRow,
     PaperTagRow,
@@ -1112,6 +1116,38 @@ class BucketRepository(_Repository):
         return bucket_from_row(row)
 
 
+class IntakeMaterialRepository(_Repository):
+    """用户上传的研究方向材料。"""
+
+    def add(self, material: IntakeMaterial) -> IntakeMaterial:
+        self._session.add(intake_material_to_row(material))
+        self._flush()
+        return material
+
+    def get(self, material_id: str) -> IntakeMaterial | None:
+        row = self._session.get(IntakeMaterialRow, material_id)
+        return None if row is None else intake_material_from_row(row)
+
+    def find_by_sha256(self, digest: str) -> IntakeMaterial | None:
+        statement = select(IntakeMaterialRow).where(IntakeMaterialRow.sha256 == digest).limit(1)
+        row = self._session.scalars(statement).first()
+        return None if row is None else intake_material_from_row(row)
+
+    def list(self) -> list[IntakeMaterial]:
+        statement = select(IntakeMaterialRow).order_by(
+            IntakeMaterialRow.created_at, IntakeMaterialRow.id
+        )
+        return [intake_material_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def delete(self, material_id: str) -> bool:
+        row = self._session.get(IntakeMaterialRow, material_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
+
+
 class ArchiveSnapshotRepository(_Repository):
     """只追加的归档快照；不提供 update/delete。"""
 
@@ -1132,6 +1168,7 @@ __all__ = [
     "ConfigRepository",
     "EnrichmentRepository",
     "EventRepository",
+    "IntakeMaterialRepository",
     "PaperBucketRepository",
     "PaperRepository",
     "PaperTagRepository",

@@ -63,7 +63,7 @@ def _fixture_transport(path: Path) -> httpx.MockTransport:
 
 
 def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    command = subparsers.add_parser("ingest", help="采集候选并去重/硬过滤；需完成G4")
+    command = subparsers.add_parser("ingest", help="采集候选并去重/硬过滤；需完成初始化确认")
     command.add_argument("--source", choices=SOURCES, action="append", required=True)
     command.add_argument(
         "--fixture", action="append", default=[], help="单来源路径或 SOURCE=PATH，可重复"

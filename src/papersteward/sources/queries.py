@@ -1,35 +1,19 @@
-"""从精确确认的档案生成确定性查询；不推断关键词，不调用模型。"""
+"""从已确认的档案生成确定性查询；不推断关键词，不调用模型。"""
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from papersteward.core.entities import ResearchProfile
-from papersteward.core.enums import DocumentStatus, EventType
+from papersteward.core.enums import DocumentStatus
 from papersteward.core.errors import DomainValidationError, InvariantViolation
 from papersteward.documents.profile import parse_profile
 from papersteward.sources.contracts import QuerySpec
-from papersteward.storage.models import EventRow
 from papersteward.storage.repositories import ProfileRepository
 
 
 def selected_profile(session: Session) -> ResearchProfile:
-    event = session.scalar(
-        select(EventRow)
-        .where(EventRow.event_type == EventType.ONBOARDING_G1_CONFIRMED.value)
-        .order_by(EventRow.created_at.desc(), EventRow.id.desc())
-        .limit(1)
-    )
-    if event is None:
-        raise InvariantViolation("onboarding.g1", "缺少 G1 确认事件")
-    identifier, version = (
-        event.payload_json.get("artifact_id"),
-        event.payload_json.get("artifact_version"),
-    )
-    if not isinstance(identifier, str) or not isinstance(version, str):
-        raise InvariantViolation("onboarding.g1", "确认事件缺少精确档案引用")
-    profile = ProfileRepository(session).get(identifier, version)
+    profile = ProfileRepository(session).latest_confirmed()
     if profile is None:
-        raise InvariantViolation("onboarding.g1", "选定档案不存在")
+        raise InvariantViolation("onboarding.profile", "缺少已确认的研究档案，请先完成初始化确认")
     _validate_profile(profile)
     return profile
 
@@ -41,7 +25,7 @@ def _validate_profile(profile: ResearchProfile) -> None:
         or parsed.version != profile.version
         or dict(parsed.parsed_json) != dict(profile.parsed_json)
     ):
-        raise InvariantViolation("onboarding.g1", "档案未确认或内容已漂移，请重新协商")
+        raise InvariantViolation("onboarding.profile", "档案未确认或内容已漂移，请重新确认")
 
 
 def _terms(value: object, field: str) -> tuple[str, ...]:

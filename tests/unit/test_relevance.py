@@ -111,7 +111,7 @@ def test_valid_rubric_with_fixed_semantic_scores_exact_r():
     assert result.rubric.invalid_quotes == ()
     assert all(item.valid for item in result.rubric.evidence)
     assert result.provenance.model == "fake-llm"
-    assert result.provenance.prompt_version == "relevance/v1"
+    assert result.provenance.prompt_version == "relevance/v2"
     assert result.reasons == ("uncalibrated_similarity",)
     assert "不可信数据" in gateway.provider.calls[0]
     assert "研究档案" in gateway.provider.calls[0]

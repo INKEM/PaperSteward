@@ -1,6 +1,5 @@
 from datetime import timedelta
 
-from test_api_dry_run import client as client
 from test_digest_delivery import prepared
 from test_priority_queue import NOW
 
@@ -20,6 +19,9 @@ def test_pages_reading_loop_no_external_assets_and_revision(client, migrated_eng
         assert response.headers["cache-control"] == "no-store"
     assert client.get("/ui/static/htmx.js").status_code == 200
     assert client.get("/ui/static/style.css").status_code == 200
+    setup_js = client.get("/ui/static/setup.js")
+    assert setup_js.status_code == 200
+    assert "testLlm" in setup_js.text and "llm-test-result" in setup_js.text
     body = {
         "kind": "done",
         "mode": "skim",

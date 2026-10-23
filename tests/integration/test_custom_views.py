@@ -6,9 +6,8 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import get_settings
 from papersteward.core.entities import (

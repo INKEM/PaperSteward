@@ -1,4 +1,4 @@
-"""G4日报编排与可恢复的投递边界。发送预约必须先提交，不能包在请求事务中。"""
+"""日报编排与可恢复的投递边界。发送预约必须先提交，不能包在请求事务中。"""
 
 from dataclasses import replace
 from datetime import date, datetime
@@ -191,7 +191,7 @@ def _preflight(session: Session, digest: Digest, channel: str, now: datetime) ->
     if channel not in {"local_markdown", "smtp"}:
         raise InvariantViolation("delivery.channel", "不支持的投递渠道")
     if channel == "smtp" and ctx["runtime"].value_json["channel"] != "smtp":
-        raise InvariantViolation("delivery.channel", "G4未确认SMTP；本地文件仍可用")
+        raise InvariantViolation("delivery.channel", "初始化时未选择 SMTP 渠道；本地文件仍可用")
     if digest.digest_date != now.astimezone(ZoneInfo(digest.timezone)).date():
         raise InvariantViolation("delivery.date", "只允许发送本地今日日报，历史日报可审阅导出")
     if (

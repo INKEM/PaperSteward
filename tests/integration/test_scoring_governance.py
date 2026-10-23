@@ -5,14 +5,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from test_api_dry_run import client as client
 from test_custom_views import DAY, NOW, _prepare, _seed
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import get_settings
 from papersteward.core.enums import EventType, PaperStatus, ScoringChangeStatus
 from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.scoring.config import ScoringConfig, config_value_json
+from papersteward.scoring.queue import create_snapshots, read_queue
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.repositories import (
     ConfigRepository,
@@ -312,7 +313,6 @@ def test_cli_preview_confirm_and_history(client, migrated_engine, monkeypatch, c
 def test_late_process_after_confirmation_gets_effective_snapshot(
     client, migrated_engine, monkeypatch
 ):
-    from test_pipeline_ingest import activate
 
     activate(client, quiet_start=None, quiet_end=None)
     monkeypatch.setattr("papersteward.api.queue.utc_now", lambda: NOW)
@@ -520,9 +520,6 @@ def test_late_promotion_after_confirmation_gets_effective_snapshot(
         assert (
             StaticScoreSnapshotRepository(session).latest("promote-future").score_date == effective
         )
-
-
-from papersteward.scoring.queue import create_snapshots, read_queue  # noqa: E402
 
 
 def test_default_preview_day_uses_runtime_timezone(client, migrated_engine, monkeypatch):
