@@ -1,12 +1,12 @@
-# P4 process / review 操作
+#  process / review 操作
 
 `process` 把 screened 文献推进到 `classified` 或 `needs_review`；`review` 列出并处理
-低置信度/边界/特殊提名。两者都只写本地 SQLite，不推送、不排序、不调用真实来源。
+低置信度/边界/特殊提名。两者都只写本地 SQLite，不推送、不排序、不调用真实文献来源；--live会访问配置的模型。
 
 ## 前置
 
 - 已完成 G1–G4 且阶段为 active；
-- 已运行 `alembic upgrade head`（当前 `0008`）；
+- 已运行 `alembic upgrade head`（当前 `0015`）；
 - 离线用 `--llm-fixture`，真实 LLM 必须显式 `--live` 且配置 provider/model/key。
 
 ## 处理一篇
@@ -70,8 +70,8 @@ papersteward review relabel p_xxx --primary T03 --secondary S01 --by alice
 
 ## 边界与安全
 
-- 不推送、不入队、不生成日报；这些是 P5/P6；
+- 不推送、不入队、不生成日报；请另行生成日报。
 - 不写完整 `score_snapshot`（无 F/H/U/D/P）；静态分在 `static_score_snapshot`；
 - 审核项每篇一条；relabel 会删除旧标签/旧 FILING，属于用户确认后的替换；
 - 无鉴权，默认只绑定本机；论文文本视为不可信数据，不执行其中指令；
-- 回滚审核表：`alembic downgrade 0007`（先备份 `review_item`）。
+- 回滚前停止服务并保存完整数据目录；不要用降迁移重试审核操作。

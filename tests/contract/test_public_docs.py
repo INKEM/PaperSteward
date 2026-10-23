@@ -31,3 +31,17 @@ def test_readme_local_links_and_mit_license() -> None:
     assert "MIT License" in license_text
     assert "Permission is hereby granted" in license_text
     assert "THE SOFTWARE IS PROVIDED" in license_text
+
+
+def test_all_user_guide_links_and_no_development_links() -> None:
+    documents = [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]
+    for document in documents:
+        source = document.read_text()
+        assert not re.search(
+            r"docs/phases|docs/adr|dev-docs/|AGENTS\.md|ADR00[0-9]+|P[0-9]-S[0-9]", source
+        ), document
+        for target in re.findall(r"\]\(([^)]+)\)", source):
+            url = urlsplit(target)
+            if not url.scheme and url.path:
+                assert (document.parent / unquote(url.path)).is_file(), (document, target)
+    assert (ROOT / "docs/images/today.jpg").stat().st_size > 1000

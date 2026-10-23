@@ -42,6 +42,11 @@ LABELS = {
     "processing": "处理",
     "digest": "生成日报",
     "completed": "已完成",
+    "running": "运行中",
+    "succeeded": "成功",
+    "failed": "失败",
+    "ui.sync": "同步 / 处理",
+    "ui.digest": "生成日报",
 }
 
 
@@ -113,7 +118,8 @@ def dashboard(session: SessionDep, settings: Settings, day: date) -> str:
     for run in recent:
         body += (
             f'<p>上次运行：<a href="/ui/runs/{quote(run.id, safe="")}">'
-            f"{escape(run.run_type)} · {escape(run.status.value)}</a></p>"
+            f"{escape(LABELS.get(run.run_type, run.run_type))} · "
+            f"{escape(LABELS.get(run.status.value, run.status.value))}</a></p>"
         )
     return body + "</section>"
 
@@ -129,20 +135,29 @@ def run_body(run: Run) -> str:
     stage = str(run.stats_json.get("stage", "queued"))
     body = (
         f'<section id="run-status"{poll}><p role="status">'
-        f"{escape(LABELS.get(stage, stage))} · {escape(run.status.value)}</p>"
+        f"{escape(LABELS.get(stage, stage))} · "
+        f"{escape(LABELS.get(run.status.value, run.status.value))}</p>"
     )
     body += (
-        "<p>已完成：" + escape(" / ".join(run.stats_json.get("completed", [])) or "暂无") + "</p>"
+        "<p>已完成："
+        + escape(
+            " / ".join(LABELS.get(step, step) for step in run.stats_json.get("completed", []))
+            or "暂无"
+        )
+        + "</p>"
     )
     if "processed" in run.stats_json:
         body += (
             f"<p>文献处理 {run.stats_json['processed']} / {run.stats_json['processing_total']}</p>"
         )
     if run.errors_json:
+        messages = [
+            str(error.get("message", "步骤失败，请检查运行配置后重试。"))
+            for error in run.errors_json.get("errors", [])
+            if isinstance(error, dict)
+        ]
         body += (
-            '<p role="alert">'
-            + escape(json.dumps(dict(run.errors_json), ensure_ascii=False))
-            + "</p>"
+            '<p role="alert">' + escape("；".join(messages) or "步骤失败，请检查后重试。") + "</p>"
         )
     if run.status is RunStatus.FAILED and "request" in run.stats_json:
         payload = dict(run.stats_json["request"])

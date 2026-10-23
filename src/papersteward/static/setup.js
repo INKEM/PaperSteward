@@ -12,7 +12,8 @@ document.addEventListener("change", async (event) => {
 
 // Native forms navigate away; HTMX forms restore their buttons when the request ends.
 function busy(form, enabled) {
-  form.toggleAttribute("aria-busy", enabled);
+  if (enabled) form.setAttribute("aria-busy", "true");
+  else form.removeAttribute("aria-busy");
   for (const button of form.querySelectorAll("button")) {
     if (enabled) { button.dataset.originalLabel = button.textContent; button.textContent = "正在提交…"; }
     else if (button.dataset.originalLabel) button.textContent = button.dataset.originalLabel;

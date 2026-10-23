@@ -1,6 +1,6 @@
 # 全局权重治理：预览、版本与确认
 
-P7-S5 管理全局评分配置（scoring.yaml）的变更。**保存/导入新版本不等于激活**：
+管理全局评分配置（scoring.yaml）的变更。**保存/导入新版本不等于激活**：
 必须先预览 Top-N 排序影响，再显式确认；确认后在生效日使用新配置，并重算该日静态
 快照。自定义排序视图（`view_config`）与此完全隔离。
 
@@ -80,8 +80,8 @@ curl -s localhost:8000/config/scoring/changes/<id>
 
 - 迁移 `0014` 新增 `scoring_change`：status、base/config version、preview_day、
   effective_on、proposed/preview JSON、preview_hash、确认人/时间/备注；迁移 `0015`
-  为特殊桶人工改档补 `special_tier_snapshot.reviewed_by`（见 `docs/shelves.md`）。
-- 回滚 `alembic downgrade 0014` 删除变更记录；`0015` 可单独回滚删除档位审核人列。
+  为特殊桶人工改档补 `special_tier_snapshot.reviewed_by`（见[特殊桶](shelves.md)）。
+- 从head0015降至0014只删除档位审核人列，再降至0013才删除权重变更记录。
   已保存的评分配置版本与静态快照不回退。
   若需撤销一次激活，应新建更高版本并按预览/确认流程生效，不删除历史。
 - 不做自动调参、自动确认、权重滑块 UI、多用户权限；不做全局配置的原地覆盖。
