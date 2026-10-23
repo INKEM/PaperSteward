@@ -4,7 +4,7 @@ from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -200,6 +200,12 @@ def _card(
     body = f'<article class="paper-card{" newly-added" if is_new else ""}">'
     if is_new:
         body += '<span class="tag new-badge">本次新增</span> '
+    if "quota_fill" in item.explanation.reasons:
+        # X-05：保底填充的论文在列表可识别（相关度未达正常门槛、按名次补足）。
+        body += (
+            '<span class="tag quota-fill" '
+            'title="相关度未达正常门槛，按名次补足入队">保底填充</span> '
+        )
     body += f'<span class="tag">{escape(label)}</span>'
     body += (
         f'<h2><a href="/ui/papers/{quote(item.paper_id, safe="")}">{escape(item.title)}</a></h2>'
@@ -451,21 +457,102 @@ def favicon() -> FileResponse:
 
 
 def _backlog_page(
-    request: Request, session: SessionDep, filters: BacklogFilters, offset: int
+    request: Request,
+    session: SessionDep,
+    filters: BacklogFilters,
+    offset: int,
+    search: str = "",
 ) -> Response:
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
+    # X-02：htmx 提交的筛选只换列表区（fragment=1 + hx-request 双条件判定，
+    # 直接访问带该参数的 URL 仍返回整页），地址栏经 hx-push-url 同步可分享。
+    fragment_mode = (
+        request.query_params.get("fragment") == "1" and request.headers.get("hx-request") == "true"
+    )
     try:
         now = utc_now()
-        page = read_backlog(session, now=now, limit=50, offset=offset, filters=filters)
+        page = read_backlog(
+            session, now=now, limit=50, offset=offset, filters=filters, search=search
+        )
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        list_body = ""
+        if page.items:
+            dates = sorted({item.score_date for item in page.items})
+            date_label = str(dates[0]) if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
+            list_body += (
+                f'<p class="muted">共 {page.total} 篇 · 排序基于 {date_label} 的评分。'
+                "可随时刷新排序。</p>"
+            )
+            # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
+            ids = [item.paper_id for item in page.items]
+            papers = PaperRepository(session).get_many(ids)
+            enrichments = EnrichmentRepository(session).get_many(ids)
+            list_body += "".join(
+                _card(
+                    session,
+                    item,
+                    is_new=item.paper_id in added_ids(session),
+                    taxonomy=taxonomy,
+                    paper=papers.get(item.paper_id),
+                    enrichment=enrichments.get(item.paper_id),
+                )
+                for item in page.items
+            )
+        else:
+            filtered = bool(
+                filters.tag
+                or filters.read_status != "unread"
+                or filters.min_priority > 0
+                or filters.max_priority < 100
+                or search.strip()
+            )
+            if filtered:
+                list_body += (
+                    '<article class="empty"><h2>没有论文符合当前筛选</h2>'
+                    "<p>可调整或清除上方筛选条件；也可以「挖掘新论文」补充新论文。</p></article>"
+                )
+            else:
+                list_body += (
+                    '<article class="empty"><h2>留一点时间，读重要的论文</h2>'
+                    "<p>队列还是空的。点击上方「挖掘新论文」：采集、处理、评分完成后，"
+                    "论文会直接出现在这里。</p></article>"
+                )
+        if offset or offset + 50 < page.total:
+            query_params = {
+                **filters.model_dump(exclude_none=True),
+                "offset": offset + 50,
+            }
+            if search.strip():
+                query_params["search"] = search.strip()
+            if offset:
+                prev_params = {**query_params, "offset": max(0, offset - 50)}
+                list_body += (
+                    '<a class="button secondary" '
+                    f'href="/ui/queue?{escape(urlencode(prev_params))}">上一页</a> '
+                )
+            if offset + 50 < page.total:
+                list_body += (
+                    '<a class="button secondary" '
+                    f'href="/ui/queue?{escape(urlencode(query_params))}">下一页</a> '
+                )
+        total_attr = f' data-total="{page.total}"' if page.total else ""
+        list_body = f'<div id="queue-list"{total_attr}>{list_body}</div>'
+        if fragment_mode:
+            return HTMLResponse(list_body, headers=HEADERS)
+
         body = dashboard(
             session, request.app.state.settings, _day(session), backlog_total=page.total
         )
         if "cancelled" in request.query_params:
             body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
-        taxonomy = TaxonomyRepository(session).latest_confirmed()
         body += (
-            '<form action="/ui/queue" class="queue-filters"><label>研究标签'
+            '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
+            'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
+            '<input type="hidden" name="fragment" value="1">'
+            '<label>搜索<input name="search" value="'
+            + escape(search)
+            + '" placeholder="标题或摘要关键词"></label><label>研究标签'
             '<select name="tag"><option value="">全部标签</option>'
         )
         for tag in taxonomy.tags if taxonomy else ():
@@ -486,60 +573,16 @@ def _backlog_page(
                 'min="0" max="100" step="0.1"></label>'
             )
         body += "<button>应用筛选</button></form>"
-        latest = RunRepository(session).latest("ui.sync", status=RunStatus.SUCCEEDED)
-        added = set(latest.stats_json.get("added_ids", [])) if latest else set()
-        if page.items:
-            dates = sorted({item.score_date for item in page.items})
-            date_label = str(dates[0]) if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
-            body += (
-                f'<p class="muted">共 {page.total} 篇 · 排序基于 {date_label} 的评分。'
-                "可随时刷新排序。</p>"
-            )
-            # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
-            ids = [item.paper_id for item in page.items]
-            papers = PaperRepository(session).get_many(ids)
-            enrichments = EnrichmentRepository(session).get_many(ids)
-            body += "".join(
-                _card(
-                    session,
-                    item,
-                    is_new=item.paper_id in added,
-                    taxonomy=taxonomy,
-                    paper=papers.get(item.paper_id),
-                    enrichment=enrichments.get(item.paper_id),
-                )
-                for item in page.items
-            )
-        else:
-            filtered = bool(
-                filters.tag
-                or filters.read_status != "unread"
-                or filters.min_priority > 0
-                or filters.max_priority < 100
-            )
-            if filtered:
-                body += (
-                    '<article class="empty"><h2>没有论文符合当前筛选</h2>'
-                    "<p>可调整或清除上方筛选条件；也可以「挖掘新论文」补充新论文。</p></article>"
-                )
-            else:
-                body += (
-                    '<article class="empty"><h2>留一点时间，读重要的论文</h2>'
-                    "<p>队列还是空的。点击上方「挖掘新论文」：采集、处理、评分完成后，"
-                    "论文会直接出现在这里。</p></article>"
-                )
-        if offset or offset + 50 < page.total:
-            from urllib.parse import urlencode
-
-            for target, label in ((max(0, offset - 50), "上一页"), (offset + 50, "下一页")):
-                if (label == "上一页" and offset) or (label == "下一页" and target < page.total):
-                    query = urlencode({**filters.model_dump(exclude_none=True), "offset": target})
-                    body += (
-                        f'<a class="button secondary" href="/ui/queue?{escape(query)}">{label}</a> '
-                    )
+        body += list_body
         return _page("阅读队列", body)
     except (DomainError, AppError) as exc:
         return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
+
+
+def added_ids(session: SessionDep) -> set[str]:
+    """最近一次成功挖掘新增的论文 ID（本次新增徽章）。"""
+    latest = RunRepository(session).latest("ui.sync", status=RunStatus.SUCCEEDED)
+    return set(latest.stats_json.get("added_ids", [])) if latest else set()
 
 
 @router.get("/today")
@@ -557,6 +600,7 @@ def queue(
     min_priority: Annotated[float, Query(ge=0, le=100)] = 0,
     max_priority: Annotated[float, Query(ge=0, le=100)] = 100,
     read_status: Literal["unread", "read", "all"] = "unread",
+    search: Annotated[str, Query(max_length=200)] = "",
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Response:
     if min_priority > max_priority:
@@ -574,6 +618,7 @@ def queue(
             read_status=read_status,
         ),
         offset,
+        search=search,
     )
 
 
@@ -745,14 +790,44 @@ def archive(
 ) -> HTMLResponse:
     try:
         page = list_archives(session, query=query, tag=tag, min_score=min_score, offset=offset)
-        body = (
-            '<form method="get"><label>搜索<input name="query" value="'
-            + escape(query or "")
-            + '"></label><button>在归档中搜索</button></form>'
+        # X-06：tag/min_score 后端早已支持，补齐 UI 控件并让筛选条件随导出/翻页保留。
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        body = '<form method="get" class="queue-filters"><label>搜索<input name="query" value="'
+        body += escape(query or "") + '"></label><label>研究标签<select name="tag">'
+        body += '<option value="">全部标签</option>'
+        if taxonomy:
+            for tag_option in taxonomy.tags:
+                if tag_option.level.value == "primary" and tag_option.active:
+                    selected = " selected" if tag == tag_option.code else ""
+                    body += (
+                        f'<option value="{escape(tag_option.code)}"{selected}>'
+                        f"{escape(tag_option.name)}</option>"
+                    )
+        body += "</select></label>"
+        body += (
+            f'<label>最低评分<input type="number" name="min_score" min="1" max="5" '
+            f'value="{min_score if min_score is not None else ""}"></label>'
+            "<button>应用筛选</button></form>"
         )
-        body += '<p>导出：<a href="/archive/export?format=bibtex">BibTeX</a> · '
-        body += '<a href="/archive/export?format=csv">CSV</a> · '
-        body += '<a href="/archive/export?format=markdown">Markdown</a></p>'
+        export_params = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "query": query or "",
+                    "tag": tag or "",
+                    "min_score": min_score,
+                }.items()
+                if value not in (None, "")
+            }
+        )
+        export_suffix = ("&" + export_params) if export_params else ""
+        body += (
+            f'<p>导出：<a href="/archive/export?format=bibtex{escape(export_suffix)}">BibTeX</a> · '
+        )
+        body += f'<a href="/archive/export?format=csv{escape(export_suffix)}">CSV</a> · '
+        body += f'<a href="/archive/export?format=markdown{escape(export_suffix)}">Markdown</a> · '
+        body += f'<a href="/archive/export?format=json{escape(export_suffix)}">JSON</a>'
+        body += "（导出跟随当前筛选）</p>"
         if not page["items"]:
             if query:
                 body += (
@@ -771,8 +846,6 @@ def archive(
             body += f"{escape(title)}</a></h2><p>{escape(record.primary_tag)} · 评分 {rating}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
         if offset + 50 < page["total"]:
-            from urllib.parse import urlencode
-
             params: dict[str, str | int] = {"query": query or "", "offset": offset + 50}
             if tag:
                 params["tag"] = tag
@@ -813,13 +886,14 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
                 + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a></article>'
             )
             return HTMLResponse(fragment, headers=headers)
-        if request.headers.get("hx-request") and body.kind in {"done", "score", "note"}:
-            headers["HX-Refresh"] = "true"
-        return HTMLResponse(
-            f'<article><p class="success" tabindex="-1" autofocus>{escape(messages[body.kind])}</p>'
-            f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a></article>',
-            headers=headers,
+        # X-03：完成/评分/备注同样原地替换卡片，保留滚动位置，不再整页刷新。
+        fragment = (
+            f'<article><p class="success" tabindex="-1" autofocus>'
+            f"{escape(messages[body.kind])}</p>"
+            + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a> '
+            '<a href="/ui/queue">返回队列</a></article>'
         )
+        return HTMLResponse(fragment, headers=headers)
     except (DomainError, AppError, ValidationError) as exc:
         return _error(exc)
     except (ValueError, UnicodeError):

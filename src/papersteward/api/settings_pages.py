@@ -115,6 +115,7 @@ def settings_page(session: SessionDep, saved: bool = False) -> HTMLResponse:
 
 @router.post("/settings/llm")
 async def save_settings(request: Request, session: SessionDep) -> Response:
+    data: dict[str, str] = {}
     try:
         _guard(request)
         data = await fields(request)
@@ -137,7 +138,29 @@ async def save_settings(request: Request, session: SessionDep) -> Response:
         separator = "&" if "?" in next_url else "?"
         return RedirectResponse(f"{next_url}{separator}{query}", status_code=303)
     except (AppError, ValidationError, ValueError) as exc:
-        return failure(exc, back="/ui/settings")
+        # X-01：保存失败时保留已填的地址/模型名/超时重渲染表单；密钥不回显。
+        if isinstance(exc, ValidationError):
+            message = "输入无效：" + "；".join(
+                f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
+            )
+        else:
+            message = str(getattr(exc, "message", exc))
+        try:
+            timeout_value = int(float(data.get("timeout_s", "") or DEFAULT_LLM_TIMEOUT_S))
+        except ValueError:
+            timeout_value = int(DEFAULT_LLM_TIMEOUT_S)
+        form = llm_form(
+            data.get("base_url", ""),
+            data.get("model", ""),
+            float(timeout_value),
+            next_url=data.get("next") or "/ui/settings",
+        )
+        return _page(
+            "设置",
+            f'<p role="alert">{escape(message)}</p>'
+            + form
+            + '<p><a href="/ui/settings">返回设置</a></p>',
+        )
 
 
 __all__ = ["router", "llm_form"]

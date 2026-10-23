@@ -85,3 +85,15 @@ document.addEventListener("htmx:afterRequest", (event) => {
   if (form) busy(form, false);
 });
 window.addEventListener("pageshow", () => document.querySelectorAll("form[aria-busy]").forEach((form) => busy(form, false)));
+
+// Ctrl/⌘+Enter 直接提交所在表单（textarea 内也生效）；htmx 表单经 requestSubmit 触发其 hx 处理。
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const form = target.closest("form");
+  if (!form) return;
+  event.preventDefault();
+  if (typeof form.requestSubmit === "function") form.requestSubmit();
+  else form.submit();
+});

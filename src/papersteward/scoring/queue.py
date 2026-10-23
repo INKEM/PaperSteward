@@ -704,8 +704,13 @@ def read_backlog(
     limit: int = 50,
     offset: int = 0,
     filters: BacklogFilters | None = None,
+    search: str | None = None,
 ) -> BacklogResponse:
-    """长期阅读队列：最新可用快照，不受当天日报、容量或历史冷却限制。"""
+    """长期阅读队列：最新可用快照，不受当天日报、容量或历史冷却限制。
+
+    ``search`` 为可选的标题/摘要关键词过滤（X-04），只作用于展示层，
+    不进入 BacklogFilters 契约。
+    """
     if not 1 <= limit <= 200 or offset < 0:
         raise InvariantViolation("pagination", "limit须为1–200，offset非负")
     filters = filters or BacklogFilters()
@@ -716,11 +721,13 @@ def read_backlog(
         if filters.read_status == "read"
         else BACKLOG_STATUSES | READ_STATUSES
     )
+    needle = (search or "").strip().casefold()
     candidates = [
         (item, status)
         for item, status in _backlog_candidates(session, now=now, allowed=allowed)
         if (filters.tag is None or item.primary_tag == filters.tag)
         and filters.min_priority <= item.priority <= filters.max_priority
+        and (not needle or needle in item.title.casefold() or needle in item.summary_100.casefold())
     ]
     candidates.sort(
         key=lambda pair: rank_key(

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from pydantic import ValidationError
 
 from papersteward.api import onboarding as api
 from papersteward.api.deps import SessionDep
@@ -36,8 +37,8 @@ from papersteward.api.workflow_pages import run_body
 from papersteward.config import get_settings
 from papersteward.core.entities import Run
 from papersteward.core.enums import RunStatus
-from papersteward.core.errors import DomainError
-from papersteward.errors import InvalidRequestError
+from papersteward.core.errors import DomainError, InvariantViolation
+from papersteward.errors import AppError, InvalidRequestError
 from papersteward.jobs.ui_flow import FlowRequest
 from papersteward.llm.runtime import resolve_llm_config
 from papersteward.onboarding.intake import MAX_MATERIALS, add_feedback
@@ -61,9 +62,20 @@ def _model_ready(session: SessionDep) -> bool:
     return resolve_llm_config(session, get_settings()).ready
 
 
-def _materials_section(summary: dict[str, Any], *, editable: bool) -> str:
+def _materials_section(
+    summary: dict[str, Any],
+    *,
+    editable: bool,
+    error: str | None = None,
+    prefill_name: str = "",
+    prefill_content: str = "",
+) -> str:
     materials = summary["materials"]
     body = "<h2>研究材料</h2>"
+    if error:
+        # X-01：校验失败原地重渲染并保留已填内容，而不是丢输入跳错误页。
+        body += f'<p role="alert">{escape(error)}</p>'
+
     if materials:
         items = []
         for material in materials:
@@ -83,20 +95,29 @@ def _materials_section(summary: dict[str, Any], *, editable: bool) -> str:
             "开题报告、代表性论文摘要、平时笔记都可以。</p>"
         )
     if editable:
-        body += (
-            '<form method="post" action="/ui/setup/materials">'
-            + '<label>材料名称（可选）<input name="name" placeholder="未命名材料"></label>'
-            + '<label>材料内容<textarea name="content" rows="10" required '
-            'placeholder="粘贴文字，或用下方按钮选择 .md/.txt 文件"></textarea></label>'
-            + '<input type="hidden" name="from_file" value="0">'
-            + '<label class="check">从文件导入（.md/.txt，可重复添加）：'
-            '<input type="file" accept=".md,.markdown,.txt" data-import-target="content" '
-            'data-file-marker="from_file"></label>'
-            + '<span id="import-status" role="status" class="muted"></span>'
-            + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
-            "超长材料会提示拆分。</p>" + "<button>添加材料</button></form>"
-        )
+        body += _material_add_form(prefill_name=prefill_name, prefill_content=prefill_content)
     return body
+
+
+def _material_add_form(*, prefill_name: str = "", prefill_content: str = "") -> str:
+    """添加材料表单；prefill 用于校验失败后原地重渲染（X-01）。"""
+    return (
+        '<form method="post" action="/ui/setup/materials">'
+        + '<label>材料名称（可选）<input name="name" placeholder="未命名材料" value="'
+        + escape(prefill_name)
+        + '"></label>'
+        + '<label>材料内容<textarea name="content" rows="10" required '
+        'placeholder="粘贴文字，或用下方按钮选择 .md/.txt 文件">'
+        + escape(prefill_content)
+        + "</textarea></label>"
+        + '<input type="hidden" name="from_file" value="0">'
+        + '<label class="check">从文件导入（.md/.txt，可重复添加）：'
+        '<input type="file" accept=".md,.markdown,.txt" data-import-target="content" '
+        'data-file-marker="from_file"></label>'
+        + '<span id="import-status" role="status" class="muted"></span>'
+        + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
+        "超长材料会提示拆分。</p>" + "<button>添加材料</button></form>"
+    )
 
 
 def _generate_section(session: SessionDep, summary: dict[str, Any]) -> str:
@@ -164,6 +185,17 @@ def _draft_section(summary: dict[str, Any]) -> str:
     return body
 
 
+def _feedback_form(*, comment: str = "") -> str:
+    """提意见表单；comment 用于校验失败后原地重渲染（X-01）。"""
+    return (
+        '<form method="post" action="/ui/setup/feedback">'
+        + hidden("run_id", "ext-" + uuid4().hex[:16])
+        + "<label>修改意见（例如“方向太窄，把 XX 也加进去”“不要子方向 S3”）"
+        + f'<textarea name="comment" rows="3" required>{escape(comment)}</textarea></label>'
+        + "<button>提交意见并重新生成</button></form>"
+    )
+
+
 def _feedback_and_confirm(session: SessionDep, summary: dict[str, Any]) -> str:
     if summary["profile"] is None and summary["taxonomy"] is None:
         return ""
@@ -171,13 +203,7 @@ def _feedback_and_confirm(session: SessionDep, summary: dict[str, Any]) -> str:
     for comment in summary["feedback"]:
         body += f'<p class="muted">已提意见：{escape(comment)}</p>'
     if _model_ready(session):
-        body += (
-            '<form method="post" action="/ui/setup/feedback">'
-            + hidden("run_id", "ext-" + uuid4().hex[:16])
-            + "<label>修改意见（例如“方向太窄，把 XX 也加进去”“不要子方向 S3”）"
-            '<textarea name="comment" rows="3" required></textarea></label>'
-            + "<button>提交意见并重新生成</button></form>"
-        )
+        body += _feedback_form()
     else:
         body += (
             '<p class="notice">模型连接不可用，暂时无法按意见重新生成。'
@@ -332,8 +358,20 @@ def _run_id(data: dict[str, str]) -> str:
     return "ext-" + uuid4().hex[:16]
 
 
+def _form_error(exc: Exception) -> str:
+    """表单错误的统一提示文案（X-01：与保留输入的重渲染搭配使用）。"""
+    if isinstance(exc, ValidationError):
+        return "输入无效：" + "；".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
+        )
+    if isinstance(exc, DomainError | AppError):
+        return exc.message
+    return "输入格式无效，请检查后重试。"
+
+
 @router.post("/setup/materials")
 async def add_material_action(request: Request, session: SessionDep) -> Response:
+    data: dict[str, str] = {}
     try:
         data = await fields(request)
         api.create_material(
@@ -346,7 +384,19 @@ async def add_material_action(request: Request, session: SessionDep) -> Response
         )
         return RedirectResponse("/ui/setup", status_code=303)
     except PageError as exc:
-        return failure(exc)
+        # HTTP 层拒绝（跨站守卫/超大表单等 AppError 与 InvariantViolation）
+        # 保持原状态码与错误页；内容校验失败才带着输入重渲染。
+        if isinstance(exc, AppError | InvariantViolation):
+            return failure(exc)
+        # X-01：校验失败时带着已填内容重渲染表单，长文输入不丢。
+        return _page(
+            "添加材料",
+            f'<p role="alert">{escape(_form_error(exc))}</p>'
+            + _material_add_form(
+                prefill_name=data.get("name", ""), prefill_content=data.get("content", "")
+            )
+            + '<p><a href="/ui/setup">返回首次设置</a></p>',
+        )
 
 
 @router.post("/setup/materials/delete")
@@ -384,6 +434,7 @@ async def generate_action(request: Request, session: SessionDep) -> Response:
 
 @router.post("/setup/feedback")
 async def feedback_action(request: Request, session: SessionDep) -> Response:
+    data: dict[str, str] = {}
     try:
         data = await fields(request)
         if running := RunRepository(session).running_ui_runs():
@@ -398,7 +449,15 @@ async def feedback_action(request: Request, session: SessionDep) -> Response:
         redirected = conflict_redirect(exc)
         if redirected is not None:
             return redirected
-        return failure(exc)
+        if isinstance(exc, AppError | InvariantViolation):
+            return failure(exc)
+        # X-01：意见提交失败时保留已写的意见内容。
+        return _page(
+            "提意见",
+            f'<p role="alert">{escape(_form_error(exc))}</p>'
+            + _feedback_form(comment=data.get("comment", ""))
+            + '<p><a href="/ui/setup">返回首次设置</a></p>',
+        )
 
 
 @router.post("/setup/confirm")

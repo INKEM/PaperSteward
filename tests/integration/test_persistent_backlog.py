@@ -100,7 +100,10 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
         headers={**HEADERS, "HX-Request": "true"},
         data={"kind": "done", "mode": "skim", "request_id": "ui-complete"},
     )
-    assert completed.status_code == 200 and completed.headers["HX-Refresh"] == "true"
+    # X-03：完成阅读原地替换卡片（成功片段），不再整页刷新。
+    assert completed.status_code == 200
+    assert "HX-Refresh" not in completed.headers
+    assert "已归档这篇论文" in completed.text
     assert client.get("/queue").json()["total"] == 1
 
 
