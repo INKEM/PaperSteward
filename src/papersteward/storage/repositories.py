@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
@@ -166,6 +166,25 @@ class PaperRepository(_Repository):
         row = self._session.get(PaperRow, paper_id)
         return None if row is None else paper_from_row(row)
 
+    def list_statuses(self, statuses: Collection[PaperStatus]) -> list[Paper]:
+        """按状态集合过滤的论文列表；与 list() 同序，供队列读取下推过滤。"""
+        if not statuses:
+            return []
+        statement = (
+            select(PaperRow)
+            .where(PaperRow.status.in_({status.value for status in statuses}))
+            .order_by(PaperRow.first_seen_at, PaperRow.id)
+        )
+        return [paper_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def get_many(self, paper_ids: Collection[str]) -> dict[str, Paper]:
+        """批量按 ID 取论文；只含存在的键。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(select(PaperRow).where(PaperRow.id.in_(ids))).all()
+        return {row.id: paper_from_row(row) for row in rows}
+
     def list(self, *, limit: int | None = None, offset: int = 0) -> list[Paper]:
         statement = select(PaperRow).order_by(PaperRow.first_seen_at, PaperRow.id).offset(offset)
         if limit is not None:
@@ -253,6 +272,21 @@ class PaperTagRepository(_Repository):
         )
         return [paper_tag_from_row(row) for row in self._session.scalars(statement).all()]
 
+    def list_for_papers(self, paper_ids: Collection[str]) -> dict[str, list[PaperTag]]:
+        """批量标签分配；每篇内部排序与 list_for_paper 一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(PaperTagRow)
+            .where(PaperTagRow.paper_id.in_(ids))
+            .order_by(PaperTagRow.paper_id, PaperTagRow.role, PaperTagRow.tag_code)
+        ).all()
+        grouped: dict[str, list[PaperTag]] = {}
+        for row in rows:
+            grouped.setdefault(row.paper_id, []).append(paper_tag_from_row(row))
+        return grouped
+
 
 class PaperBucketRepository(_Repository):
     """文献与主题桶/特殊桶的关系。
@@ -303,6 +337,21 @@ class PaperBucketRepository(_Repository):
         )
         return [paper_bucket_from_row(row) for row in self._session.scalars(statement).all()]
 
+    def list_for_papers(self, paper_ids: Collection[str]) -> dict[str, list[PaperBucket]]:
+        """批量桶关系；每篇内部排序与 list_for_paper 一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(PaperBucketRow)
+            .where(PaperBucketRow.paper_id.in_(ids))
+            .order_by(PaperBucketRow.paper_id, PaperBucketRow.role, PaperBucketRow.bucket_id)
+        ).all()
+        grouped: dict[str, list[PaperBucket]] = {}
+        for row in rows:
+            grouped.setdefault(row.paper_id, []).append(paper_bucket_from_row(row))
+        return grouped
+
     def list_filings(self, bucket_id: str) -> list[PaperBucket]:
         """某个桶的归属文献；读取特殊桶视图用。"""
         statement = (
@@ -342,6 +391,14 @@ class SummaryRepository(_Repository):
     def get(self, paper_id: str) -> Summary | None:
         row = self._session.get(SummaryRow, paper_id)
         return None if row is None else summary_from_row(row)
+
+    def get_many(self, paper_ids: Collection[str]) -> dict[str, Summary]:
+        """批量概括；只含存在的键。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(select(SummaryRow).where(SummaryRow.paper_id.in_(ids))).all()
+        return {row.paper_id: summary_from_row(row) for row in rows}
 
 
 class EnrichmentRepository(_Repository):
@@ -386,6 +443,16 @@ class EnrichmentRepository(_Repository):
         row = self._session.get(EnrichmentRow, paper_id)
         return None if row is None else enrichment_from_row(row)
 
+    def get_many(self, paper_ids: Collection[str]) -> dict[str, Enrichment]:
+        """批量富化结果；只含存在的键。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(EnrichmentRow).where(EnrichmentRow.paper_id.in_(ids))
+        ).all()
+        return {row.paper_id: enrichment_from_row(row) for row in rows}
+
     def list(self, *, limit: int | None = None, offset: int = 0) -> list[Enrichment]:
         statement = select(EnrichmentRow).order_by(EnrichmentRow.paper_id).offset(offset)
         if limit is not None:
@@ -409,6 +476,21 @@ class ScoreSnapshotRepository(_Repository):
             .order_by(ScoreSnapshotRow.score_date)
         )
         return [score_snapshot_from_row(row) for row in self._session.scalars(statement).all()]
+
+    def history_for_papers(self, paper_ids: Collection[str]) -> dict[str, list[ScoreSnapshot]]:
+        """批量评分快照历史；每篇内部按日期升序，与 history() 一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(ScoreSnapshotRow)
+            .where(ScoreSnapshotRow.paper_id.in_(ids))
+            .order_by(ScoreSnapshotRow.paper_id, ScoreSnapshotRow.score_date)
+        ).all()
+        grouped: dict[str, list[ScoreSnapshot]] = {}
+        for row in rows:
+            grouped.setdefault(row.paper_id, []).append(score_snapshot_from_row(row))
+        return grouped
 
     def latest(self, paper_id: str) -> ScoreSnapshot | None:
         statement = (
@@ -440,6 +522,23 @@ class StaticScoreSnapshotRepository(_Repository):
             static_score_snapshot_from_row(row) for row in self._session.scalars(statement).all()
         ]
 
+    def history_for_papers(
+        self, paper_ids: Collection[str]
+    ) -> dict[str, list[StaticScoreSnapshot]]:
+        """批量静态分快照历史；每篇内部按日期升序，与 history() 一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(StaticScoreSnapshotRow)
+            .where(StaticScoreSnapshotRow.paper_id.in_(ids))
+            .order_by(StaticScoreSnapshotRow.paper_id, StaticScoreSnapshotRow.score_date)
+        ).all()
+        grouped: dict[str, list[StaticScoreSnapshot]] = {}
+        for row in rows:
+            grouped.setdefault(row.paper_id, []).append(static_score_snapshot_from_row(row))
+        return grouped
+
     def latest(self, paper_id: str) -> StaticScoreSnapshot | None:
         statement = (
             select(StaticScoreSnapshotRow)
@@ -465,6 +564,25 @@ class PaperAnalysisRepository(_Repository):
             created_at=as_utc(row.created_at),
             updated_at=as_utc(row.updated_at),
         )
+
+    def get_many(self, paper_ids: Collection[str]) -> dict[str, PaperAnalysis]:
+        """批量分析载荷；只含存在的键。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(PaperAnalysisRow).where(PaperAnalysisRow.paper_id.in_(ids))
+        ).all()
+        return {
+            row.paper_id: PaperAnalysis(
+                paper_id=row.paper_id,
+                payload_json=dict(row.payload_json),
+                quality_flags=tuple(row.quality_flags_json),
+                created_at=as_utc(row.created_at),
+                updated_at=as_utc(row.updated_at),
+            )
+            for row in rows
+        }
 
     def save(
         self,
@@ -1165,6 +1283,14 @@ class BucketRepository(_Repository):
     def get(self, bucket_id: str) -> Bucket | None:
         row = self._session.get(BucketRow, bucket_id)
         return None if row is None else bucket_from_row(row)
+
+    def get_many(self, bucket_ids: Collection[str]) -> dict[str, Bucket]:
+        """批量桶定义；只含存在的键。"""
+        ids = list(bucket_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(select(BucketRow).where(BucketRow.id.in_(ids))).all()
+        return {row.id: bucket_from_row(row) for row in rows}
 
     def list(self, *, active_only: bool = False) -> list[Bucket]:
         statement = select(BucketRow).order_by(BucketRow.id)

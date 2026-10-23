@@ -393,11 +393,22 @@ def score_semantic(
     provider: EmbeddingProvider,
     *,
     calibrator: RubricCalibrator | None = None,
+    facet_vectors: tuple[tuple[float, ...], ...] | None = None,
 ) -> SemanticScore:
-    """计算 max/top2 语义分量；负余弦按 0 处理，未提供校准器时明确标记。"""
+    """计算 max/top2 语义分量；负余弦按 0 处理，未提供校准器时明确标记。
+
+    ``facet_vectors`` 允许传入预计算的 profile 片段向量（维度须与 provider 一致），
+    同一 profile 批量评估时省去逐篇重复 embedding。
+    """
     if not facets:
         raise RelevanceError("relevance.semantic.facets", "至少需要一个 profile 片段")
-    vectors = provider.embed([facet.text for facet in facets] + [build_paper_text(paper)])
+    if facet_vectors is not None and len(facet_vectors) != len(facets):
+        raise RelevanceError("relevance.semantic.embedding", "预计算片段向量数量不一致")
+    if facet_vectors is None:
+        vectors = provider.embed([facet.text for facet in facets] + [build_paper_text(paper)])
+    else:
+        paper_vector = provider.embed([build_paper_text(paper)])[0]
+        vectors = (*facet_vectors, paper_vector)
     expected = len(facets) + 1
     if len(vectors) != expected or any(len(vector) != len(vectors[0]) for vector in vectors):
         raise RelevanceError("relevance.semantic.embedding", "embedding 数量或维度不一致")
@@ -535,6 +546,7 @@ def evaluate_relevance(
     *,
     calibrator: RubricCalibrator | None = None,
     min_rubric_confidence: float = DEFAULT_MIN_RUBRIC_CONFIDENCE,
+    facet_vectors: tuple[tuple[float, ...], ...] | None = None,
 ) -> RelevanceResult:
     """完整 R 评估；只接受已确认 profile，失败向上抛出可审计错误。"""
     if not isinstance(profile, ResearchProfile):
@@ -544,7 +556,9 @@ def evaluate_relevance(
     if not isinstance(paper, Paper):
         raise TypeError("paper 必须是 Paper")
     facets = extract_profile_facets(profile)
-    semantic = score_semantic(paper, facets, embedding_provider, calibrator=calibrator)
+    semantic = score_semantic(
+        paper, facets, embedding_provider, calibrator=calibrator, facet_vectors=facet_vectors
+    )
     rubric = score_rubric(gateway, profile, paper, min_confidence=min_rubric_confidence)
     value = compute_r(semantic.score, rubric.weighted_score)
     reasons = list(rubric.review_reasons)

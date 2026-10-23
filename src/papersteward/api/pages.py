@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import Taxonomy, ViewConfig, utc_now
+from papersteward.core.entities import Enrichment, Paper, Taxonomy, ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.delivery.actions import apply_action
@@ -201,11 +201,17 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
     )
 
 
-def _paper_links(session: SessionDep, paper_id: str) -> str:
-    paper = PaperRepository(session).get(paper_id)
+def _paper_links(
+    session: SessionDep,
+    paper_id: str,
+    *,
+    paper: Paper | None = None,
+    enrichment: Enrichment | None = None,
+) -> str:
+    if paper is None:
+        paper = PaperRepository(session).get(paper_id)
     if paper is None:
         return ""
-    enrichment = EnrichmentRepository(session).get(paper_id)
     body = f'<p class="muted">{escape(", ".join(paper.authors[:3]) or "作者未知")}'
     if paper.venue:
         body += " · " + escape(paper.venue)
@@ -227,8 +233,14 @@ def _card(
     is_new: bool = False,
     readonly: bool = False,
     taxonomy: Taxonomy | None = None,
+    paper: Paper | None = None,
+    enrichment: Enrichment | None = None,
 ) -> str:
-    paper = PaperRepository(session).get(item.paper_id)
+    if paper is None:
+        paper = PaperRepository(session).get(item.paper_id)
+    enrichment = (
+        EnrichmentRepository(session).get(item.paper_id) if enrichment is None else enrichment
+    )
     mode = item.read_mode.value if isinstance(item, DigestCard) else "skim"
     rank = item.rank if isinstance(item, BacklogItem) else None
     if taxonomy is None:
@@ -245,7 +257,7 @@ def _card(
     body += (
         f'<h2><a href="/ui/papers/{quote(item.paper_id, safe="")}">{escape(item.title)}</a></h2>'
     )
-    body += _paper_links(session, item.paper_id)
+    body += _paper_links(session, item.paper_id, paper=paper, enrichment=enrichment)
     body += f"<blockquote>{escape(item.summary_100)}</blockquote>"
     body += '<p class="paper-score">'
     if rank is not None:
@@ -527,8 +539,19 @@ def _backlog_page(
                 f'<p class="muted">共 {page.total} 篇 · 排序基于 {date_label} 的评分。'
                 "可随时刷新排序。</p>"
             )
+            # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
+            ids = [item.paper_id for item in page.items]
+            papers = PaperRepository(session).get_many(ids)
+            enrichments = EnrichmentRepository(session).get_many(ids)
             body += "".join(
-                _card(session, item, is_new=item.paper_id in added, taxonomy=taxonomy)
+                _card(
+                    session,
+                    item,
+                    is_new=item.paper_id in added,
+                    taxonomy=taxonomy,
+                    paper=papers.get(item.paper_id),
+                    enrichment=enrichments.get(item.paper_id),
+                )
                 for item in page.items
             )
         else:
@@ -611,7 +634,20 @@ def historical_digest(day: date, session: SessionDep) -> HTMLResponse:
         )
     body = f"<p>历史日报 · {day} · 只读保留</p>"
     taxonomy = TaxonomyRepository(session).latest_confirmed()
-    body += "".join(_card(session, item, readonly=True, taxonomy=taxonomy) for item in digest.items)
+    ids = [item.paper_id for item in digest.items]
+    papers = PaperRepository(session).get_many(ids)
+    enrichments = EnrichmentRepository(session).get_many(ids)
+    body += "".join(
+        _card(
+            session,
+            item,
+            readonly=True,
+            taxonomy=taxonomy,
+            paper=papers.get(item.paper_id),
+            enrichment=enrichments.get(item.paper_id),
+        )
+        for item in digest.items
+    )
     return _page("历史日报", body)
 
 

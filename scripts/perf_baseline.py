@@ -139,6 +139,7 @@ def _now() -> Any:
 def bench_sync_dry_run(engine: Engine, screened: int = 5) -> dict[str, Any]:
     """fake LLM 下一次 ui.sync 全流程的墙钟与 SQL（挖掘管线固定开销）。"""
     import papersteward.jobs.ui_flow as ui_flow
+    from papersteward.config import get_settings
     from papersteward.core.entities import Paper, utc_now
     from papersteward.core.enums import PaperStatus
     from papersteward.storage import create_session_factory, session_scope
@@ -157,7 +158,7 @@ def bench_sync_dry_run(engine: Engine, screened: int = 5) -> dict[str, Any]:
                 model="test-model",
                 consent=True,
             ),
-            ui_flow.get_settings(),
+            get_settings(),
         )
         for index in range(screened):
             paper_id = f"dry-{index:03d}"
@@ -177,7 +178,7 @@ def bench_sync_dry_run(engine: Engine, screened: int = 5) -> dict[str, Any]:
     original_collect = ui_flow.UIFlowManager.collect
     payloads = {**PROCESS_FIXTURES, "relevance": relevance_payload(4)}
     ui_flow.build_llm_provider = lambda config: RoutingFakeLLM(payloads)
-    manager = ui_flow.UIFlowManager(factory, ui_flow.get_settings())
+    manager = ui_flow.UIFlowManager(factory, get_settings())
     manager._plan = canned_plan()  # type: ignore[method-assign]
     manager.collect = lambda request, plan: None  # type: ignore[method-assign]
     try:

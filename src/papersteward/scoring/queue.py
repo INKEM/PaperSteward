@@ -11,7 +11,15 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session, load_only
 
-from papersteward.core.entities import Paper, ScoreSnapshot, StaticScoreSnapshot
+from papersteward.core.entities import (
+    Bucket,
+    Paper,
+    PaperBucket,
+    PaperTag,
+    ScoreSnapshot,
+    StaticScoreSnapshot,
+    Summary,
+)
 from papersteward.core.enums import (
     BucketRole,
     BucketType,
@@ -90,8 +98,62 @@ def _context(
     }
 
 
-def _eligibility(
-    session: Session,
+class _EligibilityPreload:
+    """资格判定所需关联数据的批量快照；单篇与批量读取共用同一判定核心。
+
+    ``score_history`` 仅在需要逐快照回溯的读取路径（read_queue/read_backlog、
+    单篇 explain）加载；create_snapshots 的判定不需要它。
+    """
+
+    def __init__(
+        self,
+        *,
+        paper_buckets: dict[str, list[PaperBucket]],
+        buckets: dict[str, Bucket],
+        paper_tags: dict[str, list[PaperTag]],
+        summaries: dict[str, Summary],
+        static_history: dict[str, list[StaticScoreSnapshot]],
+        score_history: dict[str, list[ScoreSnapshot]] | None,
+    ) -> None:
+        self.paper_buckets = paper_buckets
+        self.buckets = buckets
+        self.paper_tags = paper_tags
+        self.summaries = summaries
+        self.static_history = static_history
+        self.score_history = score_history
+
+    def day_snapshot(self, paper_id: str, day: date) -> ScoreSnapshot | None:
+        history = self.score_history or {}
+        return next((s for s in history.get(paper_id, []) if s.score_date == day), None)
+
+
+def _preload_eligibility(
+    session: Session, paper_ids: Sequence[str], *, include_score_history: bool = False
+) -> _EligibilityPreload:
+    """一次取齐资格判定所需的六类关联数据，替代逐篇 5–6 条查询。
+
+    批量查询的每篇内部排序与各仓储 list_for_paper/history 完全一致，
+    判定结果与逐篇查询等价。
+    """
+    ids = list(paper_ids)
+    paper_buckets = PaperBucketRepository(session).list_for_papers(ids)
+    bucket_ids = {rel.bucket_id for rels in paper_buckets.values() for rel in rels}
+    return _EligibilityPreload(
+        paper_buckets=paper_buckets,
+        buckets=BucketRepository(session).get_many(bucket_ids),
+        paper_tags=PaperTagRepository(session).list_for_papers(ids),
+        summaries=SummaryRepository(session).get_many(ids),
+        static_history=StaticScoreSnapshotRepository(session).history_for_papers(ids),
+        score_history=(
+            ScoreSnapshotRepository(session).history_for_papers(ids)
+            if include_score_history
+            else None
+        ),
+    )
+
+
+def _eligibility_core(
+    pre: _EligibilityPreload,
     paper: Paper,
     ctx: dict[str, Any],
     day: date,
@@ -99,29 +161,24 @@ def _eligibility(
     eligible: Set[PaperStatus] = ELIGIBLE,
 ) -> tuple[list[str], str | None, StaticScoreSnapshot | None]:
     reasons: list[str] = []
-    buckets = PaperBucketRepository(session).list_for_paper(paper.id)
-    filing = [b for b in buckets if b.role is BucketRole.FILING]
-    bucket = BucketRepository(session).get(filing[0].bucket_id) if len(filing) == 1 else None
+    filing = [b for b in pre.paper_buckets.get(paper.id, []) if b.role is BucketRole.FILING]
+    bucket = pre.buckets.get(filing[0].bucket_id) if len(filing) == 1 else None
     if bucket is not None and bucket.bucket_type is not BucketType.TOPIC:
         return ["special_bucket"], None, None
     if paper.status not in eligible:
         reasons.append("ineligible_status:" + paper.status.value)
-    assigned = PaperTagRepository(session).list_for_paper(paper.id)
+    assigned = pre.paper_tags.get(paper.id, [])
     primary = [t.tag_code for t in assigned if t.role is TagRole.PRIMARY]
     tag = primary[0] if len(primary) == 1 else None
     if tag not in ctx["shares"] or bucket is None or not bucket.active or bucket.tag_code != tag:
         reasons.append("invalid_classification_or_filing")
     if any(t.taxonomy_version != ctx["binding"]["taxonomy_version"] for t in assigned):
         reasons.append("classification_version_mismatch")
-    summary = SummaryRepository(session).get(paper.id)
+    summary = pre.summaries.get(paper.id)
     if summary is None or not summary.summary_100.strip():
         reasons.append("summary_unavailable")
     static = next(
-        (
-            s
-            for s in reversed(StaticScoreSnapshotRepository(session).history(paper.id))
-            if s.score_date <= day
-        ),
+        (s for s in reversed(pre.static_history.get(paper.id, [])) if s.score_date <= day),
         None,
     )
     if static is None:
@@ -137,19 +194,24 @@ def _eligibility(
         if static.relevance < max(55, ctx["config"].gates.min_relevance_for_push):
             # 保底填充的快照带 quota_fill 标记：仅豁免门槛这一项，其余理由照旧。
             # 当日快照尚不存在时（create_snapshots 首次评估）保持淘汰，交由填充逻辑。
-            day_snapshot = next(
-                (
-                    s
-                    for s in ScoreSnapshotRepository(session).history(paper.id)
-                    if s.score_date == day
-                ),
-                None,
-            )
+            day_snapshot = pre.day_snapshot(paper.id, day)
             if day_snapshot is None or "quota_fill" not in day_snapshot.breakdown_json.get(
                 "reasons", []
             ):
                 reasons.append("below_relevance_gate")
     return reasons, tag, static
+
+
+def _eligibility(
+    session: Session,
+    paper: Paper,
+    ctx: dict[str, Any],
+    day: date,
+    *,
+    eligible: Set[PaperStatus] = ELIGIBLE,
+) -> tuple[list[str], str | None, StaticScoreSnapshot | None]:
+    pre = _preload_eligibility(session, [paper.id], include_score_history=True)
+    return _eligibility_core(pre, paper, ctx, day, eligible=eligible)
 
 
 def _history(
@@ -166,28 +228,46 @@ def _history(
     ):
         if event.paper_id and as_utc(event.created_at).astimezone(timezone).date() <= day:
             done[event.paper_id] = event
+    if not done:
+        return [], []
+    # 已读论文的关联数据批量取齐（E-03）：论文/评分/标签/归档投影各一条 IN 查询，
+    # 替代逐篇 4 条查询；逐篇内部排序与原实现一致。
+    papers = PaperRepository(session).get_many(done)
+    ratings_by_paper: dict[str, list[RatingRow]] = {}
+    for row in session.scalars(
+        select(RatingRow)
+        .options(
+            load_only(
+                RatingRow.paper_id,
+                RatingRow.created_at,
+                RatingRow.score,
+                RatingRow.tags_at_read_json,
+            )
+        )
+        .where(RatingRow.paper_id.in_(done))
+        .order_by(RatingRow.paper_id, RatingRow.created_at)
+    ):
+        ratings_by_paper.setdefault(row.paper_id, []).append(row)
+    tags_by_paper = PaperTagRepository(session).list_for_papers(done)
+    archived = {
+        row.paper_id: row
+        for row in session.execute(
+            select(
+                ArchiveSnapshotRow.paper_id,
+                ArchiveSnapshotRow.primary_tag,
+                ArchiveSnapshotRow.secondary_tags_json,
+                ArchiveSnapshotRow.content_json["metadata"].label("metadata_at_read"),
+            ).where(ArchiveSnapshotRow.paper_id.in_(done))
+        ).all()
+    }
     completions = []
     feedback = []
     for paper_id, event in done.items():
-        paper = PaperRepository(session).get(paper_id)
+        paper = papers.get(paper_id)
         if paper is None or paper.status not in {PaperStatus.DONE, PaperStatus.ARCHIVED}:
             continue
         completed_on = as_utc(event.created_at).astimezone(timezone).date()
-        rows = list(
-            session.scalars(
-                select(RatingRow)
-                .options(
-                    load_only(
-                        RatingRow.paper_id,
-                        RatingRow.created_at,
-                        RatingRow.score,
-                        RatingRow.tags_at_read_json,
-                    )
-                )
-                .where(RatingRow.paper_id == paper_id)
-                .order_by(RatingRow.created_at)
-            )
-        )
+        rows = ratings_by_paper.get(paper_id, [])
         # 截止前最后一条修订；未来修订不改变已经冻结的一周。
         rating = next(
             (
@@ -197,22 +277,19 @@ def _history(
             ),
             None,
         )
-        tags = PaperTagRepository(session).list_for_paper(paper_id)
+        tags = tags_by_paper.get(paper_id, [])
         primary = next((t.tag_code for t in tags if t.role is TagRole.PRIMARY), None)
         # 只投影阅读时元数据与标签，绝不加载归档正文中的备注或Rating.note。
-        archived = session.execute(
-            select(
-                ArchiveSnapshotRow.primary_tag,
-                ArchiveSnapshotRow.secondary_tags_json,
-                ArchiveSnapshotRow.content_json["metadata"].label("metadata_at_read"),
-            ).where(ArchiveSnapshotRow.paper_id == paper_id)
-        ).one_or_none()
-        metadata = {} if archived is None else (archived.metadata_at_read or {})
-        if archived is not None:
-            primary = archived.primary_tag
+        archived_row = archived.get(paper_id)
+        metadata = {} if archived_row is None else (archived_row.metadata_at_read or {})
+        if archived_row is not None:
+            primary = archived_row.primary_tag
         saved_tags = tuple(rating.tags_at_read_json) if rating is not None else ()
-        if not saved_tags and archived is not None:
-            saved_tags = (archived.primary_tag, *(archived.secondary_tags_json or []))
+        if not saved_tags and archived_row is not None:
+            saved_tags = (
+                archived_row.primary_tag,
+                *(archived_row.secondary_tags_json or []),
+            )
         primary = next((t for t in saved_tags if t in ctx["shares"]), primary)
         if primary is not None and primary in ctx["shares"]:
             completions.append(Completion(primary, completed_on))
@@ -406,8 +483,10 @@ def create_snapshots(
         candidates = []
         excluded = []
         below_gate: list[tuple[float, Paper, str, StaticScoreSnapshot]] = []
-        for paper in PaperRepository(session).list():
-            reasons, tag, static = _eligibility(session, paper, ctx, day, eligible=eligible)
+        all_papers = PaperRepository(session).list()
+        pre = _preload_eligibility(session, [paper.id for paper in all_papers])
+        for paper in all_papers:
+            reasons, tag, static = _eligibility_core(pre, paper, ctx, day, eligible=eligible)
             if reasons:
                 excluded.append(Exclusion(paper_id=paper.id, reasons=reasons))
                 if reasons == ["below_relevance_gate"] and tag is not None and static is not None:
@@ -481,9 +560,16 @@ def create_snapshots(
         )
 
 
-def _item(session: Session, paper: Paper, snapshot: ScoreSnapshot) -> QueueItem:
+def _item(
+    session: Session,
+    paper: Paper,
+    snapshot: ScoreSnapshot,
+    *,
+    summary: Summary | None = None,
+) -> QueueItem:
     explanation = ScoreExplanation.model_validate(snapshot.breakdown_json)
-    summary = SummaryRepository(session).get(paper.id)
+    if summary is None:
+        summary = SummaryRepository(session).get(paper.id)
     assert summary is not None and snapshot.priority is not None
     return QueueItem(
         paper_id=paper.id,
@@ -506,14 +592,16 @@ def read_queue(
         raise InvariantViolation("pagination", "limit须为1–200，offset非负")
     ctx = _context(session, now, day=day)
     items = []
-    for paper in PaperRepository(session).list():
-        reasons, tag, static = _eligibility(session, paper, ctx, day)
+    # 状态过滤与资格判定数据都批量取齐（E-01）：查询量从 O(论文×7) 降为常数批查询。
+    candidates = [paper for paper in PaperRepository(session).list() if paper.status in ELIGIBLE]
+    pre = _preload_eligibility(
+        session, [paper.id for paper in candidates], include_score_history=True
+    )
+    for paper in candidates:
+        reasons, tag, static = _eligibility_core(pre, paper, ctx, day)
         if reasons:
             continue
-        snapshot = next(
-            (s for s in ScoreSnapshotRepository(session).history(paper.id) if s.score_date == day),
-            None,
-        )
+        snapshot = pre.day_snapshot(paper.id, day)
         if (
             snapshot is not None
             and snapshot.priority is not None
@@ -522,7 +610,7 @@ def read_queue(
             and snapshot.breakdown_json.get("static_input_hash") == static.input_hash
             and snapshot.breakdown_json.get("primary_tag") == tag
         ):
-            items.append(_item(session, paper, snapshot))
+            items.append(_item(session, paper, snapshot, summary=pre.summaries.get(paper.id)))
     items.sort(
         key=lambda item: rank_key(
             rank_score=item.rank_score,
@@ -564,6 +652,51 @@ def explain_score(
     return ScoreExplanation.model_validate(snapshot.breakdown_json)
 
 
+def _backlog_candidates(
+    session: Session, *, now: datetime, allowed: Set[PaperStatus]
+) -> list[tuple[QueueItem, PaperStatus]]:
+    """长期队列候选：按状态过滤后逐篇取最新可用快照，未应用标签/分数筛选。
+
+    状态过滤下推 SQL、快照与资格数据批量取齐（E-01）；逐篇内部逻辑与
+    原逐篇查询实现等价：从新到旧找第一个可用快照，一旦判定即止。
+    """
+    ctx = _context(session, now)
+    today = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
+    papers = PaperRepository(session).list_statuses(allowed)
+    pre = _preload_eligibility(session, [paper.id for paper in papers], include_score_history=True)
+    assert pre.score_history is not None  # include_score_history=True
+    contexts = {today: ctx}
+    candidates: list[tuple[QueueItem, PaperStatus]] = []
+    for paper in papers:
+        for snapshot in reversed(pre.score_history.get(paper.id, [])):
+            if (
+                snapshot.score_date > today
+                or snapshot.priority is None
+                or "scores" not in snapshot.breakdown_json
+            ):
+                continue
+            if snapshot.score_date not in contexts:
+                contexts[snapshot.score_date] = _context(session, now, day=snapshot.score_date)
+            reasons, tag, static = _eligibility_core(
+                pre, paper, contexts[snapshot.score_date], snapshot.score_date, eligible=allowed
+            )
+            if reasons or static is None:
+                continue
+            if (
+                snapshot.breakdown_json.get("static_input_hash") != static.input_hash
+                or snapshot.breakdown_json.get("primary_tag") != tag
+            ):
+                continue
+            candidates.append(
+                (
+                    _item(session, paper, snapshot, summary=pre.summaries.get(paper.id)),
+                    paper.status,
+                )
+            )
+            break
+    return candidates
+
+
 def read_backlog(
     session: Session,
     *,
@@ -576,8 +709,6 @@ def read_backlog(
     if not 1 <= limit <= 200 or offset < 0:
         raise InvariantViolation("pagination", "limit须为1–200，offset非负")
     filters = filters or BacklogFilters()
-    ctx = _context(session, now)
-    today = now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
     allowed = (
         BACKLOG_STATUSES
         if filters.read_status == "unread"
@@ -585,36 +716,12 @@ def read_backlog(
         if filters.read_status == "read"
         else BACKLOG_STATUSES | READ_STATUSES
     )
-    candidates: list[tuple[QueueItem, PaperStatus]] = []
-    contexts = {today: ctx}
-    for paper in PaperRepository(session).list():
-        if paper.status not in allowed:
-            continue
-        for snapshot in reversed(ScoreSnapshotRepository(session).history(paper.id)):
-            if (
-                snapshot.score_date > today
-                or snapshot.priority is None
-                or "scores" not in snapshot.breakdown_json
-            ):
-                continue
-            if snapshot.score_date not in contexts:
-                contexts[snapshot.score_date] = _context(session, now, day=snapshot.score_date)
-            reasons, tag, static = _eligibility(
-                session, paper, contexts[snapshot.score_date], snapshot.score_date, eligible=allowed
-            )
-            if reasons or static is None:
-                continue
-            if (
-                snapshot.breakdown_json.get("static_input_hash") != static.input_hash
-                or snapshot.breakdown_json.get("primary_tag") != tag
-            ):
-                continue
-            item = _item(session, paper, snapshot)
-            if (
-                filters.tag is None or item.primary_tag == filters.tag
-            ) and filters.min_priority <= item.priority <= filters.max_priority:
-                candidates.append((item, paper.status))
-            break
+    candidates = [
+        (item, status)
+        for item, status in _backlog_candidates(session, now=now, allowed=allowed)
+        if (filters.tag is None or item.primary_tag == filters.tag)
+        and filters.min_priority <= item.priority <= filters.max_priority
+    ]
     candidates.sort(
         key=lambda pair: rank_key(
             rank_score=pair[0].rank_score,
@@ -661,14 +768,11 @@ def refresh_queue(
             min_queue_yield=min_queue_yield,
             relevance_floor=relevance_floor,
         )
-        after: set[str] = set()
-        offset = 0
-        while True:
-            page = read_backlog(session, now=now, limit=200, offset=offset)
-            after.update(item.paper_id for item in page.items)
-            offset += len(page.items)
-            if offset >= page.total:
-                break
+        # E-02：一次物化候选集取全部队列 ID，替代按页循环反复全量扫描（二次方）。
+        after = {
+            item.paper_id
+            for item, _status in _backlog_candidates(session, now=now, allowed=BACKLOG_STATUSES)
+        }
         return RefreshResponse(
             **report.model_dump(), queue_total=len(after), added_ids=sorted(after - before)
         )

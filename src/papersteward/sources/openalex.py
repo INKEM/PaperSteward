@@ -97,6 +97,9 @@ class OpenAlexAdapter:
             raise ValueError("identity_max_pages 必须在1–10之间")
         self.http, self.now, self.page_size = http, now, page_size
         self.identity_max_pages = identity_max_pages
+        # 名称→ID 解析缓存（E-09）：同一名称跨检索式/跨轮次复用，省重复分页请求；
+        # None 表示"已证明无唯一匹配"，同样值得缓存。缓存随适配器（即一次运行）存活。
+        self._identity_cache: dict[tuple[str, str, str], str | None] = {}
 
     def _json(self, endpoint: str, params: dict[str, str | int]) -> dict[str, Any]:
         try:
@@ -109,6 +112,12 @@ class OpenAlexAdapter:
 
     def _identity_id(self, endpoint: str, prefix: str, name: str) -> str | None:
         """完整分页核对精确名称；无法证明唯一时保守拒绝而不是猜人/机构。"""
+        key = (endpoint, prefix, name)
+        if key in self._identity_cache:
+            cached = self._identity_cache[key]
+            if cached is None:
+                return None
+            return cached
         matches: set[str] = set()
         scanned = 0
         total: int | None = None
@@ -135,8 +144,11 @@ class OpenAlexAdapter:
                 break
         if total is not None and scanned >= total:
             if len(matches) == 1:
-                return next(iter(matches))
+                resolved = next(iter(matches))
+                self._identity_cache[key] = resolved
+                return resolved
             if not matches:
+                self._identity_cache[key] = None
                 return None
         raise SourceError(self.source, "unsupported_query")
 

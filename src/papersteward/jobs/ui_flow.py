@@ -6,6 +6,8 @@ import hashlib
 import logging
 import time
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from datetime import date
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Literal
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from papersteward.cli.ingestion import _adapters
 from papersteward.cli.processing import _processor_context
 from papersteward.config import Settings
-from papersteward.core.entities import Run, utc_now
+from papersteward.core.entities import Bucket, ResearchProfile, Run, Taxonomy, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, ConflictError, InvalidRequestError, NotFoundError
@@ -38,14 +40,23 @@ from papersteward.pipeline.process import (
     persist_triage,
     reconcile_legacy_reviews,
 )
-from papersteward.pipeline.relevance import RelevanceResult, evaluate_relevance
+from papersteward.pipeline.relevance import (
+    RelevanceResult,
+    evaluate_relevance,
+    extract_profile_facets,
+)
+from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.queue import refresh_queue
 from papersteward.scoring.service import read_scoring_config
 from papersteward.sources.http import SourceHTTP
 from papersteward.sources.planner import QueryPlan, plan_queries
 from papersteward.storage import session_scope
 from papersteward.storage.models import PaperRow, RunRow
-from papersteward.storage.repositories import PaperRepository, RunRepository
+from papersteward.storage.repositories import (
+    PaperAnalysisRepository,
+    PaperRepository,
+    RunRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +68,25 @@ ENRICH_WAVE_FACTOR = 2
 # 进度节流：每篇论文的进度写与停止检查不必每次都落库/查库；阶段切换与最后一篇强制。
 PROGRESS_MIN_INTERVAL_S = 0.5
 STOP_CHECK_MIN_INTERVAL_S = 0.3
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    """一次 sync 的只读处理上下文（E-05）：运行开始加载一次，全程复用。
+
+    运行内这些依据本就不可变（档案激活后只能重新生成；评分治理变更在下一次
+    运行生效；主题桶首波落库后映射不变），冻结到运行开始时刻让整批论文用同一
+    依据，也省去逐篇重读 profile/分类法/评分配置（约 8 条查询/篇）。跨午夜的
+    评分日期统一取运行开始的本地日。
+    """
+
+    profile: ResearchProfile
+    taxonomy: Taxonomy
+    scoring: ScoringConfig
+    buckets: dict[str, Bucket]
+    day: date
+    embedding_provider: HashingEmbeddingProvider
+    facet_vectors: tuple[tuple[float, ...], ...]
 
 
 class FlowRequest(BaseModel):
@@ -471,28 +501,59 @@ class UIFlowManager:
         self._update(request.run_id, query_plan=plan.as_json())
         return plan
 
-    def _triage_one(self, gateway: LLMGateway, paper_id: str) -> RelevanceResult:
-        """单篇初筛：只读上下文 → 模型评估 → BEGIN IMMEDIATE 短写事务落分析。
+    def _run_context(self) -> _RunContext:
+        """加载一次只读处理上下文并预计算 profile 片段向量（E-05/E-07）。"""
+        with session_scope(self.factory) as session:
+            profile, taxonomy, scoring, buckets, day = _processor_context(
+                session, utc_now(), ensure_buckets=False
+            )
+        provider = HashingEmbeddingProvider()
+        facets = extract_profile_facets(profile)
+        facet_vectors = provider.embed([facet.text for facet in facets])
+        return _RunContext(
+            profile=profile,
+            taxonomy=taxonomy,
+            scoring=scoring,
+            buckets=dict(buckets),
+            day=day,
+            embedding_provider=provider,
+            facet_vectors=facet_vectors,
+        )
+
+    def _triage_one(self, gateway: LLMGateway, paper_id: str, ctx: _RunContext) -> RelevanceResult:
+        """单篇初筛：读论文 → 模型评估（上下文与片段向量来自运行快照）→ 短写落分析。
 
         读阶段完全不写库（不建主题桶），模型计算在事务外；写阶段从第一句就
         持有 SQLite 写锁，避免读-写升级撞 BUSY_SNAPSHOT。
         """
         with session_scope(self.factory) as session:
-            profile, *_rest = _processor_context(session, utc_now(), ensure_buckets=False)
             paper = PaperRepository(session).get(paper_id)
             assert paper is not None
-        relevance = evaluate_relevance(profile, paper, gateway, HashingEmbeddingProvider())
+        relevance = evaluate_relevance(
+            ctx.profile,
+            paper,
+            gateway,
+            ctx.embedding_provider,
+            facet_vectors=ctx.facet_vectors,
+        )
         with session_scope(self.factory, immediate=True) as session:
-            persist_triage(session, paper.id, profile, relevance, now=utc_now())
+            persist_triage(session, paper.id, ctx.profile, relevance, now=utc_now())
         return relevance
 
     def _triage_candidates(
-        self, request: FlowRequest, gateway: LLMGateway, cap: int, workers: int
+        self,
+        request: FlowRequest,
+        gateway: LLMGateway,
+        cap: int,
+        workers: int,
+        ctx: _RunContext,
     ) -> tuple[list[RelevanceResult], int]:
         """对 screened 候选并行初筛；返回按 R 降序的结果与无摘要跳过数。
 
         初筛只做相关度评估（每篇一次模型调用）；注定入不了队的论文在此止步，
         省去摘要/分类/特殊桶三次调用。写库只发生在评估之后，缩短写锁持有。
+        扩查轮次会再次全量取 SCREENED：同一档案版本已初筛过的论文直接跳过
+        （E-06，结果不变——排名合并本就按 paper_id 去重），省去重复调用路径。
         """
         with session_scope(self.factory) as session:
             reconciled = reconcile_legacy_reviews(session, now=utc_now())
@@ -501,11 +562,28 @@ class UIFlowManager:
                 .where(PaperRow.status == PaperStatus.SCREENED.value)
                 .order_by(PaperRow.published_at.desc().nullslast(), PaperRow.first_seen_at)
             ).all()
+            analyzed = PaperAnalysisRepository(session).get_many([row[0] for row in rows])
         with_abstract = [
             (paper_id, title) for paper_id, title, abstract in rows if abstract and abstract.strip()
         ]
         skipped = len(rows) - len(with_abstract)
-        selected = with_abstract[:cap]
+
+        def _already_triaged(paper_id: str) -> bool:
+            analysis = analyzed.get(paper_id)
+            if analysis is None:
+                return False
+            payload = analysis.payload_json.get("relevance")
+            return (
+                isinstance(payload, dict)
+                and payload.get("profile_id") == ctx.profile.id
+                and payload.get("profile_version") == ctx.profile.version
+            )
+
+        selected = [
+            (paper_id, title)
+            for paper_id, title in with_abstract[:cap]
+            if not _already_triaged(paper_id)
+        ]
         if selected:
             self._update(
                 request.run_id,
@@ -526,7 +604,7 @@ class UIFlowManager:
                 max_workers=min(workers, len(selected)), thread_name_prefix="ps-triage"
             ) as pool:
                 futures = {
-                    pool.submit(self._triage_one, gateway, paper_id): (paper_id, title)
+                    pool.submit(self._triage_one, gateway, paper_id, ctx): (paper_id, title)
                     for paper_id, title in selected
                 }
                 pending = set(futures)
@@ -561,32 +639,37 @@ class UIFlowManager:
         return results, skipped
 
     def _enrich_one(
-        self, gateway: LLMGateway, paper_id: str, relevance: RelevanceResult
+        self,
+        gateway: LLMGateway,
+        paper_id: str,
+        relevance: RelevanceResult,
+        ctx: _RunContext,
     ) -> ProcessOutcome:
-        """单篇深处理：只读上下文 → 三次模型计算 → BEGIN IMMEDIATE 短写事务落库。"""
+        """单篇深处理：读论文 → 三次模型计算（上下文来自运行快照）→ 短写事务落库。"""
         with session_scope(self.factory) as session:
-            profile, taxonomy, scoring, buckets, day = _processor_context(
-                session, utc_now(), ensure_buckets=False
-            )
             paper = PaperRepository(session).get(paper_id)
             assert paper is not None
         plan = compute_enrichment(
-            paper, profile=profile, taxonomy=taxonomy, topic_buckets=buckets, gateway=gateway
+            paper,
+            profile=ctx.profile,
+            taxonomy=ctx.taxonomy,
+            topic_buckets=ctx.buckets,
+            gateway=gateway,
         )
         with session_scope(self.factory, immediate=True) as session:
-            ensure_topic_buckets(session, taxonomy)
+            ensure_topic_buckets(session, ctx.taxonomy)
             paper = PaperRepository(session).get(paper_id)
             assert paper is not None
             return persist_enrichment_results(
                 session,
                 paper,
                 plan=plan,
-                profile=profile,
-                taxonomy=taxonomy,
-                config=scoring,
+                profile=ctx.profile,
+                taxonomy=ctx.taxonomy,
+                config=ctx.scoring,
                 relevance=relevance,
                 now=utc_now(),
-                score_date=day,
+                score_date=ctx.day,
             )
 
     def _enrich_wave(
@@ -595,6 +678,7 @@ class UIFlowManager:
         gateway: LLMGateway,
         batch: list[RelevanceResult],
         workers: int,
+        ctx: _RunContext,
     ) -> tuple[int, int, dict[str, list[str]]]:
         """对初筛入选的一批论文并行深处理；返回 (auto_shelved, skipped_no_summary, flags)。"""
         self._update(
@@ -614,7 +698,7 @@ class UIFlowManager:
             max_workers=min(workers, len(batch)), thread_name_prefix="ps-enrich"
         ) as pool:
             futures = {
-                pool.submit(self._enrich_one, gateway, item.paper_id, item): item.paper_id
+                pool.submit(self._enrich_one, gateway, item.paper_id, item, ctx): item.paper_id
                 for item in batch
             }
             pending = set(futures)
@@ -689,6 +773,7 @@ class UIFlowManager:
         """
         gateway, provider, llm_config = self._build_gateway()
         try:
+            ctx = self._run_context()
             configured_target, floor = self._target_and_floor()
             target = request.target or configured_target or 5
             if target <= 0:
@@ -724,7 +809,7 @@ class UIFlowManager:
                 self.collect(request, plan)
                 self._update(request.run_id, stage="processing", completed=["collecting"])
                 new_results, skipped = self._triage_candidates(
-                    request, gateway, triage_cap, workers
+                    request, gateway, triage_cap, workers, ctx
                 )
                 skipped_no_abstract_total += skipped
                 seen = {item.paper_id for item in ranked}
@@ -736,7 +821,7 @@ class UIFlowManager:
                     wave = ranked[:wave_size]
                     del ranked[:wave_size]
                     auto_shelved, skipped_no_summary, flags = self._enrich_wave(
-                        request, gateway, wave, workers
+                        request, gateway, wave, workers, ctx
                     )
                     totals["enriched"] += len(wave)
                     totals["auto_shelved"] += auto_shelved
