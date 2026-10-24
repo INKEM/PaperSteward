@@ -197,7 +197,10 @@ def _paper_links(
         ("代码", enrichment.signals.code_url if enrichment else None),
     ):
         if url := safe_url(raw):
-            body += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
+            body += (
+                f'<a class="source" target="_blank" rel="noreferrer" '
+                f'href="{escape(url)}">{label}</a> '
+            )
     return body + "</p>"
 
 
@@ -310,7 +313,10 @@ def _card(
         ("代码", enrichment.signals.code_url if enrichment else None),
     ):
         if url := safe_url(raw):
-            meta.append(f'<a class="source" rel="noreferrer" href="{escape(url)}">{label_text}</a>')
+            meta.append(
+                f'<a class="source" target="_blank" rel="noreferrer" '
+                f'href="{escape(url)}">{label_text}</a>'
+            )
     meta.append(f"<span>评分于 {item.score_date}</span>")
     body += f'<p class="card-meta">{" · ".join(meta)}</p>'
     body += f'<blockquote class="card-summary">{escape(item.summary_100)}</blockquote>'
@@ -367,7 +373,10 @@ def _shelf_inner(item: ShelfItem) -> str:
     if meta:
         body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
     if url := safe_url(item.paper.url):
-        body += f'<p><a class="source" rel="noreferrer" href="{escape(url)}">原文</a></p>'
+        body += (
+            f'<p><a class="source" target="_blank" rel="noreferrer" '
+            f'href="{escape(url)}">原文</a></p>'
+        )
     if item.nomination is not None:
         body += f"<p>{escape(item.nomination.reason)}</p>"
     if item.needs_assessment:

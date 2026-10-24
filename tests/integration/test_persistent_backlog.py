@@ -244,6 +244,30 @@ def test_navigation_highlights_section_for_dynamic_titles(client, migrated_engin
     assert 'href="/ui/settings" aria-current="page">设置</a>' in reset.text
 
 
+def test_source_links_open_in_new_tab(client, migrated_engine):
+    """原文/PDF 外链在新标签页打开（target=_blank；rel=noreferrer 已防泄漏）。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "linked", r=90)
+        from papersteward.storage.models import PaperRow
+
+        row = session.get(PaperRow, "linked")
+        row.url = "https://example.com/abs/linked"
+        row.pdf_url = "https://example.com/pdf/linked"
+        refresh_queue(session, now=NOW)
+    detail = client.get("/ui/papers/linked").text
+    assert (
+        '<a class="source" target="_blank" rel="noreferrer" '
+        'href="https://example.com/abs/linked">原文</a>' in detail
+    )
+    assert (
+        '<a class="source" target="_blank" rel="noreferrer" '
+        'href="https://example.com/pdf/linked">PDF</a>' in detail
+    )
+    card = client.get("/ui/queue").text
+    assert 'target="_blank" rel="noreferrer" href="https://example.com/abs/linked">原文</a>' in card
+
+
 def test_detail_presents_summary_slots_and_source_material(client, migrated_engine):
     """UXR-08：详情页先帮助理解论文——四槽概括、模型标注、证据折叠、推荐依据后置。"""
     activate(client)
