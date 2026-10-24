@@ -346,6 +346,12 @@ def test_collection_failure_names_reason_and_links_ingest_report(client, monkeyp
     assert "来源采集" in report.text
     assert "来源失败明细" in report.text
     assert "来源限流（请求太频繁）（rate_limited）" in report.text
+    # UXR-15：队列页「上一次挖掘」失败行显示状态与原因摘要，而不是一串 0。
+    dashboard = client.get("/ui/queue").text
+    import re
+
+    assert re.search(r"上一次挖掘：<a href=\"/ui/runs/[^\"]+\">失败</a>——采集失败", dashboard)
+    assert "队列新增 0 篇" not in dashboard
 
 
 def test_restart_marks_unfinished_ui_runs_failed(client):
