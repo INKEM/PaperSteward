@@ -188,6 +188,36 @@ def test_queue_fragment_redirects_by_hx_header_before_activation(client):
     assert full.status_code == 303 and full.headers["location"] == "/ui/setup"
 
 
+def test_filtered_empty_offers_one_click_clear(client, migrated_engine, monkeypatch):
+    """UXR-19：筛选后空结果给「清除筛选」直接行动，链接为无参数干净地址。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        refresh_queue(session, now=NOW)
+    monkeypatch.setattr("papersteward.api.pages.utc_now", lambda: NOW + timedelta(days=3))
+    empty = client.get("/ui/queue", params={"search": "不存在的词"})
+    assert "没有论文符合当前筛选" in empty.text
+    assert '<a class="button secondary" href="/ui/queue">清除筛选，显示全部</a>' in empty.text
+    fragment = client.get(
+        "/ui/queue",
+        params={"search": "不存在的词", "fragment": "1"},
+        headers={**HEADERS, "HX-Request": "true"},
+    )
+    assert "清除筛选，显示全部" in fragment.text and 'id="queue-list"' in fragment.text
+    # 有结果时结果行也提供清除入口。
+    listed = client.get("/ui/queue", params={"search": "one"})
+    assert 'href="/ui/queue">清除筛选</a>' in listed.text
+
+
+def test_truly_empty_queue_hides_filter_form(client):
+    """UXR-19：真空队列不渲染成排筛选控件，保留挖掘引导。"""
+    activate(client)
+    page = client.get("/ui/queue")
+    assert "留一点时间，读重要的论文" in page.text
+    assert 'class="queue-filters"' not in page.text
+    assert "挖掘新论文" in page.text
+
+
 def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(
     client, migrated_engine, monkeypatch
 ):

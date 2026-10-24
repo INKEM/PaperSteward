@@ -527,8 +527,9 @@ def _backlog_page(
                 if active_filters
                 else f"共 {page.total} 篇"
             )
+            clear_link = ' · <a href="/ui/queue">清除筛选</a>' if active_filters else ""
             list_body += (
-                f'<p class="muted">{scope_note} · 排序基于 {date_label} 的评分。'
+                f'<p class="muted">{scope_note}{clear_link} · 排序基于 {date_label} 的评分。'
                 "可随时刷新排序。</p>"
             )
             # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
@@ -548,9 +549,12 @@ def _backlog_page(
             )
         else:
             if active_filters:
+                # UXR-19：空结果按原因给直接行动——一键清除，而不是只有文字提示。
                 list_body += (
                     '<article class="empty"><h2>没有论文符合当前筛选</h2>'
-                    "<p>可调整或清除上方筛选条件；也可以「挖掘新论文」补充新论文。</p></article>"
+                    "<p>可调整筛选条件，或清除后查看全部未读；也可以「挖掘新论文」补充。</p>"
+                    '<p><a class="button secondary" href="/ui/queue">清除筛选，显示全部</a></p>'
+                    "</article>"
                 )
             else:
                 list_body += (
@@ -586,33 +590,38 @@ def _backlog_page(
         )
         if "cancelled" in request.query_params:
             body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
-        body += (
-            '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
-            'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
-            '<input type="hidden" name="fragment" value="1">'
-            '<label>搜索<input name="search" value="'
-            + escape(search)
-            + '" placeholder="标题或摘要关键词"></label><label>研究标签'
-            '<select name="tag"><option value="">全部标签</option>'
-        )
-        for tag in taxonomy.tags if taxonomy else ():
-            if tag.level.value == "primary" and tag.active:
-                selected = " selected" if filters.tag == tag.code else ""
-                body += f'<option value="{escape(tag.code)}"{selected}>{escape(tag.name)}</option>'
-        body += '</select></label><label>阅读状态<select name="read_status">'
-        for value, label in (("unread", "未读"), ("read", "已读"), ("all", "全部")):
-            selected = " selected" if filters.read_status == value else ""
-            body += f'<option value="{value}"{selected}>{label}</option>'
-        body += "</select></label>"
-        for name, number, label in (
-            ("min_priority", filters.min_priority, "最低分"),
-            ("max_priority", filters.max_priority, "最高分"),
-        ):
-            body += (
-                f'<label>{label}<input type="number" name="{name}" value="{number:g}" '
-                'min="0" max="100" step="0.1"></label>'
+        # UXR-19：真的空队列不展示成排筛选控件，把注意力留给「挖掘新论文」。
+        if page.items or active_filters:
+            filter_form = (
+                '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
+                'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
+                '<input type="hidden" name="fragment" value="1">'
+                '<label>搜索<input name="search" value="'
+                + escape(search)
+                + '" placeholder="标题或摘要关键词"></label><label>研究标签'
+                '<select name="tag"><option value="">全部标签</option>'
             )
-        body += "<button>应用筛选</button></form>"
+            for tag in taxonomy.tags if taxonomy else ():
+                if tag.level.value == "primary" and tag.active:
+                    selected = " selected" if filters.tag == tag.code else ""
+                    filter_form += (
+                        f'<option value="{escape(tag.code)}"{selected}>{escape(tag.name)}</option>'
+                    )
+            filter_form += '</select></label><label>阅读状态<select name="read_status">'
+            for value, label in (("unread", "未读"), ("read", "已读"), ("all", "全部")):
+                selected = " selected" if filters.read_status == value else ""
+                filter_form += f'<option value="{value}"{selected}>{label}</option>'
+            filter_form += "</select></label>"
+            for name, number, label in (
+                ("min_priority", filters.min_priority, "最低分"),
+                ("max_priority", filters.max_priority, "最高分"),
+            ):
+                filter_form += (
+                    f'<label>{label}<input type="number" name="{name}" value="{number:g}" '
+                    'min="0" max="100" step="0.1"></label>'
+                )
+            filter_form += "<button>应用筛选</button></form>"
+            body += filter_form
         body += list_body
         return _page("阅读队列", body)
     except (DomainError, AppError) as exc:
