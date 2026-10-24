@@ -18,7 +18,7 @@ from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import fragment_error
 from papersteward.api.html import page as _page
 from papersteward.api.workflow_pages import dashboard, queue_stats_line
-from papersteward.core.entities import Enrichment, Paper, Taxonomy, ViewConfig, utc_now
+from papersteward.core.entities import Enrichment, Paper, Summary, Taxonomy, ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.delivery.contracts import Action, DigestCard
@@ -165,6 +165,8 @@ def _paper_links(
     body = f'<p class="muted">{escape(", ".join(paper.authors[:3]) or "作者未知")}'
     if paper.venue:
         body += " · " + escape(paper.venue)
+    if paper.published_at is not None:
+        body += f" · {paper.published_at.year}"
     body += "</p><p>"
     for label, raw in (
         ("原文", paper.url),
@@ -174,6 +176,60 @@ def _paper_links(
         if url := safe_url(raw):
             body += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
     return body + "</p>"
+
+
+def _model_summary_figure(one_line: str) -> str:
+    """一句话概括，标注「模型概括」（UXR-08：与论文原文区分）。"""
+    return (
+        '<figure class="model-summary"><blockquote>'
+        + escape(one_line)
+        + '</blockquote><figcaption class="muted">模型概括，请以原文为准</figcaption></figure>'
+    )
+
+
+def _summary_slots(summary: Summary | dict[str, Any] | None) -> str:
+    """内容概括四槽（UXR-08）：问题/方法/发现/局限；缺失如实显示「暂无」，不编造。"""
+
+    def value(key: str) -> str | None:
+        if summary is None:
+            return None
+        raw = summary.get(key) if isinstance(summary, dict) else getattr(summary, key, None)
+        if raw is None:
+            return None
+        return str(raw).strip() or None
+
+    rows = "".join(
+        f"<dt>{label}</dt><dd>{escape(value(key) or '暂无')}</dd>"
+        for key, label in (
+            ("what", "研究问题"),
+            ("how", "研究方法"),
+            ("finding", "主要发现"),
+            ("limitation", "局限"),
+        )
+    )
+    return f'<section class="summary-slots"><h2>内容概括</h2><dl>{rows}</dl></section>'
+
+
+def _source_material(summary: Summary | dict[str, Any] | None, paper: Paper | None) -> str:
+    """原始摘要与可核查证据；折叠呈现并标明「论文原文片段」（UXR-08）。"""
+    if isinstance(summary, dict):
+        evidence = summary.get("evidence") or ()
+    else:
+        evidence = summary.evidence if summary is not None else ()
+    body = ""
+    if paper is not None and paper.abstract:
+        body += (
+            '<details class="source-material"><summary>论文原始摘要</summary>'
+            f"<p>{escape(paper.abstract)}</p></details>"
+        )
+    quotes = "".join(f"<blockquote>{escape(str(quote))}</blockquote>" for quote in evidence)
+    if quotes:
+        body += (
+            '<details class="source-material"><summary>可核查证据（论文原文片段）</summary>'
+            + quotes
+            + "</details>"
+        )
+    return body
 
 
 def _card(
@@ -805,14 +861,9 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             summary_data = record.content.get("summary", {})
             body = '<p class="success">已完成归档</p>'
             body += _paper_links(session, paper_id)
-            body += (
-                "<blockquote>"
-                + escape(str(summary_data.get("summary_100", "历史概括不可用")))
-                + "</blockquote>"
-            )
-            score_data = record.content.get("score")
-            if isinstance(score_data, dict):
-                body += score_explanation(ScoreExplanation.model_validate(score_data))
+            body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
+            body += _summary_slots(summary_data)
+            body += _source_material(summary_data, paper)
             rating_label = record.score if record.score is not None else "未评分"
             body += (
                 f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · "
@@ -839,6 +890,15 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
                         + "</li>"
                     )
                 body += "</ul></details>"
+            score_data = record.content.get("score")
+            if isinstance(score_data, dict):
+                # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
+                body += (
+                    '<details class="score-details">'
+                    "<summary>推荐依据（六维评分与相关性依据）</summary>"
+                    + score_explanation(ScoreExplanation.model_validate(score_data))
+                    + "</details>"
+                )
             return _page(
                 str(record.content.get("metadata", {}).get("title", paper_id)),
                 "<article>" + body + "</article>",
@@ -854,8 +914,8 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             return _page(paper.title, body + "</article>")
         if paper.status is PaperStatus.REJECTED:
             summary = SummaryRepository(session).get(paper_id)
-            body = "<article><blockquote>"
-            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+            body = "<article>"
+            body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
             body += _paper_links(session, paper_id)
             body += (
                 '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
@@ -864,23 +924,47 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             body += _form(paper_id, "restore")
             return _page(paper.title, body + "</article>")
         _day(session)
-        score = explain_score(session, paper_id, now=utc_now())
-        summary = SummaryRepository(session).get(paper_id)
-        body = "<article><blockquote>"
-        body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
         from papersteward.api.score_render import score_explanation
 
+        score = explain_score(session, paper_id, now=utc_now())
+        summary = SummaryRepository(session).get(paper_id)
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        tag_code = score.primary_tag if isinstance(score, ScoreExplanation) else None
+        tag_label = (
+            next(
+                (tag.name for tag in taxonomy.tags if tag.code == tag_code),
+                tag_code,
+            )
+            if taxonomy and tag_code
+            else None
+        )
+        body = '<article><p class="detail-badges">'
+        if tag_label:
+            body += f'<span class="tag">{escape(str(tag_label))}</span> '
+        body += (
+            '<span class="tag status-tag">'
+            + escape(STATUS_LABELS.get(paper.status.value, paper.status.value))
+            + "</span></p>"
+        )
         body += _paper_links(session, paper_id)
-        body += score_explanation(score)
+        body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
+        body += _summary_slots(summary)
+        body += _source_material(summary, paper)
         if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
             body += (
-                "<details><summary>完成并记录阅读</summary>"
+                '<details class="record-reading"><summary>记录阅读（方式 / 评分 / 备注）</summary>'
                 + _form(paper_id, "done")
                 + "</details>"
             )
             body += (
                 "<details><summary>不感兴趣</summary>" + _form(paper_id, "reject") + "</details>"
             )
+        # UXR-08：推荐依据默认折叠——先理解论文，再解释机器评分。
+        body += (
+            '<details class="score-details"><summary>推荐依据（六维评分与相关性依据）</summary>'
+            + score_explanation(score)
+            + "</details>"
+        )
         return _page(paper.title, body + "</article>")
     except (DomainError, AppError) as exc:
         page = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')

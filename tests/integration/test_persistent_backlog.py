@@ -218,6 +218,42 @@ def test_truly_empty_queue_hides_filter_form(client):
     assert "挖掘新论文" in page.text
 
 
+def test_detail_presents_summary_slots_and_source_material(client, migrated_engine):
+    """UXR-08：详情页先帮助理解论文——四槽概括、模型标注、证据折叠、推荐依据后置。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        refresh_queue(session, now=NOW)
+    detail = client.get("/ui/papers/one").text
+    assert "模型概括，请以原文为准" in detail
+    assert "内容概括" in detail
+    for label, value in (
+        ("研究问题", "what"),
+        ("研究方法", "how"),
+        ("主要发现", "finding"),
+        ("局限", "limitation"),
+    ):
+        assert f"<dt>{label}</dt><dd>{value}</dd>" in detail
+    assert "可核查证据（论文原文片段）" in detail
+    assert "<blockquote>evidence</blockquote>" in detail
+    # 推荐依据仍在页面（默认折叠），阅读状态徽章可见
+    assert "推荐依据（六维评分与相关性依据）" in detail and "为什么推荐这篇" in detail
+    assert "队列中" in detail
+
+
+def test_detail_archived_branch_also_shows_summary_slots(client, migrated_engine):
+    """UXR-08：归档态详情同样呈现四槽内容概括。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        refresh_queue(session, now=NOW)
+        apply_action(session, "one", Action(kind="done", request_id="fin", mode="skim"), now=NOW)
+    detail = client.get("/ui/papers/one").text
+    assert "已完成归档" in detail and "内容概括" in detail
+    assert "<dt>研究问题</dt><dd>what</dd>" in detail
+    assert "我的阅读反馈" in detail
+
+
 def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(
     client, migrated_engine, monkeypatch
 ):

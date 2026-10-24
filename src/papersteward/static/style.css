@@ -671,6 +671,51 @@ tr:last-child td {
   color: var(--ink-muted);
 }
 
+/* ---------- 详情页内容区块（UXR-08：先理解论文，再解释评分） ---------- */
+
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 0 0 10px;
+}
+
+.model-summary figcaption {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.summary-slots h2 {
+  margin-bottom: 6px;
+}
+
+.summary-slots dl {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.summary-slots dt {
+  color: var(--ink-muted);
+  font-size: 13px;
+  padding-top: 2px;
+}
+
+.summary-slots dd {
+  margin: 0;
+}
+
+.source-material,
+.score-details {
+  margin: 12px 0;
+}
+
+.source-material p {
+  white-space: pre-line;
+}
+
 .paper-card {
   transition: border-color var(--speed) var(--ease);
   padding: 20px 24px;
@@ -1264,6 +1309,11 @@ tr:last-child td {
 
   .score-components {
     grid-template-columns: 1fr;
+  }
+
+  .summary-slots dl {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .today-metrics {
