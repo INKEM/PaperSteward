@@ -382,7 +382,7 @@ def test_running_task_blocks_new_submission_and_today_refreshes(client, monkeypa
         assert 'id="current-run"' in page
         assert 'hx-trigger="every 2s"' in page
         assert page.count("<button disabled>") == 2
-        assert "队列共" in page and "刷新排序" in page and "待审核" not in page
+        assert "未读" in page and "刷新排序" in page and "待审核" not in page
         with session_scope(manager.factory) as session:
             assert RunRepository(session).get("blocked") is None
             assert len(RunRepository(session).running_ui_runs()) == 1

@@ -26,7 +26,7 @@ from papersteward.scoring.service import read_scoring_config
 from papersteward.sources.contracts import describe_source_error, display_source_name
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.onboarding import get_onboarding
-from papersteward.storage.repositories import RunRepository
+from papersteward.storage.repositories import ProfileRepository, RunRepository
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 LABELS = {
@@ -359,9 +359,26 @@ def run_body(
     return body + "</section>"
 
 
-def dashboard(
-    session: SessionDep, settings: Settings, day: date, *, backlog_total: int = -1
-) -> str:
+def queue_stats_line(session: SessionDep, unread_total: int, *, oob: bool = False) -> str:
+    """队列顶部统计（UXR-05）：未读总数与阅读建议，口径不随筛选/已读查询变化。
+
+    oob=True 时附带 htmx 带外更新属性，供完成/拒绝/恢复动作响应同步计数。
+    """
+    capacity = 5
+    with suppress(IndexError, TypeError, ValueError, KeyError):
+        profile = ProfileRepository(session).latest_confirmed()
+        if profile is not None:
+            capacity = int(profile.parsed_json["reading"]["weekly_capacity"])
+    suggested = min(unread_total, max(1, (capacity + 6) // 7))
+    oob_attr = ' hx-swap-oob="true"' if oob else ""
+    return (
+        f'<p id="queue-stats" class="queue-stats"{oob_attr}>'
+        f"未读 <strong>{unread_total}</strong> 篇 · 按你的容量，今天建议先看 "
+        f"<strong>{suggested}</strong> 篇。全部论文会一直保留，随时可读。</p>"
+    )
+
+
+def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_total: int = -1) -> str:
     profile, _ = bound_context(
         session, utc_now(), action="ui.dashboard", enforce_schedule=False, day=day
     )
@@ -369,22 +386,17 @@ def dashboard(
     running = repository.running_ui_runs()
     busy = bool(running)
     body = run_body(running[0], card=True) if busy else ""
-    if backlog_total < 0:
-        # 调用方未提供时自行读取；队列页已算出总数，传入可省一次全量扫描。
-        backlog_total = read_backlog(session, now=utc_now(), limit=1).total
-    capacity = int(profile.parsed_json["reading"]["weekly_capacity"])
-    suggested = min(backlog_total, max(1, (capacity + 6) // 7))
+    if unread_total < 0:
+        # 调用方未提供时自行读取；队列页已算出未读总数，传入可省一次查询。
+        unread_total = read_backlog(session, now=utc_now(), limit=1).total
     body += '<section class="dashboard">'
-    body += (
-        f"<h2>队列共 {backlog_total} 篇</h2><p>按你的容量，今天建议先看 {suggested} 篇。"
-        "全部论文会一直保留，随时可读。</p>"
-    )
+    body += queue_stats_line(session, unread_total)
     problem = processing_problem(session, settings)
     if problem:
         body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">连接模型</a></p>'
     elif busy:
         body += "<p>等待当前任务，完成后再开始新任务。</p>"
-    elif not backlog_total:
+    elif not unread_total:
         body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
     scoring = read_scoring_config(session)
     default_target = int(scoring.gates.min_queue_yield) if scoring is not None else 5

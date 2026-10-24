@@ -17,7 +17,7 @@ from papersteward.api.form_utils import fields as form_fields
 from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import fragment_error
 from papersteward.api.html import page as _page
-from papersteward.api.workflow_pages import dashboard
+from papersteward.api.workflow_pages import dashboard, queue_stats_line
 from papersteward.core.entities import Enrichment, Paper, Taxonomy, ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
@@ -495,13 +495,27 @@ def _backlog_page(
         page = read_backlog(
             session, now=now, limit=50, offset=offset, filters=filters, search=search
         )
+        # UXR-05：顶部统计的未读总数不受筛选影响，与列表的结果数分开计算。
+        unread_total = read_backlog(session, now=now, limit=1).total
+        active_filters = bool(
+            filters.tag
+            or filters.read_status != "unread"
+            or filters.min_priority > 0
+            or filters.max_priority < 100
+            or search.strip()
+        )
         taxonomy = TaxonomyRepository(session).latest_confirmed()
         list_body = ""
         if page.items:
             dates = sorted({item.score_date for item in page.items})
             date_label = str(dates[0]) if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
+            scope_note = (
+                f"符合当前筛选 {page.total} 篇（未读共 {unread_total} 篇）"
+                if active_filters
+                else f"共 {page.total} 篇"
+            )
             list_body += (
-                f'<p class="muted">共 {page.total} 篇 · 排序基于 {date_label} 的评分。'
+                f'<p class="muted">{scope_note} · 排序基于 {date_label} 的评分。'
                 "可随时刷新排序。</p>"
             )
             # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
@@ -520,14 +534,7 @@ def _backlog_page(
                 for item in page.items
             )
         else:
-            filtered = bool(
-                filters.tag
-                or filters.read_status != "unread"
-                or filters.min_priority > 0
-                or filters.max_priority < 100
-                or search.strip()
-            )
-            if filtered:
+            if active_filters:
                 list_body += (
                     '<article class="empty"><h2>没有论文符合当前筛选</h2>'
                     "<p>可调整或清除上方筛选条件；也可以「挖掘新论文」补充新论文。</p></article>"
@@ -562,7 +569,7 @@ def _backlog_page(
             return HTMLResponse(list_body, headers=HEADERS)
 
         body = dashboard(
-            session, request.app.state.settings, _day(session), backlog_total=page.total
+            session, request.app.state.settings, _day(session), unread_total=unread_total
         )
         if "cancelled" in request.query_params:
             body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
@@ -946,6 +953,7 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
             "note": "已保存新备注，之前的备注保留在修订记录里。",
         }
         headers = {**HEADERS}
+        fragment: str
         if body.kind == "reject":
             # 不整页刷新：卡片原地替换为确认与「恢复推荐」入口，误点可一键撤销。
             fragment = (
@@ -954,14 +962,19 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
                 + _form(paper_id, "restore")
                 + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a></article>'
             )
-            return HTMLResponse(fragment, headers=headers)
-        # X-03：完成/评分/备注同样原地替换卡片，保留滚动位置，不再整页刷新。
-        fragment = (
-            f'<article><p class="success" tabindex="-1" autofocus>'
-            f"{escape(messages[body.kind])}</p>"
-            + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a> '
-            '<a href="/ui/queue">返回队列</a></article>'
-        )
+        else:
+            # X-03：完成/评分/备注同样原地替换卡片，保留滚动位置，不再整页刷新。
+            fragment = (
+                f'<article><p class="success" tabindex="-1" autofocus>'
+                f"{escape(messages[body.kind])}</p>"
+                + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a> '
+                '<a href="/ui/queue">返回队列</a></article>'
+            )
+        if body.kind in {"done", "reject", "restore"}:
+            # UXR-05：完成/拒绝/恢复改变未读总数，经 htmx 带外更新同步顶部统计。
+            fragment += queue_stats_line(
+                session, read_backlog(session, now=utc_now(), limit=1).total, oob=True
+            )
         return HTMLResponse(fragment, headers=headers)
     except (DomainError, AppError, ValidationError) as exc:
         return _error(exc)

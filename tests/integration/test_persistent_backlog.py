@@ -106,7 +106,31 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     assert completed.status_code == 200
     assert "HX-Refresh" not in completed.headers
     assert "已归档这篇论文" in completed.text
+    # UXR-05：完成动作经 htmx 带外片段同步顶部未读统计（2 → 1）。
+    assert 'queue-stats" hx-swap-oob="true"' in completed.text
+    assert "未读 <strong>1</strong> 篇" in completed.text
     assert client.get("/queue").json()["total"] == 1
+
+
+def test_stats_scope_distinguishes_unread_total_from_filtered_results(
+    client, migrated_engine, monkeypatch
+):
+    """UXR-05：顶部统计始终是未读总数；列表行如实标注筛选结果数。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        seed(session, "two", r=80)
+        refresh_queue(session, now=NOW)
+    monkeypatch.setattr("papersteward.api.pages.utc_now", lambda: NOW + timedelta(days=3))
+    page = client.get("/ui/queue")
+    assert "未读 <strong>2</strong> 篇" in page.text
+    assert "共 2 篇" in page.text
+    filtered = client.get("/ui/queue", params={"search": "one"})
+    assert "未读 <strong>2</strong> 篇" in filtered.text
+    assert "符合当前筛选 1 篇（未读共 2 篇）" in filtered.text
+    # 查看已读/全部时建议仍基于未读总量，不把已读数当待阅读数。
+    read_view = client.get("/ui/queue", params={"read_status": "all"})
+    assert "未读 <strong>2</strong> 篇" in read_view.text
 
 
 def test_invalid_filter_keeps_queue_list_container_for_htmx(client):
