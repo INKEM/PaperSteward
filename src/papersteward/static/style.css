@@ -480,6 +480,40 @@ form {
   min-height: 110px;
 }
 
+/* 记录阅读表单：左上阅读方式、左下评分、右侧备注（用户反馈）。 */
+.record-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  grid-template-areas:
+    "mode note"
+    "score note"
+    "submit submit";
+}
+
+.record-form > label:nth-of-type(1) {
+  grid-area: mode;
+}
+
+.record-form > label:nth-of-type(2) {
+  grid-area: score;
+  align-self: end;
+}
+
+.record-form > label:nth-of-type(3) {
+  grid-area: note;
+  grid-template-rows: auto 1fr;
+}
+
+.record-form > label:nth-of-type(3) textarea {
+  height: 100%;
+  min-height: 88px;
+}
+
+.record-form > button {
+  grid-area: submit;
+  justify-self: start;
+  min-width: 140px;
+}
+
 /* 模型设置等「多个短字段」的表单：最多两列，长字段单独占行。 */
 .settings-form {
   display: grid;
@@ -795,9 +829,16 @@ tr:last-child td {
   margin: 10px 0;
 }
 
+/* 四张卡等高：li 拉伸为同高，卡片填满 li（用户反馈）。 */
+.preset-list li {
+  display: flex;
+}
+
 .preset-card {
+  flex: 1 1 auto;
   display: grid;
   gap: 4px;
+  align-content: start;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
@@ -810,8 +851,10 @@ tr:last-child td {
   background: var(--accent-soft);
 }
 
+/* 选中只靠边框高亮，不再显示「当前」徽标。 */
 .preset-card.active {
-  border-color: var(--accent);
+  border: 2px solid var(--accent);
+  padding: 11px 13px;
 }
 
 .formula-details {
@@ -991,6 +1034,11 @@ tr:last-child td {
   margin: 0;
 }
 
+/* 展开的操作表单在按钮行下方原地铺开，不再挤到右侧（用户反馈）。 */
+.card-actions details[open] {
+  flex: 1 1 100%;
+}
+
 .card-actions summary {
   display: inline-block;
   border: 1px solid var(--accent);
@@ -1088,6 +1136,13 @@ tr:last-child td {
 
 .queue-filters label {
   flex: 1 1 110px;
+}
+
+/* 筛选控件等高：select 与 input 固有高度差导致标签/状态框略矮（用户反馈）。 */
+.queue-filters input,
+.queue-filters select {
+  box-sizing: border-box;
+  min-height: 46px;
 }
 
 /* ---------- 队列顶部工具条（UXR-06） ---------- */
@@ -1518,6 +1573,15 @@ tr:last-child td {
   .summary-slots dl {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .record-form {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "mode"
+      "score"
+      "note"
+      "submit";
   }
 
   .today-metrics {

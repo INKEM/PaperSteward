@@ -161,8 +161,9 @@ def _form(
         fields += (
             " required" if kind == "reject" else ""
         ) + f">{escape(note or '')}</textarea></label>"
+    form_class = "record-form" if kind == "done" else ""
     return (
-        f'<form method="post" action="{url}" class="stacked-form" hx-post="{url}" '
+        f'<form method="post" action="{url}" class="stacked-form {form_class}" hx-post="{url}" '
         'hx-target="closest article" '
         'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\''
         f"{confirm}>"
@@ -480,12 +481,12 @@ def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None)
     # UXR-16：预设以卡片呈现并附适用情境，当前选中项标注「当前」。
     cards = '<ul class="preset-list">'
     for preset in list_presets():
+        # UXR-16（用户反馈）：选中只靠边框高亮，不再显示「当前」徽标。
         active = preview.view.label == preset.label
-        mark = ' <span class="tag">当前</span>' if active else ""
         cards += (
             f'<li><a class="preset-card{" active" if active else ""}" '
             f'href="/ui/views?preset={quote(preset.name)}{date_part}">'
-            f"<strong>{escape(preset.label)}</strong>{mark}"
+            f"<strong>{escape(preset.label)}</strong>"
             f'<span class="muted">{escape(preset.description)}</span></a></li>'
         )
     cards += "</ul>"
