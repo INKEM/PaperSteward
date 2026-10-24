@@ -145,6 +145,19 @@ def test_profile_preview_subdirection_cells_carry_field_labels():
     assert 'data-label="检索关键词"' in html
 
 
+def test_data_flow_disclosure_covers_materials_and_drafts(client):
+    """UXR-04：模型数据流向说明如实覆盖材料/意见/草案与检索规划，不只说标题摘要。"""
+    setup = client.get("/ui/setup")
+    assert "保存即表示同意把论文与研究材料内容发送给该服务" in setup.text
+    assert "添加的材料会在生成草案时发送给模型服务" in setup.text
+    settings = client.get("/ui/settings")
+    assert "生成草案还会发送研究材料、修改意见和上一版草案" in settings.text
+    help_page = client.get("/ui/help")
+    assert "生成草案时发送研究材料、修改意见和上一版草案" in help_page.text
+    assert "自动规划检索式时发送研究档案" in help_page.text
+    assert "阅读备注保存在本机" in help_page.text
+
+
 def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine, monkeypatch):
     calls = extraction_provider(monkeypatch)
     assert (

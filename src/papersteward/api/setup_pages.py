@@ -116,7 +116,8 @@ def _material_add_form(*, prefill_name: str = "", prefill_content: str = "") -> 
         'data-file-marker="from_file"></label>'
         + '<span data-import-status role="status" class="muted"></span>'
         + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
-        "超长材料会提示拆分。</p>" + "<button>添加材料</button></form>"
+        "超长材料会提示拆分。添加的材料会在生成草案时发送给模型服务。</p>"
+        + "<button>添加材料</button></form>"
     )
 
 
@@ -134,6 +135,8 @@ def _generate_section(session: SessionDep, summary: dict[str, Any]) -> str:
         '<form method="post" action="/ui/setup/generate">'
         + hidden("run_id", "ext-" + uuid4().hex[:16])
         + f"<button>{escape(label)}</button></form>"
+        + '<p class="muted">生成草案时，研究材料、修改意见和上一版草案会发送到你配置的'
+        "模型服务；阅读备注保存在本机。</p>"
         + '<p class="muted">生成由后台任务执行；页面会原地显示进度，完成后自动进入审阅。</p>'
     )
 
@@ -295,7 +298,8 @@ def setup(
             if not ready:
                 body += (
                     '<p class="notice">第一步：连接模型。填写 API 地址、密钥与模型名并保存；'
-                    "保存即表示同意把论文标题与摘要发送给该服务。</p>"
+                    "保存即表示同意把论文与研究材料内容发送给该服务，"
+                    "具体范围见下方「添加材料」与「生成草案」的说明。</p>"
                 )
                 config = resolve_llm_config(session, get_settings())
                 if config.requires_api_key and not config.has_api_key:

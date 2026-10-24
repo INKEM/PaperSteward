@@ -57,7 +57,9 @@ def llm_form(
     )
     consent = (
         '<label class="check"><input type="checkbox" name="consent" value="yes" required>'
-        "我知道论文的标题与摘要会发送给上面配置的模型服务，仅用于筛选和概括</label>"
+        "我知道处理论文时会把标题、摘要及任务所需的研究方向和分类规则发送给上面配置的"
+        "模型服务，用于筛选、概括和评分；生成草案还会发送研究材料、修改意见和上一版草案；"
+        "阅读备注保存在本机</label>"
     )
     actions = (
         '<div class="actions"><button type="button" data-test-llm="llm-settings">'

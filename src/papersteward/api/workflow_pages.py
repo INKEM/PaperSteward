@@ -408,7 +408,8 @@ def dashboard(
     )
     controls += (
         '<p class="muted">不填检索词：Agent 会综合你的研究档案、已读评分历史和'
-        "本次关注点自动生成多条检索式，挖掘报告会列出所用检索式及理由。</p>"
+        "本次关注点自动生成多条检索式（这一步会把上述内容发送给你配置的模型服务），"
+        "挖掘报告会列出所用检索式及理由。</p>"
     )
     body += _run_form("sync", controls, "挖掘新论文", disabled=busy or bool(problem))
     body += _run_form("refresh", "", "刷新排序", disabled=busy)
