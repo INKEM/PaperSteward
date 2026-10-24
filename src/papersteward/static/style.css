@@ -858,6 +858,26 @@ tr:last-child td {
   margin: 12px 0;
 }
 
+/* 网络失败提示条（UXR-20）：固定顶部、可聚焦、不遮挡操作。 */
+#network-alert {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(720px, calc(100vw - 32px));
+  padding: 12px 18px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-m);
+  background: var(--danger-soft);
+  color: var(--danger);
+  z-index: 50;
+  box-shadow: var(--shadow-card);
+}
+
+#network-alert:focus {
+  outline: 2px solid var(--danger);
+}
+
 /* ---------- 草案审阅（UXR-12）：速览与页内锚点 ---------- */
 
 .review-overview {

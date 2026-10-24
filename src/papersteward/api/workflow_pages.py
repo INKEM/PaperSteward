@@ -455,7 +455,8 @@ def queue_stats_line(session: SessionDep, unread_total: int, *, oob: bool = Fals
     suggested = min(unread_total, max(1, (capacity + 6) // 7))
     oob_attr = ' hx-swap-oob="true"' if oob else ""
     return (
-        f'<p id="queue-stats" class="queue-stats"{oob_attr}>'
+        # UXR-20：role=status 让读屏在 OOB 更新未读数时自动播报。
+        f'<p id="queue-stats" role="status" class="queue-stats"{oob_attr}>'
         f"未读 <strong>{unread_total}</strong> 篇 · 按你的容量，今天建议先看 "
         f'<strong>{suggested}</strong> 篇。<span class="stats-note">'
         "全部论文会一直保留，随时可读。</span></p>"

@@ -38,3 +38,17 @@ def test_page_references_hashed_stylesheet_url() -> None:
     assert isinstance(response, HTMLResponse)
     html = response.body.decode()
     assert f"/ui/static/style.css?v={_ASSET_VERSION}" in html
+
+
+def test_page_provides_network_alert_container() -> None:
+    """UXR-20：外壳自带网络失败提示条，由 setup.js 填充与聚焦。"""
+    html = page("测试", "<p>x</p>").body.decode()
+    assert 'id="network-alert" role="alert" hidden' in html
+
+
+def test_setup_js_handles_htmx_network_failures() -> None:
+    js = (Path(__file__).resolve().parents[2] / "src/papersteward/static/setup.js").read_text(
+        encoding="utf-8"
+    )
+    assert "htmx:sendError" in js and "htmx:responseError" in js
+    assert "showNetworkAlert" in js

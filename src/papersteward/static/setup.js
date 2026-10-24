@@ -1,4 +1,28 @@
 "use strict";
+// 网络失败可恢复（UXR-20）：htmx 请求发不出去或服务出错时给出可见提示，
+// 成功请求后自动收起；页面内容不丢失，用户可重试。
+document.addEventListener("htmx:sendError", () => {
+  showNetworkAlert("网络请求失败——服务可能未在运行。页面上的内容没有丢失，恢复后可直接重试。");
+});
+document.addEventListener("htmx:responseError", (event) => {
+  const status = event.detail.xhr ? event.detail.xhr.status : 0;
+  if (status >= 500) {
+    showNetworkAlert("服务暂时出错（" + status + "）。页面上的内容没有丢失，可稍后重试。");
+  }
+});
+document.addEventListener("htmx:afterRequest", (event) => {
+  const alert = document.getElementById("network-alert");
+  if (alert && !alert.hidden && event.detail.successful) alert.hidden = true;
+});
+
+function showNetworkAlert(message) {
+  const alert = document.getElementById("network-alert");
+  if (!alert) return;
+  alert.textContent = message;
+  alert.hidden = false;
+  alert.focus();
+}
+
 // 模型连接表单：不提交表单，用表单当前值即时测试连通性。
 document.addEventListener("click", async (event) => {
   const button = event.target;

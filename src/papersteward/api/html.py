@@ -120,6 +120,8 @@ def page(
         f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
         '<details class="mobile-nav"><summary>导航菜单</summary>'
         f'<nav aria-label="移动导航">{mobile_navigation}</nav></details></header>'
+        # UXR-20：htmx 请求网络失败/服务错误时的全局提示条，由 setup.js 填充与聚焦。
+        '<div id="network-alert" role="alert" hidden tabindex="-1"></div>'
         f'<main id="main"><div class="page-heading"><div class="page-heading-text">'
         f'<p class="eyebrow">你的研究书桌</p><h1>{escape(title)}</h1></div>'
         f"{heading_actions}</div>{body}</main>"
