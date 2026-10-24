@@ -29,3 +29,9 @@ out/
 
 # 本地开发、计划与验收资料
 dev-docs/
+docs/assets/ux-audit-2026-10-24/
+docs/import-read-papers-plan-2026-10-24.md
+docs/ui-ux-improvement-plan-2026-10-24.md
+
+# 本地规划工具产物
+.zcode/

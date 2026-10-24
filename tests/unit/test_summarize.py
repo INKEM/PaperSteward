@@ -105,7 +105,7 @@ def test_schema_failure_is_repaired_once_then_succeeds():
     result = generate_summary(PAPER, gateway)
 
     assert result.summary.validation_status is SummaryValidationStatus.PASSED
-    assert result.provenance.prompt_version == "summary/v2+repair:repair/v1"
+    assert result.provenance.prompt_version == "summary/v2+repair:repair/v2"
     assert gateway.provider.call_count == 2
 
 

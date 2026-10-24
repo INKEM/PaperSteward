@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 from test_special_shelf import NOW, PAPER, _process, _setup
 
+from conftest import activate
 from papersteward.core.enums import BucketRole, BucketType, EventType, PaperStatus
 from papersteward.errors import ConflictError
 from papersteward.pipeline.shelf import accept_nomination, promote_to_topic

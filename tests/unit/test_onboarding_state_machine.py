@@ -1,39 +1,32 @@
-from dataclasses import asdict
-
 import pytest
 
 from papersteward.core.errors import DomainValidationError, InvalidTransition
-from papersteward.core.onboarding import Gate, GateApproval, Onboarding, OnboardingStage, advance
+from papersteward.core.onboarding import Onboarding, OnboardingStage, activate, enter_draft
 
 
-def test_all_gates_require_explicit_ordered_confirmation() -> None:
-    state = Onboarding(OnboardingStage.PROFILE, 1)
-    for gate, target in zip(Gate, list(OnboardingStage)[2:], strict=True):
-        previous = state
-        state = advance(state, gate)
-        assert state.stage is target
-        assert state.revision == previous.revision + 1
-        assert previous.stage != state.stage
-    assert state.next_gate is None
+def test_stages_start_at_setup_and_advance_once() -> None:
+    setup = Onboarding()
+    assert setup.stage is OnboardingStage.SETUP
+    assert setup.revision == 0
+    draft = enter_draft(setup)
+    assert draft.stage is OnboardingStage.DRAFT
+    assert draft.revision == 1
+    active = activate(draft)
+    assert active.stage is OnboardingStage.ACTIVE
+    assert active.revision == 2
 
 
-@pytest.mark.parametrize("stage", OnboardingStage)
-@pytest.mark.parametrize("gate", Gate)
-def test_skipping_repeating_and_confirming_before_start_are_rejected(
-    stage: OnboardingStage, gate: Gate
-) -> None:
-    state = Onboarding(stage)
-    if state.next_gate is gate:
-        return
+def test_stage_revision_must_match() -> None:
+    with pytest.raises(DomainValidationError, match="revision"):
+        Onboarding(OnboardingStage.DRAFT, 0)
+    with pytest.raises(DomainValidationError, match="revision"):
+        Onboarding(OnboardingStage.ACTIVE, 5)
+
+
+def test_skipping_or_repeating_transitions_is_rejected() -> None:
     with pytest.raises(InvalidTransition, match="onboarding.stage"):
-        advance(state, gate)
-
-
-@pytest.mark.parametrize(
-    "field", ["confirmed_by", "artifact_id", "artifact_version", "change_summary"]
-)
-def test_confirmation_requires_user_version_and_summary(field: str) -> None:
-    values = asdict(GateApproval("user", "artifact", "v1", "已审阅"))
-    values[field] = "  "
-    with pytest.raises(DomainValidationError, match=field):
-        GateApproval(**values)
+        activate(Onboarding())
+    with pytest.raises(InvalidTransition, match="onboarding.stage"):
+        enter_draft(Onboarding(OnboardingStage.DRAFT, 1))
+    with pytest.raises(InvalidTransition, match="onboarding.stage"):
+        activate(Onboarding(OnboardingStage.ACTIVE, 2))

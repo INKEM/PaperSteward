@@ -26,7 +26,7 @@ help:
 	@echo "  make demo             迁移、写入演示数据、启动 API 并验证 health/papers"
 	@echo "  make secret-scan      扫描常见密钥模式"
 	@echo "  make docker-build     docker compose build"
-	@echo "  make docker-up        docker compose up --build"
+	@echo "  make docker-up        构建并启动（脚本使用 legacy builder + host 网络）"
 	@echo "  make docker-down      docker compose down"
 
 $(BIN)/python:
@@ -79,10 +79,10 @@ secret-scan:
 	fi
 
 docker-build:
-	docker compose build
+	DOCKER_BUILDKIT=0 docker compose -f docker-compose.yml -f docker-compose.hostnet.yml build
 
 docker-up:
-	docker compose up --build
+	DOCKER_BUILDKIT=0 docker compose -f docker-compose.yml -f docker-compose.hostnet.yml up --build
 
 docker-down:
 	docker compose down

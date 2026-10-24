@@ -71,7 +71,7 @@ def run_doctor(
     if resolved_engine is None:
         try:
             resolved_engine = create_db_engine()
-        except Exception:
+        except Exception:  # noqa: BLE001 - 体检项把任何故障转为失败结果
             checks.append(
                 DoctorCheck(
                     CHECK_DATABASE,
@@ -93,7 +93,7 @@ def run_doctor(
 
         try:
             status = get_migration_status(resolved_engine)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 同上，体检项不因单项故障中断
             checks.append(DoctorCheck(CHECK_MIGRATION, False, f"无法读取迁移状态：{exc}"))
         else:
             checks.append(_migration_check(status))

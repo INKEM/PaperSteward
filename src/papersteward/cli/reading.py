@@ -13,9 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
 from papersteward.core.errors import DomainError
-from papersteward.delivery.actions import apply_action
 from papersteward.delivery.contracts import Action
 from papersteward.errors import AppError
+from papersteward.reading.actions import apply_action
 from papersteward.storage import create_db_engine, create_session_factory, session_scope
 
 
@@ -30,24 +30,20 @@ def _arguments(parser: argparse.ArgumentParser, kind: str) -> None:
         parser.add_argument("--score", type=int, choices=range(1, 6), required=kind == "score")
     if kind in {"done", "note", "reject"}:
         parser.add_argument("--note", required=kind in {"note", "reject"})
-    if kind == "snooze":
-        parser.add_argument("--days", type=int, choices=(3, 7, 14), required=True)
 
 
 def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     _arguments(subparsers.add_parser("done", help="标记读完并保存评分/备注"), "done")
-    commands = subparsers.add_parser("reading", help="阅读反馈和冷却操作").add_subparsers(
+    commands = subparsers.add_parser("reading", help="阅读反馈").add_subparsers(
         dest="reading_command", required=True
     )
-    for kind in ("score", "note", "snooze", "skip", "reject"):
+    for kind in ("score", "note", "reject"):
         _arguments(commands.add_parser(kind), kind)
 
 
 def run(args: argparse.Namespace) -> int:
     try:
-        values = {
-            k: getattr(args, k) for k in ("mode", "score", "note", "days") if hasattr(args, k)
-        }
+        values = {k: getattr(args, k) for k in ("mode", "score", "note") if hasattr(args, k)}
         request = Action.model_validate(
             {"request_id": args.request_id or uuid4().hex, "kind": args.action_kind, **values}
         )

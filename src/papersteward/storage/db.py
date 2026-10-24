@@ -48,16 +48,33 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) 
         cursor.close()
 
 
+def _enable_sqlite_wal(dbapi_connection: Any, _connection_record: Any) -> None:
+    """文件库启用 WAL：并行挖掘线程的短写事务不再与读者互相死锁。
+
+    内存库不支持 WAL，执行结果为 "memory"，保持原语义。
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.fetchall()
+    finally:
+        cursor.close()
+
+
 def _sqlite_engine(database_url: str, *, echo: bool, memory: bool) -> Engine:
     options: dict[str, Any] = {
         "echo": echo,
-        "connect_args": {"check_same_thread": False},
+        # timeout：写锁被长事务（如处理一篇论文的多次模型调用）占用时，
+        # 其他写方等待而非立刻报 "database is locked"。
+        "connect_args": {"check_same_thread": False, "timeout": 30},
     }
     if memory:
         # 内存库必须共享同一连接，否则 create_all 与后续会话看到不同的库。
         options["poolclass"] = StaticPool
     engine = create_engine(database_url, **options)
     event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+    if not memory:
+        event.listen(engine, "connect", _enable_sqlite_wal)
     return engine
 
 
@@ -95,10 +112,17 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 @contextmanager
-def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
-    """提供一个显式事务作用域：正常提交，异常回滚，最后关闭。"""
+def session_scope(factory: sessionmaker[Session], *, immediate: bool = False) -> Iterator[Session]:
+    """提供一个显式事务作用域：正常提交，异常回滚，最后关闭。
+
+    ``immediate=True`` 在 SQLite 上以 BEGIN IMMEDIATE 开启写事务：并行 worker
+    的写阶段从第一句就持有写锁，避免"先读后写"的事务升级撞上 BUSY_SNAPSHOT
+    立即报 database is locked（busy timeout 对这种死锁场景不生效）。
+    """
     session = factory()
     try:
+        if immediate and session.get_bind().dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
         yield session
         session.commit()
     except Exception:

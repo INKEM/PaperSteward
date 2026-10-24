@@ -1,0 +1,112 @@
+{
+  "profile": {
+    "positioning": {
+      "summary": "研究长文档检索与检索增强生成的可复现方法，关注跨段推理与引用忠实性。",
+      "domain": "信息检索 / 自然语言处理",
+      "career_stage": "PhD",
+      "language": "zh"
+    },
+    "core_questions": [
+      {"id": "Q1", "text": "如何在不增加标注成本的前提下提升长文档检索的跨段推理能力？"},
+      {"id": "Q2", "text": "检索增强生成如何减少引用不忠实与幻觉？"},
+      {"id": "Q3", "text": "如何用统一基准比较检索、重排与生成三层方法？"}
+    ],
+    "subdirections": [
+      {
+        "id": "S1",
+        "name": "长文档检索与重排",
+        "priority": "high",
+        "target_share": 0.35,
+        "keywords": ["long-document retrieval", "cross-segment reasoning", "reranking"]
+      },
+      {
+        "id": "S2",
+        "name": "检索增强生成",
+        "priority": "high",
+        "target_share": 0.4,
+        "keywords": ["RAG", "retrieval-augmented generation", "grounding"]
+      },
+      {
+        "id": "S3",
+        "name": "检索与生成评测",
+        "priority": "medium",
+        "target_share": 0.25,
+        "keywords": ["evaluation", "benchmark", "faithfulness"]
+      }
+    ],
+    "include": [
+      "method papers with reproducible experiments",
+      "surveys that connect retrieval, reasoning and generation"
+    ],
+    "exclude": [
+      "pure prompt-engineering tricks without evaluation",
+      "applications outside document-centric tasks"
+    ],
+    "methods": ["dense retrieval", "cross-encoder reranking"],
+    "data": ["long-document QA benchmarks"],
+    "authority": {
+      "venues": ["ACL", "EMNLP", "SIGIR"],
+      "authors": [],
+      "teams": []
+    },
+    "negative_preferences": ["unreproducible results"],
+    "reading": {
+      "weekly_capacity": 8,
+      "deep_skim_ratio": [0.3, 0.7],
+      "reading_goals": ["追踪研究进展", "寻找可复现基线"],
+      "push_time": "08:00"
+    }
+  },
+  "tags": [
+    {
+      "code": "T01",
+      "name": "长文档检索",
+      "definition": "研究长文档切分、召回与跨段推理的检索方法。",
+      "include": ["长文档检索、跨段检索"],
+      "exclude": ["只做短文本检索"],
+      "examples": ["层次化检索", "跨段注意力", "段落重排"],
+      "aliases": ["long document retrieval"],
+      "boundaries": ["与通用 RAG 的边界在是否以长文档为核心对象"]
+    },
+    {
+      "code": "T02",
+      "name": "检索增强生成",
+      "definition": "把检索结果注入生成模型以提升事实性与知识覆盖。",
+      "include": ["RAG 方法", "检索与生成联合训练"],
+      "exclude": ["纯生成模型"],
+      "examples": ["检索增强问答", "引用生成", "多跳 RAG"],
+      "aliases": ["RAG"],
+      "boundaries": []
+    },
+    {
+      "code": "T03",
+      "name": "重排与融合",
+      "definition": "对候选文档做重排、融合或多阶段排序。",
+      "include": ["cross-encoder 重排", "多路召回融合"],
+      "exclude": ["仅使用 BM25 单路召回"],
+      "examples": ["学习型重排", "倒数排名融合", "列表式重排"],
+      "aliases": ["reranking"],
+      "boundaries": []
+    },
+    {
+      "code": "T04",
+      "name": "评测与基准",
+      "definition": "构建检索或生成任务的基准、指标与可复现评测。",
+      "include": ["新基准", "指标分析", "可复现实验"],
+      "exclude": ["没有评测协议的模型报告"],
+      "examples": ["长文档 QA 基准", "忠实性指标", "人工评测协议"],
+      "aliases": ["benchmark"],
+      "boundaries": []
+    },
+    {
+      "code": "T05",
+      "name": "文档智能应用",
+      "definition": "把检索与生成方法落地到法律、企业搜索等文档场景。",
+      "include": ["文档问答应用", "企业检索系统"],
+      "exclude": ["与文档无关的通用助手"],
+      "examples": ["法律文档问答", "企业知识库", "合同检索"],
+      "aliases": ["document AI"],
+      "boundaries": []
+    }
+  ]
+}

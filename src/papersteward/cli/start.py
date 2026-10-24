@@ -12,8 +12,6 @@ from tempfile import TemporaryFile
 
 import httpx
 import uvicorn
-from alembic import command
-from alembic.config import Config
 from alembic.util.exc import CommandError
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,8 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward.api.app import create_app
 from papersteward.config import Settings, format_settings_error
 from papersteward.observability.logging import configure_logging
-from papersteward.storage import create_db_engine
-from papersteward.storage.migrations import find_alembic_ini
+from papersteward.storage.migrations import upgrade_head
 
 
 def add_command(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -34,14 +31,8 @@ def add_command(subparsers: argparse._SubParsersAction[argparse.ArgumentParser])
 
 
 def migrate(settings: Settings) -> None:
-    config = Config(str(find_alembic_ini()))
-    engine = create_db_engine(settings.db_url)
-    try:
-        with engine.connect() as connection:
-            config.attributes["connection"] = connection
-            command.upgrade(config, "head")
-    finally:
-        engine.dispose()
+    """迁移默认工作区到 head；共享实现见 storage.migrations.upgrade_head。"""
+    upgrade_head(settings)
 
 
 def _open_when_ready(url: str, stopped: threading.Event) -> None:

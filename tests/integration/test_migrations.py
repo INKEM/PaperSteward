@@ -28,6 +28,7 @@ DOMAIN_TABLES = {
     "enrichment",
     "event",
     "paper",
+    "paper_analysis",
     "paper_bucket",
     "paper_tag",
     "rating",
@@ -207,7 +208,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0015"
+        assert current == "0019"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:

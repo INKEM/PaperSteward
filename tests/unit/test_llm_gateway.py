@@ -66,7 +66,7 @@ def test_schema_invalid_output_is_repaired_once() -> None:
 
     assert isinstance(result.data, ClassificationOutput)
     assert result.repair_used is True
-    assert result.provenance.prompt_version == "classification/v2+repair:repair/v1"
+    assert result.provenance.prompt_version == "classification/v2+repair:repair/v2"
     assert result.usage.calls == 2
     assert result.usage.repairs == 1
     assert result.attempts == 2

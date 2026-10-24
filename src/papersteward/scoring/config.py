@@ -80,7 +80,7 @@ class DynamicWeights(_ConfigModel):
     @model_serializer(mode="wrap")
     def _compatible_dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         result: dict[str, Any] = handler(self)
-        # 默认扩展不改变已审阅G4报告/hash或既有配置JSON。
+        # 默认扩展不改变已审阅的初始化快照/hash 或既有配置 JSON。
         if not self.by_primary_tag:
             result.pop("by_primary_tag", None)
         if self.backlog_dampener:
@@ -114,6 +114,10 @@ class Gates(_ConfigModel):
     relevance_weight_floor: float = Field(ge=0.0, le=1.0)
     static_weight_floor: float = Field(ge=0.0, le=1.0)
     authority_weight_cap: float = Field(ge=0.0, le=1.0)
+    # 保底入队：只作用于显式传入 min_queue_yield 的刷新调用（挖掘 sync）；
+    # 0 表示关闭。周任务与 golden 快照路径不传该参数，行为不变。
+    min_queue_yield: int = Field(default=5, ge=0, le=50)
+    quota_fill_relevance_floor: float = Field(default=40.0, ge=0.0, le=100.0)
 
 
 class Stability(_ConfigModel):

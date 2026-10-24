@@ -1,11 +1,10 @@
 """本地HTML/HTMX薄页面；业务规则仅调用现有服务。"""
 
-import json
 from datetime import date
 from html import escape
 from pathlib import Path
-from typing import Annotated, Any
-from urllib.parse import parse_qs, quote
+from typing import Annotated, Any, Literal, cast
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -14,15 +13,21 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.core.entities import ViewConfig, utc_now
-from papersteward.core.enums import PaperStatus
-from papersteward.core.errors import DomainError, InvariantViolation
-from papersteward.delivery.actions import apply_action
-from papersteward.delivery.archive import list_archives, read_archive
+from papersteward.api.form_utils import fields as form_fields
+from papersteward.api.html import HTML_HEADERS as HEADERS
+from papersteward.api.html import fragment_error
+from papersteward.api.html import page as _page
+from papersteward.api.html import pagination as _pagination
+from papersteward.api.workflow_pages import dashboard, queue_stats_line
+from papersteward.core.entities import Enrichment, Paper, Summary, Taxonomy, ViewConfig, utc_now
+from papersteward.core.enums import PaperStatus, RunStatus
+from papersteward.core.errors import DomainError
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
-from papersteward.delivery.service import create_digest
-from papersteward.delivery.shelf_view import (
+from papersteward.errors import AppError, NotFoundError
+from papersteward.reading.actions import apply_action
+from papersteward.reading.archive import list_archives, read_archive
+from papersteward.reading.shelf_view import (
     ShelfItem,
     ShelfPage,
     ShelfSummary,
@@ -31,9 +36,8 @@ from papersteward.delivery.shelf_view import (
     shelf_item_for_paper,
     shelf_summaries,
 )
-from papersteward.errors import AppError, NotFoundError
-from papersteward.scoring.contracts import QueueItem
-from papersteward.scoring.queue import _context, explain_score, read_queue
+from papersteward.scoring.contracts import BacklogFilters, BacklogItem, QueueItem, ScoreExplanation
+from papersteward.scoring.queue import explain_score, queue_context, read_backlog
 from papersteward.scoring.views import (
     ViewPreview,
     get_view_config,
@@ -43,82 +47,41 @@ from papersteward.scoring.views import (
 )
 from papersteward.storage.delivery import read_digest
 from papersteward.storage.onboarding import get_onboarding
-from papersteward.storage.repositories import PaperRepository, SummaryRepository
+from papersteward.storage.repositories import (
+    EnrichmentRepository,
+    PaperRepository,
+    RunRepository,
+    SummaryRepository,
+    TaxonomyRepository,
+)
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 STATIC = Path(__file__).resolve().parents[1] / "static"
-HEADERS = {
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-}
-
-
-def _page(title: str, body: str) -> HTMLResponse:
-    config = {
-        "allowEval": False,
-        "allowScriptTags": False,
-        "selfRequestsOnly": True,
-        "historyCacheSize": 0,
-        "includeIndicatorStyles": False,
-        "responseHandling": [
-            {"code": "[23]..", "swap": True},
-            {"code": "[45]..", "swap": True, "error": True},
-        ],
-    }
-    links = (
-        ("/ui/today", "今日", "今日阅读"),
-        ("/ui/review", "审核", "待审核"),
-        ("/ui/queue", "阅读队列", "阅读队列"),
-        ("/ui/shelves", "特殊桶", "特殊桶"),
-        ("/ui/views", "视图", "自定义视图"),
-        ("/ui/archive", "归档", "阅读归档"),
-        ("/ui/setup", "设置", "首次设置"),
-        ("/ui/help", "帮助", "使用帮助"),
-    )
-    navigation = "".join(
-        f'<a href="{url}"' + (' aria-current="page"' if title == active else "") + f">{label}</a>"
-        for url, label, active in links
-    )
-    return HTMLResponse(
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<meta name="htmx-config" content="{escape(json.dumps(config))}">'
-        f"<title>{escape(title)} · PaperSteward</title>"
-        '<link rel="stylesheet" href="/ui/static/style.css">'
-        '<script src="/ui/static/htmx.js" defer></script>'
-        '<script src="/ui/static/setup.js" defer></script></head><body>'
-        '<a class="skip-link" href="#main">跳到内容</a><header>'
-        '<a class="brand" href="/ui/today"><span class="brand-mark" aria-hidden="true">P</span>'
-        "PaperSteward<small>留一点时间，读重要的论文</small></a>"
-        f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
-        '<details class="mobile-nav"><summary>导航菜单</summary>'
-        f'<nav aria-label="移动导航">{navigation}</nav></details></header>'
-        f'<main id="main"><div class="page-heading"><p class="eyebrow">你的研究书桌</p>'
-        f"<h1>{escape(title)}</h1></div>{body}</main>"
-        "<footer><span>PaperSteward · 本地阅读工作区</span>"
-        '<span>阅读反馈保存在本地，备注不外发。 <a href="/ui/help">帮助与隐私</a></span>'
-        "</footer></body></html>",
-        headers=HEADERS,
-    )
 
 
 @router.get("/help")
 def help_page() -> HTMLResponse:
     return _page(
         "使用帮助",
-        "<article><h2>从这里开始</h2><p>先在设置页依次审阅并确认研究方向、"
-        "分类法、校准和试运行。Starter 是合成示例，只验证流程。</p>"
-        "<p>日常顺序：同步 / 处理 → 处理审核 → 生成日报 → 阅读并记录反馈。</p>"
-        "<p>运行中可关闭页面，稍后从今日页查看；失败后检查原因，再显式重试。</p></article>"
-        "<article><h2>模型与隐私</h2><p>默认不授权论文数据外发。只有在试运行确认授权范围、配置模型，"
-        "并勾选本次同步授权后，才会访问文献源并发送论文元数据和摘要。备注不发送到模型。</p>"
-        "<p>模型地址、名称和密钥通过 PAPERSTEWARD_LLM_* 环境变量或本地 .env 配置，修改后重启。"
-        "密钥不要粘贴到研究方向、备注或页面表单。</p><p>新工作区：停止后使用 "
+        "<article><h2>从这里开始</h2><p>第一次打开时，先在「首次设置」连接模型服务，再粘贴或上传"
+        "描述研究方向的材料。Agent 会生成研究方向档案和分类标签草案；你可以用自然语言提意见，"
+        "查看每版差异，满意后确认开始使用。</p>"
+        "<p>日常顺序：手动挖掘 → 长期阅读队列 → 随时阅读。</p>"
+        "<p>运行中可关闭页面，稍后从阅读队列查看；想中途退出点「停止任务」，已完成的数据保留。失败后检查原因，再用原参数重试。</p></article>"
+        "<article><h2>模型与隐私</h2><p>模型地址、模型名和密钥在浏览器「设置」页填写，"
+        "保存在本机工作区数据库。保存模型配置即表示同意把以下内容发送给你配置的模型服务："
+        "处理论文时发送标题、摘要及任务所需的研究方向和分类规则，用于筛选、概括和评分；"
+        "生成草案时发送研究材料、修改意见和上一版草案；自动规划检索式时发送研究档案、"
+        "已读评分历史和本次关注点。阅读备注保存在本机，不发送到模型，也不包含在同步请求中。</p>"
+        "<p>采集论文时会访问所选文献来源；打开阅读队列不会自动联网或发邮件。"
+        "密钥不会回显，也不会写入研究材料。</p><p>新工作区：停止后使用 "
         "<code>papersteward start --data-dir 新目录</code>，原数据保留。</p></article>"
-        "<article><h2>常见状态</h2><p>没有候选：检查模型配置与隐私授权，先同步处理，再处理审核。"
-        "没有日报：完成上述步骤后点击生成。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
+        "<article><h2>怎么看运行进度</h2><p>队列顶部显示当前任务、处理篇数、当前论文和已用时；"
+        "每 2 秒更新，任务结束自动刷新。运行页保留失败阶段与重试入口。"
+        "合格论文会直接进入长期队列；排名是当前列表中的名次，评分是推荐参考；"
+        "阅读容量只提供建议，不隐藏论文。任务运行时请等待完成后再提交。</p></article>"
+        "<article><h2>常见状态</h2><p>没有候选：检查模型连接，先手动挖掘，再到阅读队列查看。"
+        "队列为空：调整检索词再次挖掘。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
         "<p>本地单用户工具，请使用默认 127.0.0.1 地址。"
         "关闭服务后再复制整个数据目录保存副本。</p></article>",
     )
@@ -131,27 +94,51 @@ def _error(exc: DomainError | AppError | ValidationError) -> HTMLResponse:
         else "输入无效，请检查评分、方式或备注。"
     )
     return HTMLResponse(
-        f'<article><p role="alert">{escape(message)}</p><a href="/ui/today">返回今日</a></article>',
+        f'<article><p role="alert" tabindex="-1" autofocus>{escape(message)}</p>'
+        '<a href="/ui/today">返回队列</a></article>',
         status_code=422 if isinstance(exc, ValidationError) else 409,
         headers=HEADERS,
     )
 
 
 def _day(session: SessionDep, explicit: date | None = None) -> date:
-    ctx = _context(session, utc_now())
+    ctx = queue_context(session, utc_now())
     return explicit or utc_now().astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
 
 
-def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = None) -> str:
+def _form(
+    paper_id: str,
+    kind: str,
+    *,
+    mode: str = "skim",
+    note: str | None = None,
+    context: str = "queue",
+) -> str:
     url = "/ui/actions/" + quote(paper_id, safe="")
+    # UXR-10：「恢复推荐」名不副实——实际是移回待处理状态，需重新挖掘才会再入队。
     labels = {
         "done": "完成并归档",
         "score": "修订评分",
         "note": "修订备注",
-        "snooze": "稍后",
-        "skip": "跳过7天",
-        "reject": "不相关",
+        "reject": "标记为不感兴趣",
+        "restore": "移回待处理",
     }
+    # UXR-10：1–5 分附简短含义，避免个人评分尺度因人而异。
+    score_options = "".join(
+        f'<option value="{n}">{n} 分 · {label}</option>'
+        for n, label in (
+            (1, "不值得再读"),
+            (2, "一般"),
+            (3, "有帮助"),
+            (4, "很有价值"),
+            (5, "核心参考"),
+        )
+    )
+    confirm = (
+        ' data-confirm="标记后这篇论文不再出现在队列。确认标记为不感兴趣？"'
+        if kind == "reject"
+        else ""
+    )
     fields = ""
     if kind == "done":
         fields += (
@@ -165,7 +152,7 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
     if kind in {"done", "score"}:
         fields += (
             '<label>主观评分<select name="score"><option value="">不评分</option>'
-            + "".join(f'<option value="{n}">{n} 分</option>' for n in range(1, 6))
+            + score_options
             + "</select></label>"
         )
     if kind in {"done", "note", "reject"}:
@@ -174,65 +161,203 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
         fields += (
             " required" if kind == "reject" else ""
         ) + f">{escape(note or '')}</textarea></label>"
-    if kind == "snooze":
-        fields += '<label>延后<select name="days"><option>3</option><option>7</option>'
-        fields += "<option>14</option></select>天</label>"
+    form_class = "record-form" if kind == "done" else ""
     return (
-        f'<form method="post" action="{url}" hx-post="{url}" hx-target="closest article" '
-        'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
+        f'<form method="post" action="{url}" class="stacked-form {form_class}" hx-post="{url}" '
+        'hx-target="closest article" '
+        'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\''
+        f"{confirm}>"
         f'<input type="hidden" name="kind" value="{kind}">'
+        f'<input type="hidden" name="context" value="{context}">'
         f'<input type="hidden" name="request_id" value="{uuid4().hex}">'
         f'{fields}<button type="submit">{labels[kind]}</button></form>'
     )
 
 
-def _card(session: SessionDep, item: QueueItem) -> str:
-    paper = PaperRepository(session).get(item.paper_id)
+def _paper_links(
+    session: SessionDep,
+    paper_id: str,
+    *,
+    paper: Paper | None = None,
+    enrichment: Enrichment | None = None,
+) -> str:
+    if paper is None:
+        paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        return ""
+    body = f'<p class="muted">{escape(", ".join(paper.authors[:3]) or "作者未知")}'
+    if paper.venue:
+        body += " · " + escape(paper.venue)
+    if paper.published_at is not None:
+        body += f" · {paper.published_at.year}"
+    body += "</p><p>"
+    for label, raw in (
+        ("原文", paper.url),
+        ("PDF", paper.pdf_url),
+        ("代码", enrichment.signals.code_url if enrichment else None),
+    ):
+        if url := safe_url(raw):
+            body += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
+    return body + "</p>"
+
+
+def _model_summary_figure(one_line: str) -> str:
+    """一句话概括，标注「模型概括」（UXR-08：与论文原文区分）。"""
+    return (
+        '<figure class="model-summary"><blockquote>'
+        + escape(one_line)
+        + '</blockquote><figcaption class="muted">模型概括，请以原文为准</figcaption></figure>'
+    )
+
+
+def _summary_slots(summary: Summary | dict[str, Any] | None) -> str:
+    """内容概括四槽（UXR-08）：问题/方法/发现/局限；缺失如实显示「暂无」，不编造。"""
+
+    def value(key: str) -> str | None:
+        if summary is None:
+            return None
+        raw = summary.get(key) if isinstance(summary, dict) else getattr(summary, key, None)
+        if raw is None:
+            return None
+        return str(raw).strip() or None
+
+    rows = "".join(
+        f"<dt>{label}</dt><dd>{escape(value(key) or '暂无')}</dd>"
+        for key, label in (
+            ("what", "研究问题"),
+            ("how", "研究方法"),
+            ("finding", "主要发现"),
+            ("limitation", "局限"),
+        )
+    )
+    return f'<section class="summary-slots"><h2>内容概括</h2><dl>{rows}</dl></section>'
+
+
+def _source_material(summary: Summary | dict[str, Any] | None, paper: Paper | None) -> str:
+    """原始摘要与可核查证据；折叠呈现并标明「论文原文片段」（UXR-08）。"""
+    if isinstance(summary, dict):
+        evidence = summary.get("evidence") or ()
+    else:
+        evidence = summary.evidence if summary is not None else ()
+    body = ""
+    if paper is not None and paper.abstract:
+        body += (
+            '<details class="source-material"><summary>论文原始摘要</summary>'
+            f"<p>{escape(paper.abstract)}</p></details>"
+        )
+    quotes = "".join(f"<blockquote>{escape(str(quote))}</blockquote>" for quote in evidence)
+    if quotes:
+        body += (
+            '<details class="source-material"><summary>可核查证据（论文原文片段）</summary>'
+            + quotes
+            + "</details>"
+        )
+    return body
+
+
+def _card(
+    session: SessionDep,
+    item: QueueItem,
+    *,
+    is_new: bool = False,
+    readonly: bool = False,
+    taxonomy: Taxonomy | None = None,
+    paper: Paper | None = None,
+    enrichment: Enrichment | None = None,
+) -> str:
+    if paper is None:
+        paper = PaperRepository(session).get(item.paper_id)
+    enrichment = (
+        EnrichmentRepository(session).get(item.paper_id) if enrichment is None else enrichment
+    )
     mode = item.read_mode.value if isinstance(item, DigestCard) else "skim"
-    meta = ""
-    if isinstance(item, DigestCard):
-        meta = f'<p class="muted">{escape(", ".join(item.authors[:3]) or "作者未知")} · '
-        meta += f"{escape(item.venue or 'venue未知')}</p>"
-        meta += "<p>" + escape(" / ".join([item.primary_tag, *item.secondary_tags])) + "</p>"
-        for label, raw in (("原文", item.url), ("PDF", item.pdf_url), ("代码", item.code_url)):
-            if url := safe_url(raw):
-                meta += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
-    body = (
-        f'<article><span class="tag">{escape(item.primary_tag)}</span>'
-        f"<h2>{escape(item.title)}</h2>{meta}<blockquote>{escape(item.summary_100)}</blockquote>"
+    rank = item.rank if isinstance(item, BacklogItem) else None
+    if taxonomy is None:
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+    label = (
+        next((tag.name for tag in taxonomy.tags if tag.code == item.primary_tag), item.primary_tag)
+        if taxonomy
+        else item.primary_tag
     )
-    if isinstance(item, DigestCard):
-        body += f"<p><strong>{'建议精读' if mode == 'deep' else '建议粗读'}</strong> · "
-        body += f"{escape(item.reason)}</p>"
+    # UXR-07：阅读卡顺序——徽章行 → 标题+推荐参考分 → 元信息行 → 概括 → 操作。
+    badges = []
+    if is_new:
+        badges.append('<span class="tag new-badge">最近挖掘新增</span>')
+    if "quota_fill" in item.explanation.reasons:
+        # X-05/UXR-07：保底填充说明可键盘展开，不只依赖悬浮提示。
+        badges.append(
+            '<details class="quota-note"><summary class="tag quota-fill">保底填充</summary>'
+            "<small>相关度未达正常门槛，按名次补足入队。</small></details>"
+        )
+    badges.append(f'<span class="tag">{escape(label)}</span>')
+    body = f'<article class="paper-card{" newly-added" if is_new else ""}">'
+    body += f'<div class="card-badges">{"".join(badges)}</div>'
     body += (
-        '<details class="score-detail"><summary>分数与排序</summary>'
-        f"<p>综合 {item.priority:.1f} · 排序 {item.rank_score:.1f}</p></details>"
+        f'<h2 class="card-title"><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
+        f'{escape(item.title)}</a><span class="score-pill">'
+        f"推荐参考分 {item.priority:.1f}</span></h2>"
     )
-    body += f'<a href="/ui/papers/{quote(item.paper_id, safe="")}">详情与评分解释</a>'
+    meta = []
+    if rank is not None:
+        meta.append(f"第 {rank} 名")
+    if paper is not None and paper.authors:
+        meta.append(escape(", ".join(paper.authors[:3]) or "作者未知"))
+    if paper is not None and paper.venue:
+        meta.append(escape(paper.venue))
+    for label_text, raw in (
+        ("原文", paper.url if paper else None),
+        ("PDF", paper.pdf_url if paper else None),
+        ("代码", enrichment.signals.code_url if enrichment else None),
+    ):
+        if url := safe_url(raw):
+            meta.append(f'<a class="source" rel="noreferrer" href="{escape(url)}">{label_text}</a>')
+    meta.append(f"<span>评分于 {item.score_date}</span>")
+    body += f'<p class="card-meta">{" · ".join(meta)}</p>'
+    body += f'<blockquote class="card-summary">{escape(item.summary_100)}</blockquote>'
+    if readonly:
+        return body + "</article>"
     if paper and paper.status in {PaperStatus.DONE, PaperStatus.ARCHIVED}:
         body += '<p class="success">已完成归档</p>'
     elif paper and paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
         body += (
-            "<details><summary>记录阅读与反馈</summary>"
+            '<div class="card-actions">'
+            '<details class="action-record"><summary class="action-primary">记录阅读</summary>'
             + _form(item.paper_id, "done", mode=mode)
             + "</details>"
+            '<details class="action-reject"><summary>不感兴趣</summary>'
+            + _form(item.paper_id, "reject")
+            + "</details></div>"
         )
-        body += (
-            "<details><summary>稍后、跳过或不相关</summary>"
-            + "".join(_form(item.paper_id, k) for k in ("snooze", "skip", "reject"))
-            + "</details>"
-        )
-    else:
-        body += "<p>此条目当前已延期或不在阅读队列。</p>"
     return body + "</article>"
+
+
+STATUS_LABELS = {
+    "discovered": "已发现",
+    "deduped": "已去重",
+    "screened": "已筛选",
+    "enriched": "已归纳",
+    "summarized": "已概括",
+    "classified": "已归类",
+    "scored": "已评分",
+    "queued": "队列中",
+    "reading": "阅读中",
+    "done": "已完成",
+    "archived": "已归档",
+    "rejected": "不感兴趣",
+    "shelved": "特殊桶",
+    "pushed": "已推送",
+}
+
+TIER_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
 
 def _shelf_inner(item: ShelfItem) -> str:
     tier_value = item.tier.tier.value if item.tier is not None else "unrated"
-    tier_label = item.tier.tier.value if item.tier is not None else "未评估"
+    tier_label = TIER_LABELS.get(tier_value, "未评估")
+    status_label = STATUS_LABELS.get(item.paper.status.value, item.paper.status.value)
     body = (
         f'<p><span class="tag tier-{tier_value}">{escape(tier_label)}</span> '
-        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(item.paper.status.value)}</p>"
+        f"主标签 {escape(item.primary_tag or '—')} · 状态 {escape(status_label)}</p>"
     )
     meta = []
     if item.paper.authors:
@@ -246,7 +371,12 @@ def _shelf_inner(item: ShelfItem) -> str:
     if item.nomination is not None:
         body += f"<p>{escape(item.nomination.reason)}</p>"
     if item.needs_assessment:
-        body += '<p class="muted">尚未评估档位，请运行 papersteward shelf assess。</p>'
+        # UXR-17：档位评估目前仅有命令行入口，如实标注为高级功能。
+        body += (
+            '<p class="muted">尚未评估档位（高级功能，需在命令行运行 '
+            "<code>papersteward shelf assess</code>）；评估后显示高/中/低档位。"
+            "不影响阅读原文。</p>"
+        )
     for evidence in item.evidence:
         label = "有效证据" if evidence.valid else "未核对证据"
         body += (
@@ -275,28 +405,47 @@ def _shelf_inner(item: ShelfItem) -> str:
     return body
 
 
-def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | None) -> str:
+def _shelf_section(
+    summary: ShelfSummary, page: ShelfPage, *, next_url: str | None, prev_url: str | None = None
+) -> str:
     body = (
-        f"<section><h2>{escape(summary.name)} "
-        f'<span class="tag">{escape(summary.kind.value)}</span></h2>'
-        f'<p class="muted">周上限 {summary.quota} · 共 {summary.total} 篇 · '
-        f"high {summary.high} / medium {summary.medium} / low {summary.low} / "
-        f"未评估 {summary.unrated}</p>"
+        f"<section><h2>{escape(summary.name)}</h2>"
+        # UXR-17：配额如实标注为提示性上限（当前实现不强制截断收录）。
+        f'<p class="muted">提示性周上限 {summary.quota} 篇（不强制截断收录） · '
+        f"共 {summary.total} 篇 · 高 {summary.high} · 中 {summary.medium} · "
+        f"低 {summary.low} · 未评估 {summary.unrated}</p>"
     )
+    if not page.items:
+        body += (
+            '<p class="muted">该收藏暂无论文——挖掘后与主题相关的论文会自动收录在此。</p>'
+            '<p><a class="button secondary" href="/ui/queue">返回阅读队列</a></p>'
+        )
     for item in page.items:
         body += (
             f'<article><h2><a href="/ui/papers/{quote(item.paper.id, safe="")}">'
             f"{escape(item.paper.title)}</a></h2>{_shelf_inner(item)}</article>"
         )
-    if not page.items:
-        body += '<p class="muted">暂无内容（不占位）。</p>'
+    if prev_url is not None:
+        body += f'<p><a href="{escape(prev_url)}">上一页</a></p>'
     if next_url is not None:
         body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
     return body + "</section>"
 
 
 def _view_table(preview: ViewPreview) -> str:
-    headers = "".join(f"<th>{key}</th>" for key in ("R", "A", "E", "F", "H", "U"))
+    from papersteward.api.score_render import COMPONENT_LABELS
+
+    component_keys = ("R", "A", "E", "F", "H", "U")
+    # UXR-16：表头用短中文列名；窄屏 data-label 仍是完整中文字段名。
+    short_labels = {
+        "R": "相关性",
+        "A": "可信度",
+        "E": "复用",
+        "F": "新鲜度",
+        "H": "平衡",
+        "U": "偏好",
+    }
+    headers = "".join(f'<th scope="col">{short_labels[key]}</th>' for key in component_keys)
     rows = ""
     for item in preview.items:
         moved = (
@@ -304,50 +453,70 @@ def _view_table(preview: ViewPreview) -> str:
             if item.delta_rank == 0
             else (f"↑{item.delta_rank}" if item.delta_rank > 0 else f"↓{-item.delta_rank}")
         )
+        # UXR-03：窄屏表格卡片化只认 data-label；每个数字单元格都带中文字段名，
+        # 标题列自明不带标签，避免长标题前再垫一层前缀。
         cells = "".join(
-            f"<td>{item.components[key].score:.0f}</td>" for key in ("R", "A", "E", "F", "H", "U")
+            f'<td data-label="{COMPONENT_LABELS[key][0]}">{item.components[key].score:.0f}</td>'
+            for key in component_keys
         )
         rows += (
-            f"<tr><td>{item.rank}</td><td>{item.default_rank}</td><td>{moved}</td>"
+            f'<tr><td data-label="名次">{item.rank}</td>'
+            f'<td data-label="默认名次">{item.default_rank}</td>'
+            f'<td data-label="名次变化">{moved}</td>'
             f'<td><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
-            f"{escape(item.title)}</a></td><td>{item.view_score:.1f}</td>{cells}</tr>"
+            f"{escape(item.title)}</a></td>"
+            f'<td data-label="视图分">{item.view_score:.1f}</td>{cells}</tr>'
         )
     if not rows:
-        return '<p class="muted">当前合格候选为空；先生成当日快照或检查日期。</p>'
+        return '<p class="muted">当前队列为空；先挖掘论文或刷新排序。</p>'
     return (
-        "<table><thead><tr><th>#</th><th>默认</th><th>变化</th><th>标题</th>"
-        f"<th>视图分</th>{headers}</tr></thead><tbody>{rows}</tbody></table>"
+        '<table><thead><tr><th scope="col">#</th><th scope="col">默认</th>'
+        '<th scope="col">变化</th><th scope="col">标题</th><th scope="col">视图分</th>'
+        f"{headers}</tr></thead><tbody>{rows}</tbody></table>"
     )
 
 
 def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None) -> str:
     date_part = f"&date={day.isoformat()}" if day is not None else ""
-    links = "<p>预设："
-    parts = []
+    # UXR-16：预设以卡片呈现并附适用情境，当前选中项标注「当前」。
+    cards = '<ul class="preset-list">'
     for preset in list_presets():
-        parts.append(
-            f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
+        # UXR-16（用户反馈）：选中只靠边框高亮，不再显示「当前」徽标。
+        active = preview.view.label == preset.label
+        cards += (
+            f'<li><a class="preset-card{" active" if active else ""}" '
+            f'href="/ui/views?preset={quote(preset.name)}{date_part}">'
+            f"<strong>{escape(preset.label)}</strong>"
+            f'<span class="muted">{escape(preset.description)}</span></a></li>'
         )
-    links += " · ".join(parts) + "</p>"
-    links += "<p>已保存："
+    cards += "</ul>"
+    saved_html = "<p>已保存："
     if saved:
         parts = []
         for config in saved:
+            active = preview.view.label == config.name
+            mark = ' <span class="tag">当前</span>' if active else ""
             parts.append(
                 f'<a href="/ui/views?name={quote(config.name)}{date_part}">'
-                f"{escape(config.name)}</a>"
+                f"{escape(config.name)}</a>{mark}"
             )
-        links += " · ".join(parts)
+        saved_html += " · ".join(parts)
     else:
-        links += '<span class="muted">尚无；用 papersteward view save 保存。</span>'
-    links += "</p>"
+        saved_html += (
+            '<span class="muted">还没有保存的排序视图；可在命令行用 '
+            "papersteward view save 保存自定义公式。</span>"
+        )
+    saved_html += "</p>"
     formula_text = preview.view.as_json()["formula"]
-    links += (
-        f'<p class="muted">当前视图：{escape(preview.view.label)} · '
-        f"公式：{escape(formula_text)} · 候选 {preview.candidate_total} 篇 · "
-        f"{preview.changed} 篇名次变化。视图只重排当前队列，不改变全局权重与快照。</p>"
+    advanced = (
+        '<details class="formula-details"><summary>公式与高级信息</summary>'
+        f"<p>公式：<code>{escape(formula_text)}</code></p>"
+        f"<p>候选 {preview.candidate_total} 篇 · {preview.changed} 篇名次变化。</p></details>"
     )
-    return links
+    return (
+        cards + saved_html + f'<p class="muted">当前视图：{escape(preview.view.label)} · '
+        "视图只重排当前队列，不改变全局权重与快照。</p>" + advanced
+    )
 
 
 @router.get("/views")
@@ -369,78 +538,328 @@ def views(
             preset=preset,
             view_id=view_id,
             limit=limit,
+            persistent=score_date is None,
         )
         body = _view_links(preview, saved, score_date) + _view_table(preview)
-        return _page("自定义排序", body)
+        return _page("排序视图", body)
     except (DomainError, AppError) as exc:
-        return _page("自定义排序", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("排序视图", f'<p role="alert">{escape(exc.message)}</p>')
+
+
+def _static_headers(cache_control: str) -> dict[str, str]:
+    """静态资产共用安全头；缓存策略按资产可变性区分（HTML 页面仍为 no-store）。"""
+    return {**HEADERS, "Cache-Control": cache_control}
 
 
 @router.get("/static/htmx.js")
 def htmx() -> FileResponse:
-    return FileResponse(STATIC / "htmx-2.0.11.min.js", media_type="application/javascript")
+    # 文件名内含版本号，内容永不变化：允许浏览器长缓存、不再重复下载。
+    return FileResponse(
+        STATIC / "htmx-2.0.11.min.js",
+        media_type="application/javascript",
+        headers=_static_headers("public, max-age=31536000, immutable"),
+    )
+
+
+@router.get("/static/setup.js")
+def setup_script() -> FileResponse:
+    # 自有脚本会随版本变化：no-cache 走 ETag 协商，改动能立即生效且有 304 快路径。
+    return FileResponse(
+        STATIC / "setup.js",
+        media_type="application/javascript",
+        headers=_static_headers("no-cache"),
+    )
 
 
 @router.get("/static/style.css")
 def style() -> FileResponse:
-    return FileResponse(STATIC / "style.css", media_type="text/css")
+    # 页面外壳引用的 URL 已带内容哈希（V-11）：内容变化则 URL 变化，可放心长缓存。
+    return FileResponse(
+        STATIC / "style.css",
+        media_type="text/css",
+        headers=_static_headers("public, max-age=86400"),
+    )
+
+
+@router.get("/static/favicon.svg")
+def favicon() -> FileResponse:
+    # 同样式：URL 由内容哈希区分（见 html._ASSET_VERSION）。
+    return FileResponse(
+        STATIC / "favicon.svg",
+        media_type="image/svg+xml",
+        headers=_static_headers("public, max-age=86400"),
+    )
+
+
+def _is_fragment(request: Request) -> bool:
+    """X-02/UXR-02：htmx 提交的筛选只换列表区（fragment=1 + hx-request 双条件判定，
+    直接访问带该参数的 URL 仍返回整页）。所有队列响应路径都必须保持这一契约。"""
+    return (
+        request.query_params.get("fragment") == "1" and request.headers.get("hx-request") == "true"
+    )
+
+
+def _backlog_page(
+    request: Request,
+    session: SessionDep,
+    filters: BacklogFilters,
+    offset: int,
+    search: str = "",
+) -> Response:
+    if get_onboarding(session).stage.value != "active":
+        if _is_fragment(request):
+            # UXR-02：片段请求不能跟随 303 把整页设置外壳换进列表容器。
+            return HTMLResponse("", headers={**HEADERS, "HX-Redirect": "/ui/setup"})
+        return RedirectResponse("/ui/setup", status_code=303)
+    fragment_mode = _is_fragment(request)
+    try:
+        now = utc_now()
+        page = read_backlog(
+            session, now=now, limit=50, offset=offset, filters=filters, search=search
+        )
+        # UXR-05：顶部统计的未读总数不受筛选影响，与列表的结果数分开计算。
+        unread_total = read_backlog(session, now=now, limit=1).total
+        active_filters = bool(
+            filters.tag
+            or filters.read_status != "unread"
+            or filters.min_priority > 0
+            or filters.max_priority < 100
+            or search.strip()
+        )
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        list_body = ""
+        if page.items:
+            dates = sorted({item.score_date for item in page.items})
+            date_label = str(dates[0]) if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
+            scope_note = (
+                f"符合当前筛选 {page.total} 篇（未读共 {unread_total} 篇）"
+                if active_filters
+                else f"共 {page.total} 篇"
+            )
+            clear_link = ' · <a href="/ui/queue">清除筛选</a>' if active_filters else ""
+            list_body += (
+                f'<p class="muted">{scope_note}{clear_link} · 排序基于 {date_label} 的评分。'
+                "可随时刷新排序。</p>"
+            )
+            # 卡片关联数据批量取齐（E-10）：论文/富化结果各一条 IN 查询。
+            ids = [item.paper_id for item in page.items]
+            papers = PaperRepository(session).get_many(ids)
+            enrichments = EnrichmentRepository(session).get_many(ids)
+            list_body += "".join(
+                _card(
+                    session,
+                    item,
+                    is_new=item.paper_id in added_ids(session),
+                    taxonomy=taxonomy,
+                    paper=papers.get(item.paper_id),
+                    enrichment=enrichments.get(item.paper_id),
+                )
+                for item in page.items
+            )
+        else:
+            if active_filters:
+                # UXR-19：空结果按原因给直接行动——一键清除，而不是只有文字提示。
+                list_body += (
+                    '<article class="empty"><h2>没有论文符合当前筛选</h2>'
+                    "<p>可调整筛选条件，或清除后查看全部未读；也可以「挖掘新论文」补充。</p>"
+                    '<p><a class="button secondary" href="/ui/queue">清除筛选，显示全部</a></p>'
+                    "</article>"
+                )
+            else:
+                list_body += (
+                    '<article class="empty"><h2>留一点时间，读重要的论文</h2>'
+                    "<p>队列还是空的。点击上方「挖掘新论文」：采集、处理、评分完成后，"
+                    "论文会直接出现在这里。</p></article>"
+                )
+        if offset or offset + 50 < page.total:
+            # UXR-21：统一用分页条组件（保留筛选条件）。
+            page_params: dict[str, Any] = {
+                **filters.model_dump(exclude_none=True),
+                "fragment": 1,
+            }
+            if search.strip():
+                page_params["search"] = search.strip()
+            list_body += _pagination(
+                "/ui/queue", page_params, offset=offset, total=page.total, page_size=50
+            )
+        total_attr = f' data-total="{page.total}"' if page.total else ""
+        list_body = f'<div id="queue-list"{total_attr}>{list_body}</div>'
+        if fragment_mode:
+            return HTMLResponse(list_body, headers=HEADERS)
+
+        toolbar, dash_body = dashboard(
+            session, request.app.state.settings, _day(session), unread_total=unread_total
+        )
+        body = dash_body
+        if "cancelled" in request.query_params:
+            body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
+        # UXR-19：真的空队列不展示成排筛选控件，把注意力留给「挖掘新论文」。
+        if page.items or active_filters:
+            # UXR-06：标签/状态/分数收进「更多筛选」——桌面始终展开（display:contents），
+            # 手机由复选框控制默认收起；不用 details，规避其 contents 布局限制。
+            advanced = (
+                '<input type="checkbox" id="adv-toggle" class="adv-toggle">'
+                '<label for="adv-toggle" class="adv-chip">更多筛选</label>'
+                '<div class="adv-fields"><label>研究标签<select name="tag">'
+                '<option value="">全部标签</option>'
+            )
+            for tag in taxonomy.tags if taxonomy else ():
+                if tag.level.value == "primary" and tag.active:
+                    selected = " selected" if filters.tag == tag.code else ""
+                    advanced += (
+                        f'<option value="{escape(tag.code)}"{selected}>{escape(tag.name)}</option>'
+                    )
+            advanced += '</select></label><label>阅读状态<select name="read_status">'
+            for value, label in (("unread", "未读"), ("read", "已读"), ("all", "全部")):
+                selected = " selected" if filters.read_status == value else ""
+                advanced += f'<option value="{value}"{selected}>{label}</option>'
+            advanced += "</select></label>"
+            for name, number, label in (
+                ("min_priority", filters.min_priority, "最低分"),
+                ("max_priority", filters.max_priority, "最高分"),
+            ):
+                advanced += (
+                    f'<label>{label}<input type="number" name="{name}" value="{number:g}" '
+                    'min="0" max="100" step="0.1"></label>'
+                )
+            advanced += "</div>"
+            filter_form = (
+                '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
+                'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
+                '<input type="hidden" name="fragment" value="1">'
+                '<label class="filter-search">搜索<input name="search" value="'
+                + escape(search)
+                + '" placeholder="标题或摘要关键词"></label>'
+                + advanced
+                + "<button>应用筛选</button></form>"
+            )
+            body += filter_form
+        body += list_body
+        return _page("阅读队列", body, heading_actions=toolbar)
+    except (DomainError, AppError) as exc:
+        if fragment_mode:
+            return fragment_error("queue-list", exc.message)
+        return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
+
+
+def added_ids(session: SessionDep) -> set[str]:
+    """最近一次成功挖掘新增的论文 ID（本次新增徽章）。"""
+    latest = RunRepository(session).latest("ui.sync", status=RunStatus.SUCCEEDED)
+    return set(latest.stats_json.get("added_ids", [])) if latest else set()
 
 
 @router.get("/today")
 def today(request: Request, session: SessionDep, day: date | None = None) -> Response:
-    if get_onboarding(session).stage.value != "active":
-        return RedirectResponse("/ui/setup", status_code=303)
-    try:
-        selected = _day(session, day)
-        current = _day(session)
-        from papersteward.api.workflow_pages import dashboard
+    if day is not None:
+        return RedirectResponse(f"/ui/digests/{day}", status_code=303)
+    return _backlog_page(request, session, BacklogFilters(), 0)
 
-        intro = dashboard(session, request.app.state.settings, selected)
+
+def _parse_queue_filters(
+    min_priority: str | None, max_priority: str | None, read_status: str
+) -> BacklogFilters | str:
+    """解析并校验队列筛选参数；非法时返回可直接展示的中文原因（UXR-02）。
+
+    UI 路由在参数层不用 FastAPI 的 Query 约束：那会返回 422 JSON 信封，
+    被 htmx 的 responseHandling 原样换进列表容器。JSON API 的 /queue、/backlog
+    仍由 BacklogFilters 的字段校验兜底，契约不变。
+    """
+
+    def score(value: str | None, default: float, label: str) -> float | str:
+        if value is None or value == "":
+            return default
         try:
-            digest = read_digest(session, selected)
-        except NotFoundError:
-            if selected == current:
-                return _page(
-                    "今日阅读",
-                    intro + '<article class="empty"><h2>从一份好奇开始</h2>'
-                    "<p>还没有今日日报。先同步处理论文、完成审核，再点击上方生成日报。</p>"
-                    "<p>首次体验可回设置页查看已确认的合成试运行预览。</p></article>",
-                )
-            label = "该日"
-            return _page(
-                "今日阅读",
-                intro + f'<p class="muted">{selected} · 按阅读容量与主题平衡，安排该日文献。</p>'
-                '<form action="/ui/digests" method="post" hx-post="/ui/digests" '
-                'hx-target="main" hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
-                f'<input type="hidden" name="day" value="{selected.isoformat()}">'
-                f"<button>生成{label}日报</button></form>",
-            )
-        body = intro + f'<p class="muted">{selected} · 队列 {digest.queue_total} 篇 · '
-        body += f"待确认 {digest.pending_review} 篇</p>"
-        body += (
-            "".join(_card(session, item) for item in digest.items)
-            or "<article>今日暂无合格候选，给阅读留一点空白。</article>"
-        )
-        body += (
-            f"<p>{escape(digest.special_status)} · 延期/冷却/配额未选 {len(digest.deferred)} 篇</p>"
-        )
-        return _page("今日阅读", body)
-    except (DomainError, AppError) as exc:
-        return _page("今日阅读", f'<p role="alert">{escape(exc.message)}</p>')
+            number = float(value)
+        except ValueError:
+            return f"{label}必须是 0–100 之间的数字，请修正后重新筛选。"
+        if not 0 <= number <= 100:
+            return f"{label}必须在 0–100 之间，请修正后重新筛选。"
+        return number
+
+    low = score(min_priority, 0.0, "最低分")
+    if isinstance(low, str):
+        return low
+    high = score(max_priority, 100.0, "最高分")
+    if isinstance(high, str):
+        return high
+    if low > high:
+        return "最低分不能高于最高分。请调整分数范围后重新筛选。"
+    if read_status not in ("unread", "read", "all"):
+        return "阅读状态取值无效，请返回队列重新筛选。"
+    return BacklogFilters(
+        min_priority=low,
+        max_priority=high,
+        read_status=cast(Literal["unread", "read", "all"], read_status),
+    )
+
+
+def _queue_filter_error(request: Request, message: str) -> Response:
+    """筛选参数非法：片段请求返回稳定列表容器（表单输入在容器外自然保留），
+    整页请求返回带返回链接的完整页面；都不破坏 #queue-list（UXR-02）。"""
+    if _is_fragment(request):
+        return fragment_error("queue-list", message, status_code=422)
+    rendered = _page(
+        "阅读队列",
+        f'<p role="alert">{escape(message)}</p>'
+        '<p><a class="button secondary" href="/ui/queue">返回阅读队列</a></p>',
+    )
+    rendered.status_code = 422
+    return rendered
 
 
 @router.get("/queue")
-def queue(session: SessionDep, offset: int = 0) -> HTMLResponse:
+def queue(
+    request: Request,
+    session: SessionDep,
+    tag: str | None = None,
+    min_priority: str | None = None,
+    max_priority: str | None = None,
+    read_status: str = "unread",
+    search: str = "",
+    offset: str | None = None,
+) -> Response:
+    parsed = _parse_queue_filters(min_priority, max_priority, read_status)
+    if isinstance(parsed, str):
+        return _queue_filter_error(request, parsed)
     try:
-        page = read_queue(session, _day(session), now=utc_now(), limit=50, offset=offset)
-        body = f"<p>待阅读 {page.total} 篇</p>" + "".join(
-            _card(session, item) for item in page.items
+        offset_value = int(offset) if offset else 0
+    except ValueError:
+        offset_value = -1
+    if offset_value < 0:
+        return _queue_filter_error(request, "页码参数无效，请返回队列重新浏览。")
+    if len(search) > 200:
+        return _queue_filter_error(request, "搜索关键词最长 200 字，请缩短后重试。")
+    return _backlog_page(request, session, parsed, offset_value, search=search)
+
+
+@router.get("/digests/{day}")
+def historical_digest(day: date, session: SessionDep) -> HTMLResponse:
+    try:
+        digest = read_digest(session, day)
+    except NotFoundError:
+        return _page(
+            "历史日报",
+            f'<p role="alert">{day} 没有历史日报。</p>'
+            "<p>现在的论文会直接进入长期阅读队列，不再按天生成日报；"
+            '已有数据保留只读。<a href="/ui/queue">返回阅读队列</a></p>',
         )
-        if offset + 50 < page.total:
-            body += f'<a href="/ui/queue?offset={offset + 50}">下一页</a>'
-        return _page("阅读队列", body or "<p>队列为空。</p>")
-    except (DomainError, AppError) as exc:
-        return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
+    body = f"<p>历史日报 · {day} · 只读保留</p>"
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    ids = [item.paper_id for item in digest.items]
+    papers = PaperRepository(session).get_many(ids)
+    enrichments = EnrichmentRepository(session).get_many(ids)
+    body += "".join(
+        _card(
+            session,
+            item,
+            readonly=True,
+            taxonomy=taxonomy,
+            paper=papers.get(item.paper_id),
+            enrichment=enrichments.get(item.paper_id),
+        )
+        for item in digest.items
+    )
+    return _page("历史日报", body, nav="阅读队列")
 
 
 @router.get("/shelves")
@@ -451,13 +870,18 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
         if kind is not None:
             parsed = parse_kind(kind)
             summaries = [summary for summary in summaries if summary.kind is parsed]
+        # UXR-17：先解释「为什么不在常规阅读队列」，再展示各收藏。
+        intro = (
+            '<p class="muted">这些论文不在常规阅读队列——跨层综述、远邻领域与经典/奠基论文'
+            "按主题收藏在此，供拓展阅读，不占常规队列容量。</p>"
+        )
         links = '<p><a href="/ui/shelves">全部</a>'
         for summary in all_summaries:
             links += (
                 f' · <a href="/ui/shelves?kind={quote(summary.kind.value)}">'
                 f"{escape(summary.name)}（{summary.total}）</a>"
             )
-        body = links + "</p>"
+        body = intro + links + "</p>"
         for summary in summaries:
             page = list_shelf(
                 session,
@@ -466,12 +890,18 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
                 offset=offset if kind is not None else 0,
             )
             next_url = None
-            if kind is not None and offset + 50 < page.total:
-                next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
-            body += _shelf_section(summary, page, next_url=next_url)
-        return _page("特殊桶", body)
+            prev_url = None
+            if kind is not None:
+                if offset + 50 < page.total:
+                    next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
+                if offset > 0:
+                    prev_url = (
+                        f"/ui/shelves?kind={quote(summary.kind.value)}&offset={max(0, offset - 50)}"
+                    )
+            body += _shelf_section(summary, page, next_url=next_url, prev_url=prev_url)
+        return _page("探索收藏", body, nav="探索收藏")
     except (DomainError, AppError) as exc:
-        return _page("特殊桶", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("探索收藏", f'<p role="alert">{escape(exc.message)}</p>', nav="探索收藏")
 
 
 @router.get("/papers/{paper_id}")
@@ -480,42 +910,169 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
             raise NotFoundError("文献不存在")
+        # UXR-14：详情页按论文归属高亮导航（归档/探索收藏/阅读队列）。
         if paper.status is PaperStatus.ARCHIVED:
-            record = read_archive(session, paper_id)
-            body = (
-                '<p class="success">已完成归档</p><pre>'
-                + escape(json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2))
-                + "</pre>"
-            )
-            body += _form(paper_id, "score") + _form(paper_id, "note", note=record.note)
-            return _page(
-                str(record.content.get("metadata", {}).get("title", paper_id)),
-                "<article>" + body + "</article>",
-            )
-        shelf_item = shelf_item_for_paper(session, paper_id)
-        if shelf_item is not None:
-            summary = SummaryRepository(session).get(paper_id)
-            body = "<article><blockquote>"
-            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
-            body += _shelf_inner(shelf_item)
-            if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
-                body += _form(paper_id, "done")
-            return _page(paper.title, body + "</article>")
-        _day(session)
-        score = explain_score(session, paper_id, now=utc_now())
-        summary = SummaryRepository(session).get(paper_id)
-        body = "<article><blockquote>"
-        body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
-        body += (
-            "<details open><summary>评分解释</summary><pre>"
-            + escape(score.model_dump_json(indent=2))
-            + "</pre></details>"
-        )
-        if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
-            body += _form(paper_id, "done")
-        return _page(paper.title, body + "</article>")
+            nav_key = "归档"
+        elif shelf_item_for_paper(session, paper_id) is not None:
+            nav_key = "探索收藏"
+        else:
+            nav_key = "阅读队列"
+        return _page(paper.title, _detail_article(session, paper_id, paper=paper), nav=nav_key)
     except (DomainError, AppError) as exc:
-        return _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
+        rendered = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
+        if isinstance(exc, NotFoundError):
+            rendered.status_code = 404
+        return rendered
+
+
+def _detail_article(
+    session: SessionDep,
+    paper_id: str,
+    *,
+    paper: Paper | None = None,
+    notice: str = "",
+    notice_role: str = "status",
+    note_draft: str | None = None,
+) -> str:
+    """详情页正文（UXR-09）：详情路由与详情上下文的动作响应共用同一渲染，
+    反馈完成后内容保留、仅反馈区切换；notice 插在正文最前（成功或错误提示）。"""
+    if paper is None:
+        paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        raise NotFoundError("文献不存在")
+    notice_html = (
+        f'<p role="{notice_role}" tabindex="-1" autofocus>{escape(notice)}</p>' if notice else ""
+    )
+    if paper.status is PaperStatus.ARCHIVED:
+        record = read_archive(session, paper_id)
+        from papersteward.api.score_render import score_explanation
+
+        summary_data = record.content.get("summary", {})
+        body = (
+            notice_html
+            + '<p class="back-link"><a href="/ui/archive">← 返回归档</a></p>'
+            + '<p class="success">已完成归档</p>'
+        )
+        body += _paper_links(session, paper_id)
+        body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
+        body += _summary_slots(summary_data)
+        body += _source_material(summary_data, paper)
+        rating_label = record.score if record.score is not None else "未评分"
+        body += (
+            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 完成于 {record.archived_at.date()}</p>"
+        )
+        saved_note = note_draft if note_draft is not None else record.note
+        body += "<p>" + escape(saved_note or "暂无备注") + "</p>"
+        body += _form(paper_id, "score", context="detail")
+        body += _form(paper_id, "note", note=saved_note, context="detail")
+        if record.revision_history:
+            body += "<details><summary>反馈修订记录</summary><ul>"
+            for revision in record.revision_history:
+                body += (
+                    "<li>"
+                    + escape(str(revision.get("created_at", "")))
+                    + " · "
+                    + escape(
+                        str(
+                            revision.get("score") if revision.get("score") is not None else "未评分"
+                        )
+                    )
+                    + " · "
+                    + escape(str(revision.get("note") or ""))
+                    + "</li>"
+                )
+            body += "</ul></details>"
+        score_data = record.content.get("score")
+        if isinstance(score_data, dict):
+            # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
+            body += (
+                '<details class="score-details">'
+                "<summary>推荐依据（六维评分与相关性依据）</summary>"
+                + score_explanation(ScoreExplanation.model_validate(score_data))
+                + "</details>"
+            )
+        return "<article>" + body + "</article>"
+    shelf_item = shelf_item_for_paper(session, paper_id)
+    if shelf_item is not None:
+        summary = SummaryRepository(session).get(paper_id)
+        body = (
+            "<article>"
+            + notice_html
+            + '<p class="back-link"><a href="/ui/shelves">← 返回探索收藏</a></p>'
+            + "<blockquote>"
+        )
+        body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+        body += _shelf_inner(shelf_item)
+        if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
+            body += _form(paper_id, "done", context="detail")
+        return body + "</article>"
+    if paper.status is PaperStatus.REJECTED:
+        summary = SummaryRepository(session).get(paper_id)
+        body = "<article>" + notice_html
+        body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
+        body += _paper_links(session, paper_id)
+        body += (
+            '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
+            "「移回待处理」后不会立即回队，下次「挖掘新论文」处理时会重新评估。</p>"
+        )
+        body += _form(paper_id, "restore", context="detail")
+        return body + "</article>"
+    _day(session)
+    from papersteward.api.score_render import score_explanation
+
+    score = explain_score(session, paper_id, now=utc_now())
+    summary = SummaryRepository(session).get(paper_id)
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    tag_code = score.primary_tag if isinstance(score, ScoreExplanation) else None
+    tag_label = (
+        next(
+            (tag.name for tag in taxonomy.tags if tag.code == tag_code),
+            tag_code,
+        )
+        if taxonomy and tag_code
+        else None
+    )
+    body = (
+        "<article>"
+        + notice_html
+        + '<p class="back-link"><a href="/ui/queue">← 返回阅读队列</a></p>'
+        + '<p class="detail-badges">'
+    )
+    if paper.status is PaperStatus.SCREENED:
+        # UXR-10：移回待处理的论文不在队列，详情页如实说明去向与下一步。
+        body += (
+            '<p class="notice">这篇论文已从「不感兴趣」移回待处理状态，不在当前阅读队列；'
+            "下次「挖掘新论文」处理时会重新评估是否入队。</p>"
+        )
+    if tag_label:
+        body += f'<span class="tag">{escape(str(tag_label))}</span> '
+    body += (
+        '<span class="tag status-tag">'
+        + escape(STATUS_LABELS.get(paper.status.value, paper.status.value))
+        + "</span></p>"
+    )
+    body += _paper_links(session, paper_id)
+    body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
+    body += _summary_slots(summary)
+    body += _source_material(summary, paper)
+    if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
+        body += (
+            '<details class="record-reading"><summary>记录阅读（方式 / 评分 / 备注）</summary>'
+            + _form(paper_id, "done", context="detail")
+            + "</details>"
+        )
+        body += (
+            "<details><summary>不感兴趣</summary>"
+            + _form(paper_id, "reject", context="detail")
+            + "</details>"
+        )
+    # UXR-08：推荐依据默认折叠——先理解论文，再解释机器评分。
+    body += (
+        '<details class="score-details"><summary>推荐依据（六维评分与相关性依据）</summary>'
+        + score_explanation(score)
+        + "</details>"
+    )
+    return body + "</article>"
 
 
 @router.get("/archive")
@@ -528,105 +1085,212 @@ def archive(
 ) -> HTMLResponse:
     try:
         page = list_archives(session, query=query, tag=tag, min_score=min_score, offset=offset)
-        body = (
-            '<form method="get"><label>搜索<input name="query" value="'
-            + escape(query or "")
-            + '"></label><button>查找</button></form>'
+        # X-06：tag/min_score 后端早已支持，补齐 UI 控件并让筛选条件随导出/翻页保留。
+        taxonomy = TaxonomyRepository(session).latest_confirmed()
+        tag_names = (
+            {t.code: t.name for t in taxonomy.tags if t.level.value == "primary"}
+            if taxonomy
+            else {}
         )
-        body += '<p>导出：<a href="/archive/export?format=bibtex">BibTeX</a> · '
-        body += '<a href="/archive/export?format=csv">CSV</a> · '
-        body += '<a href="/archive/export?format=markdown">Markdown</a></p>'
+        body = '<form method="get" class="queue-filters"><label>搜索<input name="query" value="'
+        body += escape(query or "") + '"></label><label>研究标签<select name="tag">'
+        body += '<option value="">全部标签</option>'
+        if taxonomy:
+            for tag_option in taxonomy.tags:
+                if tag_option.level.value == "primary" and tag_option.active:
+                    selected = " selected" if tag == tag_option.code else ""
+                    body += (
+                        f'<option value="{escape(tag_option.code)}"{selected}>'
+                        f"{escape(tag_option.name)}</option>"
+                    )
+        body += "</select></label>"
+        body += (
+            f'<label>最低评分<input type="number" name="min_score" min="1" max="5" '
+            f'value="{min_score if min_score is not None else ""}"></label>'
+            "<button>应用筛选</button></form>"
+        )
+        export_params = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "query": query or "",
+                    "tag": tag or "",
+                    "min_score": min_score,
+                }.items()
+                if value not in (None, "")
+            }
+        )
+        export_suffix = ("&" + export_params) if export_params else ""
+        total = page["total"]
+        filtered = bool((query or "").strip() or tag or min_score is not None)
+        clear_link = ' · <a href="/ui/archive">清除筛选</a>' if filtered else ""
+        body += (
+            f'<p class="muted">共 {total} 条记录{clear_link}。'
+            f'导出：<a href="/archive/export?format=bibtex{escape(export_suffix)}">BibTeX</a> · '
+        )
+        body += f'<a href="/archive/export?format=csv{escape(export_suffix)}">CSV</a> · '
+        body += f'<a href="/archive/export?format=markdown{escape(export_suffix)}">Markdown</a> · '
+        body += f'<a href="/archive/export?format=json{escape(export_suffix)}">JSON</a>'
+        # UXR-18：导出路由现已接受筛选参数，说明与实际行为一致。
+        body += f"（将导出当前筛选的全部 {total} 条，含备注与评分）</p>"
+        if not page["items"]:
+            if filtered:
+                body += (
+                    '<article class="empty"><h2>没有匹配的归档记录</h2>'
+                    "<p>可调整筛选条件，或清除后查看全部。</p>"
+                    '<p><a class="button secondary" href="/ui/archive">清除筛选，显示全部</a></p>'
+                    "</article>"
+                )
+            else:
+                body += (
+                    '<p class="muted">归档还没有内容。在队列中读完论文并点「完成并归档」后，'
+                    "会出现在这里。</p>"
+                )
         for record in page["items"]:
-            title = record.content.get("metadata", {}).get("title", record.paper_id)
-            rating = record.score if record.score is not None else "未评分"
+            metadata = record.content.get("metadata", {})
+            title = metadata.get("title", record.paper_id)
+            reading = record.content.get("reading") or {}
+            mode_label = {"deep": "精读", "skim": "粗读"}.get(str(reading.get("actual_mode")))
+            machine_score = (record.content.get("score") or {}).get("scores", {}).get("P")
+            # UXR-18：标签用名称；个人评分与机器推荐参考分明确区分。
+            tag_name = tag_names.get(record.primary_tag, record.primary_tag)
+            personal = f"我的评分 {record.score}/5" if record.score is not None else "未评分"
+            meta = [escape(str(tag_name)), personal]
+            if mode_label:
+                meta.append(mode_label)
+            meta.append(f"完成于 {record.archived_at.date()}")
+            if machine_score is not None:
+                meta.append(f"推荐参考分 {float(machine_score):.1f}")
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
-            body += f"{escape(title)}</a></h2><p>{escape(record.primary_tag)} · 评分 {rating}</p>"
+            body += f"{escape(title)}</a></h2><p>{' · '.join(meta)}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
-        if offset + 50 < page["total"]:
-            from urllib.parse import urlencode
-
-            body += (
-                '<a href="/ui/archive?'
-                + escape(urlencode({"query": query or "", "offset": offset + 50}))
-                + '">下一页</a>'
-            )
-        return _page(f"阅读归档 · {page['total']} 篇", body)
+        page_params = {
+            key: value
+            for key, value in {"query": query, "tag": tag, "min_score": min_score}.items()
+            if value not in (None, "")
+        }
+        body += _pagination("/ui/archive", page_params, offset=offset, total=total, page_size=50)
+        return _page(f"阅读归档 · {total} 篇", body, nav="归档")
     except (DomainError, AppError) as exc:
-        return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
 
 
-def _guard(request: Request) -> None:
-    origin = request.headers.get("origin")
-    if request.headers.get("sec-fetch-site") == "cross-site" or (
-        origin and origin.rstrip("/") != str(request.base_url).rstrip("/")
-    ):
-        raise InvariantViolation("ui.origin", "拒绝跨站操作")
-    if not origin and request.headers.get("x-papersteward-ui") != "1":
-        raise InvariantViolation("ui.origin", "需要同源页面操作")
-
-
-@router.post("/digests")
-async def generate(request: Request, session: SessionDep) -> Response:
-    try:
-        _guard(request)
-        raw = await request.body()
-        if len(raw) > 10000:
-            raise InvariantViolation("ui.body", "表单过大")
-        fields = parse_qs(raw.decode(), keep_blank_values=True)
-        explicit = fields.get("day", [""])[-1]
-        try:
-            explicit_day = date.fromisoformat(explicit) if explicit else None
-        except ValueError:
-            raise InvariantViolation("digest.date", "日期无效") from None
-        with session.begin():
-            selected = _day(session, explicit_day)
-            create_digest(session, selected, now=utc_now())
-            target = "/ui/today" if selected == _day(session) else f"/ui/today?day={selected}"
-        return (
-            Response(status_code=200, headers={"HX-Redirect": target})
-            if request.headers.get("hx-request")
-            else RedirectResponse(target, status_code=303)
+def _failed_action_card(
+    session: SessionDep, paper_id: str, message: str, *, kind: str, note: str | None
+) -> str:
+    """队列上下文动作失败（UXR-09）：保留卡片标题与概括，可重试的表单带原输入。"""
+    paper = PaperRepository(session).get(paper_id)
+    summary = SummaryRepository(session).get(paper_id)
+    title = paper.title if paper else paper_id
+    body = '<article class="paper-card">'
+    body += f'<p role="alert" tabindex="-1" autofocus>{escape(message)}</p>'
+    body += (
+        f'<h2 class="card-title"><a href="/ui/papers/{quote(paper_id, safe="")}">'
+        f"{escape(title)}</a></h2>"
+    )
+    if summary is not None:
+        body += f'<blockquote class="card-summary">{escape(summary.summary_100)}</blockquote>'
+    if kind in {"score", "note"}:
+        body += _form(paper_id, kind, note=note)
+        body += '<p class="muted">操作未完成：可修正后重试，或返回队列。</p>'
+    else:
+        body += (
+            '<p class="muted">操作未完成：可返回队列重试，或'
+            f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a>。</p>'
         )
-    except (DomainError, AppError) as exc:
-        return _error(exc)
-    except (ValueError, UnicodeError):
-        return HTMLResponse(
-            '<article><p role="alert">表单须为UTF-8，日期须为有效日期。</p></article>',
-            status_code=422,
-            headers=HEADERS,
-        )
+    return body + "</article>"
 
 
 @router.post("/actions/{paper_id}")
 async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLResponse:
+    context: str = "queue"
+    kind = ""
+    note: str | None = None
     try:
-        _guard(request)
-        raw = await request.body()
-        if len(raw) > 50000:
-            raise InvariantViolation("ui.body", "表单过大")
-        fields: dict[str, Any] = {
-            key: values[-1]
-            for key, values in parse_qs(raw.decode(), keep_blank_values=True).items()
-        }
-        if "score" in fields:
-            fields["score"] = int(fields["score"]) if fields["score"] else None
-        if "days" in fields:
-            fields["days"] = int(fields["days"])
-        if "note" in fields and not fields["note"]:
-            fields["note"] = None
-        body = Action.model_validate(fields)
+        form = await form_fields(request)
+        if form.get("context") in {"queue", "detail"}:
+            context = form["context"]
+        kind = form.get("kind", "")
+        note = form.get("note") or None
+        payload: dict[str, Any] = dict(form)
+        payload.pop("context", None)
+        if "score" in payload:
+            payload["score"] = int(payload["score"]) if payload["score"] else None
+        if "note" in payload and not payload["note"]:
+            payload["note"] = None
+        body = Action.model_validate(payload)
         with session.begin():
-            result = apply_action(session, paper_id, body, now=utc_now())
-        return HTMLResponse(
-            '<article><p class="success">已保存阅读记录：' + escape(result["status"]) + "</p>"
-            f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a></article>',
-            headers=HEADERS,
-        )
+            apply_action(session, paper_id, body, now=utc_now())
+        paper = PaperRepository(session).get(paper_id)
+        title = escape(paper.title) if paper else escape(paper_id)
+        messages = {
+            "done": f"已归档「{title}」：阅读记录已保存，之后可在「归档」页找到它。",
+            "reject": f"已把「{title}」标记为不感兴趣，它不会再出现在队列里。",
+            # UXR-10：恢复的实际语义是移回待处理（REJECTED→SCREENED），如实说明。
+            "restore": (
+                f"已把「{title}」移回待处理状态：不会被直接放回队列，"
+                "下次「挖掘新论文」处理时会重新评估是否入队。"
+            ),
+            "score": f"已保存「{title}」的新评分，之前的评分保留在修订记录里。",
+            "note": f"已保存「{title}」的新备注，之前的备注保留在修订记录里。",
+        }
+        headers = {**HEADERS}
+        if context == "detail":
+            # UXR-09：详情上下文——论文内容保留，反馈区切换为已保存记录与修订入口。
+            return HTMLResponse(
+                _detail_article(session, paper_id, paper=paper, notice=messages[body.kind]),
+                headers=headers,
+            )
+        fragment: str
+        if body.kind == "reject":
+            # 不整页刷新：卡片原地替换为确认与「移回待处理」入口（UXR-10），误点可撤销。
+            fragment = (
+                f'<article><p class="success" tabindex="-1" autofocus>'
+                f"{escape(messages['reject'])}</p>"
+                + _form(paper_id, "restore")
+                + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a></article>'
+            )
+        else:
+            # X-03：完成/评分/备注同样原地替换卡片，保留滚动位置，不再整页刷新。
+            fragment = (
+                f'<article><p class="success" tabindex="-1" autofocus>'
+                f"{escape(messages[body.kind])}</p>"
+                + f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情与反馈历史</a> '
+                '<a href="/ui/queue">返回队列</a></article>'
+            )
+        if body.kind in {"done", "reject", "restore"}:
+            # UXR-05：完成/拒绝/恢复改变未读总数，经 htmx 带外更新同步顶部统计。
+            fragment += queue_stats_line(
+                session, read_backlog(session, now=utc_now(), limit=1).total, oob=True
+            )
+        return HTMLResponse(fragment, headers=headers)
     except (DomainError, AppError, ValidationError) as exc:
-        return _error(exc)
+        message = (
+            exc.message
+            if isinstance(exc, DomainError | AppError)
+            else "输入无效，请检查评分、方式或备注。"
+        )
+        status = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            if context == "detail":
+                # UXR-09：详情上下文失败——论文内容与已填备注保留，错误显示在正文最前。
+                article = _detail_article(
+                    session, paper_id, notice=message, notice_role="alert", note_draft=note
+                )
+                return HTMLResponse(article, status_code=status, headers=HEADERS)
+            card = _failed_action_card(session, paper_id, message, kind=kind, note=note)
+            return HTMLResponse(card, status_code=status, headers=HEADERS)
+        except (DomainError, AppError, NotFoundError):
+            return _error(exc)
     except (ValueError, UnicodeError):
         return HTMLResponse(
-            '<article><p role="alert">评分/天数须为整数，表单须为UTF-8。</p></article>',
+            '<article><p role="alert">评分须为整数，表单须为UTF-8。</p></article>',
             status_code=422,
             headers=HEADERS,
         )

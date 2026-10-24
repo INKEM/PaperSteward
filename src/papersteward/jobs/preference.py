@@ -12,13 +12,12 @@ from papersteward.core.entities import Event, Run
 from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
 from papersteward.delivery.service import delivery_history
-from papersteward.onboarding.service import _atomic
 from papersteward.scoring.preference import weekly_cutoff
 from papersteward.scoring.queue import (
     WEEKLY_ELIGIBLE,
-    _context,
-    _history,
     create_snapshots,
+    queue_context,
+    reading_history,
 )
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.mappers import as_utc
@@ -28,6 +27,7 @@ from papersteward.storage.repositories import (
     PaperRepository,
     RunRepository,
 )
+from papersteward.storage.tx import atomic
 
 
 def _check_data(session: Session, *, cutoff: str, timezone: ZoneInfo) -> dict[str, Any]:
@@ -109,8 +109,8 @@ def _resume_due_snoozed(session: Session, day: date, *, now: datetime) -> int:
 
 
 def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None) -> Run:
-    with _atomic(session):
-        ctx = _context(session, now, execution=True)
+    with atomic(session):
+        ctx = queue_context(session, now, execution=True)
         timezone = ZoneInfo(ctx["runtime"].value_json["timezone"])
         day = now.astimezone(timezone).date()
         cutoff = weekly_cutoff(day, ctx["config"].quasi_dynamic.update_weekday)
@@ -146,7 +146,7 @@ def refresh_weekly(session: Session, *, now: datetime, run_id: str | None = None
             )
         else:
             resumed = _resume_due_snoozed(session, day, now=now)
-            _, feedback = _history(session, ctx, day)
+            _, feedback = reading_history(session, ctx, day)
             history = [f for f in feedback if f.completed_on < cutoff]
             rated = sum(f.rating is not None for f in history)
             coverage = rated / len(history) if history else 0.0

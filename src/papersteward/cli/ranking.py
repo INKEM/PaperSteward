@@ -57,7 +57,7 @@ def run(args: argparse.Namespace) -> int:
         finally:
             engine.dispose()
     except (AppError, DomainError) as exc:
-        print(f"错误：{exc.message}；请检查初始化/审核/快照日期。", file=sys.stderr)
+        print(f"错误：{exc.message}；请检查初始化/分类/快照日期。", file=sys.stderr)
     except (SQLAlchemyError, ValidationError, OSError):
         print(
             "错误：数据库或配置不可用；请先运行 alembic upgrade head 并检查配置。", file=sys.stderr

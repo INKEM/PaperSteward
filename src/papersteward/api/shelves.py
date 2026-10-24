@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from papersteward.api.deps import SessionDep
 from papersteward.core.enums import PaperStatus, ScoreTier, SpecialBucketKind
-from papersteward.delivery.shelf_view import (
+from papersteward.reading.shelf_view import (
     ShelfItem,
     ShelfSummary,
     list_shelf,

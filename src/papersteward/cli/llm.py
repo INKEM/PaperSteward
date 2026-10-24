@@ -1,4 +1,4 @@
-"""LLM 相关 CLI：离线 FakeLLM 或显式授权的真实 provider 连通性检查。"""
+"""LLM 相关 CLI：测试用 FakeLLM 或显式授权的真实 provider 连通性检查。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from papersteward.llm import (
 def run_llm_ping(*, fake: bool, live: bool, json_output: bool) -> int:
     if fake == live:
         print(
-            "错误：请选择 `--fake`（离线）或 `--live`（真实调用）之一。",
+            "错误：请选择 `--fake`（仅开发/测试）或 `--live`（真实调用）之一。",
             file=sys.stderr,
         )
         return 1

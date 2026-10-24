@@ -16,14 +16,12 @@ from papersteward.core.enums import (
     DocumentStatus,
     OaStatus,
     PaperStatus,
-    TagRole,
 )
 from papersteward.documents.profile import parse_profile
 from papersteward.documents.taxonomy import parse_taxonomy
 from papersteward.llm import FakeLLM, LLMGateway
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
-from papersteward.pipeline.process import process_paper
-from papersteward.pipeline.review import approve_review, list_open_reviews, relabel_review
+from papersteward.pipeline.process import process_paper, reconcile_legacy_reviews
 from papersteward.scoring.config import load_scoring_config_file
 from papersteward.storage import (
     BucketRepository,
@@ -36,7 +34,7 @@ from papersteward.storage import (
     create_session_factory,
     session_scope,
 )
-from papersteward.storage.repositories import StaticScoreSnapshotRepository
+from papersteward.storage.repositories import PaperAnalysisRepository, StaticScoreSnapshotRepository
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 10, 22, 18, 0, tzinfo=UTC)
@@ -122,48 +120,52 @@ def _process(session, paper: Paper = PAPER, gateway=None, **kwargs):
     )
 
 
-def test_process_opens_review_and_approve_closes_it(migrated_engine):
+def test_low_confidence_is_classified_and_analysis_is_saved(migrated_engine):
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
         _setup(session)
         outcome = _process(session)
-        assert outcome.needs_review is True
-        assert "classification:low_primary_confidence" in outcome.reasons
-        assert outcome.status is PaperStatus.NEEDS_REVIEW
-        assert PaperRepository(session).get(PAPER.id).status is PaperStatus.NEEDS_REVIEW
-        assert StaticScoreSnapshotRepository(session).latest(PAPER.id) is not None
-        items, total = list_open_reviews(session)
-        assert total == 1 and items[0][0].paper_id == PAPER.id
-
-        approved = approve_review(session, PAPER.id, reviewed_by="fixture-user", now=NOW)
-        assert approved.status.value == "resolved"
+        assert "classification:low_primary_confidence" in outcome.quality_flags
+        assert outcome.status is PaperStatus.CLASSIFIED
         assert PaperRepository(session).get(PAPER.id).status is PaperStatus.CLASSIFIED
-        assert list_open_reviews(session)[1] == 0
+        assert StaticScoreSnapshotRepository(session).latest(PAPER.id) is not None
+        assert ReviewRepository(session).list_open()[1] == 0
+        analysis = PaperAnalysisRepository(session).get(PAPER.id)
+        assert analysis.payload_json["relevance"] == outcome.relevance.as_json()
+        assert analysis.quality_flags == outcome.quality_flags
+        assert "review" not in outcome.as_json() and "needs_review" not in outcome.as_json()
 
 
-def test_process_then_relabel_replaces_tags_and_filing(migrated_engine):
+def test_reconcile_preserves_history_labels_and_is_idempotent(migrated_engine):
+    from papersteward.storage.models import PaperRow
+
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
         _setup(session)
-        _process(session)
-        result = relabel_review(
-            session,
-            PAPER.id,
-            primary_tag="T03",
-            secondary_tags=("S01",),
-            reviewed_by="fixture-user",
-            now=NOW,
-        )
-        assert result.resolution.value == "relabeled"
-        tags = PaperTagRepository(session).list_for_paper(PAPER.id)
-        assert [(tag.tag_code, tag.role) for tag in tags] == [
-            ("T03", TagRole.PRIMARY),
-            ("S01", TagRole.SECONDARY),
-        ]
-        buckets = PaperBucketRepository(session).list_for_paper(PAPER.id)
-        assert [bucket.bucket_id for bucket in buckets] == ["b-t03"]
-        assert PaperRepository(session).get(PAPER.id).status is PaperStatus.CLASSIFIED
-        assert ReviewRepository(session).get(PAPER.id).resolution.value == "relabeled"  # type: ignore[union-attr]
+        outcome = _process(session)
+        session.get(PaperRow, PAPER.id).status = "needs_review"
+        session.flush()
+        original_tags = PaperTagRepository(session).list_for_paper(PAPER.id)
+        original_buckets = PaperBucketRepository(session).list_for_paper(PAPER.id)
+        payload = {
+            "classification": outcome.classification.as_json(),
+            "relevance": outcome.relevance.as_json(),
+        }
+        ReviewRepository(session).open(PAPER.id, ["legacy"], payload, now=NOW)
+        # 用新论文模拟尚未有独立分析表的旧库记录。
+        old = replace(PAPER, id="legacy", status=PaperStatus.NEEDS_REVIEW)
+        PaperRepository(session).add(old)
+        ReviewRepository(session).open(old.id, ["legacy"], payload, now=NOW)
+        assert reconcile_legacy_reviews(session, now=NOW) == 2
+        assert PaperRepository(session).get(old.id).status is PaperStatus.CLASSIFIED
+        assert PaperAnalysisRepository(session).get(old.id).payload_json == payload
+        assert PaperAnalysisRepository(session).get(PAPER.id).quality_flags == outcome.quality_flags
+        assert PaperTagRepository(session).list_for_paper(PAPER.id) == original_tags
+        assert PaperBucketRepository(session).list_for_paper(PAPER.id) == original_buckets
+        assert ReviewRepository(session).get(old.id).status.value == "resolved"
+        assert ReviewRepository(session).get(old.id).payload_json == payload
+        assert ReviewRepository(session).list_open()[1] == 0
+        assert reconcile_legacy_reviews(session, now=NOW) == 0
 
 
 def test_preseeded_enrichment_is_not_overwritten(migrated_engine):
@@ -205,7 +207,7 @@ def test_preseeded_enrichment_is_not_overwritten(migrated_engine):
         assert outcome.static.extra_value == 80.0
 
 
-def test_missing_abstract_opens_review_without_summary(migrated_engine):
+def test_missing_abstract_is_classified_with_quality_flag(migrated_engine):
     paper = Paper(
         id="proc-no-abstract",
         title="Synthetic abstractless paper",
@@ -243,11 +245,10 @@ def test_missing_abstract_opens_review_without_summary(migrated_engine):
             BucketRepository(session).add(bucket)
         outcome = _process(session, paper=paper, gateway=gateway)
         assert outcome.summary is None
-        assert "summary:missing_abstract" in outcome.reasons
-        assert outcome.status is PaperStatus.NEEDS_REVIEW
-        review = ReviewRepository(session).get(paper.id)
-        assert review is not None and review.status.value == "open"
-        assert review.payload_json["summary"] is None
+        assert "summary:missing_abstract" in outcome.quality_flags
+        assert outcome.status is PaperStatus.CLASSIFIED
+        assert ReviewRepository(session).get(paper.id) is None
+        assert PaperAnalysisRepository(session).get(paper.id).payload_json["summary"] is None
 
 
 def test_process_accepts_optional_author_and_rigor_inputs(migrated_engine):

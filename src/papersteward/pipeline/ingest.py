@@ -11,15 +11,20 @@ from sqlalchemy.orm import Session
 from papersteward.core.entities import Event, Paper, Run, utc_now
 from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.onboarding.service import _atomic
 from papersteward.pipeline.context import bound_context
-from papersteward.pipeline.dedupe import DedupeGroup, deduplicate, duplicate_reason
+from papersteward.pipeline.dedupe import (
+    DedupeGroup,
+    canonicalize,
+    deduplicate,
+    reason_canonicalized,
+)
 from papersteward.pipeline.screen import ScreenConfig, screen
 from papersteward.sources.contracts import PaperCandidate, QuerySpec, SourceAdapter, SourceError
 from papersteward.sources.queries import generate_queries
 from papersteward.storage.ingestion import attach_source, finish_run
 from papersteward.storage.models import EventRow, PaperRow, PaperSourceRow
 from papersteward.storage.repositories import EventRepository, PaperRepository, RunRepository
+from papersteward.storage.tx import atomic
 
 
 def _paper_candidate(paper: Paper) -> PaperCandidate:
@@ -42,21 +47,57 @@ def _paper_candidate(paper: Paper) -> PaperCandidate:
     )
 
 
-def _existing(session: Session, group: DedupeGroup) -> set[str]:
-    found: set[str] = set()
-    for row in session.scalars(select(PaperSourceRow)):
-        identity_matches = any(
-            (row.source, row.source_id) == (p.source, p.source_id) for p in group.provenances
-        )
-        if identity_matches or any(
-            duplicate_reason(member, PaperCandidate.model_validate(row.candidate_json))
-            for member in group.members
-        ):
-            found.add(row.paper_id)
-    for paper in PaperRepository(session).list():
-        if any(duplicate_reason(member, _paper_candidate(paper)) for member in group.members):
-            found.add(paper.id)
-    return found
+class _ExistingIndex:
+    """采集去重的存量索引：一次加载全库，随本批次写入增量维护（E-04）。
+
+    语义与原「逐组全表扫描 + 逐行 JSON 解析」等价：精确身份走 (source, source_id)
+    索引；模糊比对分两个视角——已入库源版本（追加不变）与论文当前字段（合并后
+    替换）。本批次新增的论文/源版本会立即进入索引，后续组同样能看到。
+    """
+
+    def __init__(self, session: Session) -> None:
+        # (source, source_id) -> 论文 ID 集合；精确身份匹配 O(1)。
+        self._by_identity: dict[tuple[str, str], set[str]] = {}
+        # 论文 -> 已入库源版本的规范化候选（PaperSourceRow 视角）。
+        self._row_candidates: dict[str, list[PaperCandidate]] = {}
+        # 论文 -> 当前字段构成的规范化候选（Paper 视角；元数据合并后替换）。
+        self._paper_candidates: dict[str, PaperCandidate] = {}
+        for row in session.scalars(select(PaperSourceRow)):
+            self._add_row(row.paper_id, PaperCandidate.model_validate(row.candidate_json))
+        for paper in PaperRepository(session).list():
+            self.set_paper_view(paper.id, _paper_candidate(paper))
+
+    def _add_row(self, paper_id: str, candidate: PaperCandidate) -> None:
+        provenance = candidate.provenance
+        self._by_identity.setdefault((provenance.source, provenance.source_id), set()).add(paper_id)
+        self._row_candidates.setdefault(paper_id, []).append(canonicalize(candidate))
+
+    def register_attached(self, paper_id: str, members: Sequence[PaperCandidate]) -> None:
+        """本批次新挂到论文上的源版本进入索引。"""
+        for member in members:
+            self._add_row(paper_id, member)
+
+    def set_paper_view(self, paper_id: str, candidate: PaperCandidate) -> None:
+        """更新论文当前字段视角（新建或元数据合并后调用）。"""
+        self._paper_candidates[paper_id] = canonicalize(candidate)
+
+    def match(self, group: DedupeGroup) -> set[str]:
+        found: set[str] = set()
+        for provenance in group.provenances:
+            found |= self._by_identity.get((provenance.source, provenance.source_id), set())
+        members = [canonicalize(member) for member in group.members]
+        for paper_id in set(self._row_candidates) | set(self._paper_candidates):
+            if paper_id in found:
+                continue
+            views = [*self._row_candidates.get(paper_id, ())]
+            paper_view = self._paper_candidates.get(paper_id)
+            if paper_view is not None:
+                views.append(paper_view)
+            for candidate in views:
+                if any(reason_canonicalized(member, candidate) for member in members):
+                    found.add(paper_id)
+                    break
+        return found
 
 
 def _write_group(
@@ -66,9 +107,10 @@ def _write_group(
     at: datetime,
     config: ScreenConfig,
     report: dict[str, Any],
+    index: _ExistingIndex,
 ) -> None:
     papers = PaperRepository(session)
-    matches = _existing(session, group)
+    matches = index.match(group)
     reasons = screen(group.candidate, config)
     if len(matches) > 1:
         report["filtered"].append(
@@ -137,6 +179,7 @@ def _write_group(
                         },
                     )
                 )
+                index.set_paper_view(paper_id, merged)
             # 收敛早期中断留下的状态：discovered 必须先到 deduped，再到
             # screened/rejected；已在 screened 的文献只在出现新原因时降级为 rejected。
             if old.status is PaperStatus.DISCOVERED:
@@ -170,6 +213,7 @@ def _write_group(
             exclude={"provenance", "language", "document_type", "citation_count"}
         )
         papers.add(Paper(id=paper_id, canonical_id=paper_id, first_seen_at=at, **values))
+        index.set_paper_view(paper_id, item)
         EventRepository(session).append(
             Event(
                 id=uuid4().hex,
@@ -194,8 +238,12 @@ def _write_group(
             payload={"run_id": run_id, "reasons": reasons},
         )
         report["new"] += 1
+    attached: list[PaperCandidate] = []
     for member in group.members:
-        report["source_versions_added"] += int(attach_source(session, paper_id, member))
+        if attach_source(session, paper_id, member):
+            report["source_versions_added"] += 1
+            attached.append(member)
+    index.register_attached(paper_id, attached)
     if reasons:
         report["filtered"].append({"paper_id": paper_id, "reasons": reasons})
 
@@ -249,7 +297,7 @@ def ingest(
                 )
                 if exc.code != "unsupported_query":
                     break
-            except Exception:
+            except Exception:  # noqa: BLE001 - 单来源故障转为结构化错误报告
                 errors.append(
                     {
                         "source": adapter.source,
@@ -287,9 +335,10 @@ def ingest(
         RunStatus.SUCCEEDED if any(s["queries_succeeded"] for s in sources) else RunStatus.FAILED
     )
     if dry_run:
+        existing_index = _ExistingIndex(session)
         preview = []
         for group in groups:
-            matches = _existing(session, group)
+            matches = existing_index.match(group)
             reasons = screen(group.candidate, config)
             if len(matches) > 1:
                 reasons.append("ambiguous_existing")
@@ -314,15 +363,16 @@ def ingest(
             stats_json=stats,
             errors_json={"sources": errors},
         )
-    with _atomic(session):
+    with atomic(session):
         RunRepository(session).add(Run(id=run_id, run_type="ingest", started_at=started))
         try:
-            with _atomic(session):
+            with atomic(session):
                 if bound_context(session, now())[1] != binding:
                     raise InvariantViolation("ingest.binding", "确认依据已变化")
+                existing_index = _ExistingIndex(session)
                 for group in groups:
-                    _write_group(session, group, run_id, now(), config, stats)
-        except Exception:
+                    _write_group(session, group, run_id, now(), config, stats, existing_index)
+        except Exception:  # noqa: BLE001 - 半批失败转为脱敏失败报告，事务由savepoint回滚
             # 半批元数据/来源/事件已由savepoint撤销；仅保存脱敏的失败运行报告。
             status = RunStatus.FAILED
             stats.update(new=0, existing=0, source_versions_added=0, filtered=[])

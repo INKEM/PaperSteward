@@ -1,4 +1,4 @@
-"""Alembic 迁移状态查询，供 CLI doctor 与后续检查复用。"""
+"""Alembic 迁移状态查询与升级，供 CLI doctor、start 与工作区建库复用。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
+from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Engine
+
+from papersteward.config import Settings
+from papersteward.storage.db import create_db_engine
 
 
 def find_alembic_ini() -> Path:
@@ -58,4 +62,19 @@ def get_migration_status(
     return MigrationStatus(current=current, head=head)
 
 
-__all__ = ["MigrationStatus", "find_alembic_ini", "get_migration_status"]
+def upgrade_head(settings: Settings) -> None:
+    """把 ``settings.db_url`` 指向的库升级到迁移 head；已在 head 时为空操作。
+
+    ``cli/start`` 启动前与工作区首次访问（新库建表）共用此实现。
+    """
+    config = Config(str(find_alembic_ini()))
+    engine = create_db_engine(settings.db_url)
+    try:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+    finally:
+        engine.dispose()
+
+
+__all__ = ["MigrationStatus", "find_alembic_ini", "get_migration_status", "upgrade_head"]

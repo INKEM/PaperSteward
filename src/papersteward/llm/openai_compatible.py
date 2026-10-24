@@ -110,7 +110,13 @@ class OpenAICompatibleProvider:
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM 请求超时") from exc
         except httpx.RequestError as exc:
-            raise LLMProviderError("LLM 网络请求失败") from exc
+            # UXR-13：给可操作原因，而不是只说「网络请求失败」。
+            hint = (
+                "无法连接到服务，请检查 API 地址与网络"
+                if isinstance(exc, httpx.ConnectError)
+                else f"网络异常（{type(exc).__name__}）"
+            )
+            raise LLMProviderError(f"LLM 网络请求失败：{hint}") from exc
         self._raise_for_status(response.status_code)
         if len(response.content) > _MAX_RESPONSE_BYTES:
             raise LLMProviderError("LLM 响应过大")

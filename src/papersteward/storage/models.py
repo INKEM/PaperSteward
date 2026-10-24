@@ -36,17 +36,15 @@ from papersteward.storage.db import Base, utc_now
 
 
 class OnboardingRow(Base):
-    """单用户初始化流程；门槛证据与确认者保存在追加写事件中。"""
+    """单用户初始化流程；阶段迁移与确认者保存在追加写事件中。"""
 
     __tablename__ = "onboarding"
     __table_args__ = (
         CheckConstraint("id = 1", name="singleton"),
         CheckConstraint(
-            "(stage = 'profile' AND revision = 1) OR "
-            "(stage = 'taxonomy' AND revision = 2) OR "
-            "(stage = 'calibration' AND revision = 3) OR "
-            "(stage = 'dry_run' AND revision = 4) OR "
-            "(stage = 'active' AND revision = 5)",
+            "(stage = 'setup' AND revision = 0) OR "
+            "(stage = 'draft' AND revision = 1) OR "
+            "(stage = 'active' AND revision = 2)",
             name="stage_matches_revision",
         ),
     )
@@ -57,32 +55,20 @@ class OnboardingRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class CalibrationRoundRow(Base):
-    """P2 独立校准轮次；双方标注仅可各自写入一次。"""
+class IntakeMaterialRow(Base):
+    """用户上传的研究方向材料；Agent 抽取草案的输入。"""
 
-    __tablename__ = "onboarding_calibration"
-    __table_args__ = (
-        CheckConstraint("round_number IN (1, 2)", name="round_limit"),
-        CheckConstraint("sample_kind IN ('user', 'synthetic')", name="sample_kind_values"),
-        CheckConstraint(
-            "report_json IS NULL OR (agent_json IS NOT NULL AND user_json IS NOT NULL)",
-            name="report_requires_labels",
-        ),
+    __tablename__ = "intake_material"
+    __table_args__ = (CheckConstraint("kind IN ('text', 'file')", name="kind_values"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
-    round_number: Mapped[int] = mapped_column(Integer, primary_key=True)
-    g2_event_id: Mapped[str] = mapped_column(String(64), ForeignKey("event.id"), nullable=False)
-    binding_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    cohort_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
-    rubric_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    sample_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    agent_json: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON(none_as_null=True), nullable=True
-    )
-    user_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
-    report_json: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON(none_as_null=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ResearchProfileRow(Base):
@@ -486,6 +472,19 @@ class StaticScoreSnapshotRow(Base):
     )
 
 
+class PaperAnalysisRow(Base):
+    """处理分析与质量标记；独立于历史审核记录。"""
+
+    __tablename__ = "paper_analysis"
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    quality_flags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReviewItemRow(Base):
     """人工审核项；每篇一条，开放/已处理状态可复用。"""
 
@@ -684,6 +683,30 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class LLMCacheRow(Base):
+    """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
+
+    只缓存最终通过 schema 校验的输出；档案/分类法等输入变化会改变渲染后的
+    input_hash，因此缓存随内容自然失效，不做 TTL。
+    """
+
+    __tablename__ = "llm_cache"
+    __table_args__ = (
+        Index("uq_llm_cache_key", "model", "prompt_version", "input_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    repair_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class ConfigRow(Base):
     """版本化配置；``(key, version)`` 唯一。"""
 
@@ -789,8 +812,8 @@ __all__ = [
     "ArchiveSnapshotRow",
     "BucketRow",
     "ConfigRow",
-    "CalibrationRoundRow",
     "EventRow",
+    "IntakeMaterialRow",
     "PaperBucketRow",
     "PaperRow",
     "PaperTagRow",

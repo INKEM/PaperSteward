@@ -1,0 +1,23 @@
+{
+  "queries": [
+    {
+      "keywords": ["long-document retrieval"],
+      "operator": "all",
+      "exclude_keywords": [],
+      "field": "all",
+      "date_from": "2025-10-23",
+      "date_to": "2026-10-23",
+      "max_results": 30,
+      "rationale": "高优先级子方向的主检索式"
+    },
+    {
+      "keywords": ["faithfulness evaluation"],
+      "operator": "any",
+      "exclude_keywords": ["survey"],
+      "field": "all",
+      "max_results": 20,
+      "rationale": "近期高分主题的加深"
+    }
+  ],
+  "strategy_note": "覆盖主子方向与近期已读偏好。"
+}

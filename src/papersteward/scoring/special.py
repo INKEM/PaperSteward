@@ -509,8 +509,7 @@ def _distant_dimensions(
     reasons: list[str] = [f"bridge_fields:{len(fields)}"]
     explanation = [f"桥接假设 {len(fields)}/4 个字段完整。"]
     missing = [name for name in _BRIDGE_FIELDS if name not in fields]
-    for name in missing:
-        reasons.append(f"missing_bridge:{name}")
+    reasons.extend(f"missing_bridge:{name}" for name in missing)
     if missing:
         explanation.append("缺失桥接字段：" + ", ".join(missing) + "。")
 

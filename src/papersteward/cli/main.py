@@ -42,8 +42,6 @@ from papersteward.cli.ingestion import run as run_ingestion
 from papersteward.cli.jobs import add_commands as add_jobs_commands
 from papersteward.cli.jobs import run as run_jobs
 from papersteward.cli.llm import run_llm_ping
-from papersteward.cli.onboarding import add_commands as add_onboarding_commands
-from papersteward.cli.onboarding import run as run_onboarding
 from papersteward.cli.processing import add_commands as add_processing_commands
 from papersteward.cli.processing import run as run_processing
 from papersteward.cli.ranking import add_commands as add_ranking_commands
@@ -84,7 +82,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     add_start_command(subparsers)
-    add_onboarding_commands(subparsers)
     add_ingestion_commands(subparsers)
     add_processing_commands(subparsers)
     add_shelf_commands(subparsers)
@@ -150,7 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
     llm = subparsers.add_parser("llm", help="LLM 网关检查")
     llm_subparsers = llm.add_subparsers(dest="llm_command", required=True)
     ping = llm_subparsers.add_parser("ping", help="检查 LLM provider 连通性")
-    ping.add_argument("--fake", action="store_true", help="使用 FakeLLM（离线）")
+    ping.add_argument("--fake", action="store_true", help="仅开发/测试：使用 FakeLLM")
     ping.add_argument(
         "--live", action="store_true", help="显式允许真实 OpenAI-compatible HTTP 调用"
     )
@@ -237,11 +234,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_reading(args)
         if args.command in {"ingest", "runs"}:
             return run_ingestion(args)
-        if args.command == "onboarding":
-            return run_onboarding(args)
         if args.command in {"queue", "score", "scores"}:
             return run_ranking(args)
-        if args.command in {"process", "review"}:
+        if args.command == "process":
             return run_processing(args)
         if args.command == "shelf":
             return run_shelf(args)

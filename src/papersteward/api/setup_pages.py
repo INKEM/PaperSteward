@@ -1,318 +1,543 @@
-"""Browser onboarding: validate form input, then call the existing API/service boundary."""
+"""首次设置向导：连接模型 → 上传材料 → 审阅草案并确认。
+
+页面只做表单校验和拼装，业务规则全部调用 onboarding 服务层。浏览器路径不要求
+用户接触 .env：模型连接保存在工作区数据库，保存即授权数据外发。
+"""
 
 from __future__ import annotations
 
-import json
 from html import escape
-from importlib.resources import files
 from typing import Any
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api import onboarding as api
 from papersteward.api.deps import SessionDep
-from papersteward.api.pages import HEADERS, STATIC, _guard, _page
-from papersteward.core.errors import DomainError
+from papersteward.api.form_utils import (
+    PageError,
+    conflict_redirect,
+    failure,
+    fields,
+    hidden,
+    input_field,
+)
+from papersteward.api.html import page as _page
+from papersteward.api.profile_view import (
+    confirmed_results,
+    draft_card,
+    profile_preview,
+    taxonomy_preview,
+)
+from papersteward.api.settings_pages import llm_form
+from papersteward.api.workflow_pages import run_body
+from papersteward.api.workspace_runtime import resolve_workspace
+from papersteward.config import get_settings
+from papersteward.core.entities import Run
+from papersteward.core.enums import RunStatus
+from papersteward.core.errors import DomainError, InvariantViolation
+from papersteward.documents import parse_profile, parse_taxonomy
 from papersteward.errors import AppError, InvalidRequestError
-from papersteward.onboarding.taxonomy import _evidence
+from papersteward.jobs.ui_flow import FlowRequest
+from papersteward.llm.runtime import resolve_llm_config
+from papersteward.onboarding.intake import MAX_MATERIALS, add_feedback
 from papersteward.storage.onboarding import get_onboarding
-from papersteward.storage.repositories import ProfileRepository, TaxonomyRepository
+from papersteward.storage.repositories import RunRepository
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
-
-def starter(name: str) -> str:
-    if name not in {
-        "profile.md",
-        "taxonomy.md",
-        "seeds.json",
-        "calibration.json",
-        "dry_run.json",
-        "scoring.yaml",
-    }:
-        raise InvalidRequestError("未知示例资源")
-    return files("papersteward.resources").joinpath("starter", name).read_text(encoding="utf-8")
+STEPS = ["连接模型", "上传材料", "审阅并确认"]
 
 
-def hidden(name: str, value: object) -> str:
-    return f'<input type="hidden" name="{escape(name)}" value="{escape(str(value))}">'
+def steps_bar(current: int) -> str:
+    items = []
+    for index, name in enumerate(STEPS, 1):
+        attribute = ' class="current"' if index == current else ""
+        items.append(f"<li{attribute}>{escape(name)}</li>")
+    return '<ol class="steps">' + "".join(items) + "</ol>"
 
 
-def form(action: str, body: str, label: str) -> str:
-    return (
-        f'<form method="post" action="/ui/setup/{action}">{body}'
-        f'<button type="submit">{escape(label)}</button></form>'
-    )
+def _model_ready(session: SessionDep) -> bool:
+    return resolve_llm_config(session, get_settings()).ready
 
 
-def textarea(name: str, value: str, label: str) -> str:
-    return (
-        f'<label for="{name}">{escape(label)}</label><textarea id="{name}" name="{name}" '
-        f'rows="16" required>{escape(value)}</textarea>'
-    )
+def _materials_section(
+    summary: dict[str, Any],
+    *,
+    editable: bool,
+    error: str | None = None,
+    prefill_name: str = "",
+    prefill_content: str = "",
+) -> str:
+    materials = summary["materials"]
+    body = "<h2>研究材料</h2>"
+    if error:
+        # X-01：校验失败原地重渲染并保留已填内容，而不是丢输入跳错误页。
+        body += f'<p role="alert">{escape(error)}</p>'
 
-
-def input_field(name: str, value: str, label: str) -> str:
-    return f'<label>{escape(label)}<input name="{name}" value="{escape(value)}" required></label>'
-
-
-def failure(exc: Exception, *, back: str = "/ui/setup") -> HTMLResponse:
-    if isinstance(exc, ValidationError):
-        details = "；".join(
-            f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
-        )
-        message = "输入无效：" + details
-        status = 422
-    elif isinstance(exc, DomainError | AppError):
-        message = exc.message
-        status = exc.status_code if isinstance(exc, AppError) else 409
+    if materials:
+        items = []
+        for material in materials:
+            item = f"<li>{escape(material['name'])}（{material['chars']} 字）"
+            if editable:
+                item += (
+                    '<form method="post" action="/ui/setup/materials/delete" class="inline" '
+                    'data-confirm="删除这份材料？删除后需要重新粘贴内容。">'
+                    + hidden("material_id", material["id"])
+                    + "<button>删除材料</button></form>"
+                )
+            items.append(item + "</li>")
+        body += "<ul>" + "".join(items) + "</ul>"
     else:
-        message, status = "输入格式无效，请检查 JSON 或表单后重试。", 422
-    page = _page(
-        "请检查后重试",
-        f'<p role="alert">{escape(message)}</p><a href="{escape(back)}">返回页面检查后重试</a>',
-    )
-    page.status_code = status
-    return page
-
-
-async def fields(request: Request) -> dict[str, str]:
-    _guard(request)
-    if (
-        request.headers.get("content-type", "").split(";", 1)[0]
-        != "application/x-www-form-urlencoded"
-    ):
-        raise InvalidRequestError("请使用页面表单提交")
-    raw = b""
-    async for chunk in request.stream():
-        raw += chunk
-        if len(raw) > 512 * 1024:
-            raise InvalidRequestError("表单过大，最多 512 KiB")
-    return {
-        key: values[-1]
-        for key, values in parse_qs(raw.decode(), keep_blank_values=True, max_num_fields=32).items()
-    }
-
-
-def approval(data: dict[str, str]) -> dict[str, Any]:
-    return {
-        "confirmed": data.get("confirmed") == "yes",
-        "confirmed_by": data.get("confirmed_by", ""),
-        "change_summary": data.get("change_summary", ""),
-        "expected_revision": data.get("expected_revision", ""),
-    }
-
-
-def confirmation_fields(review: dict[str, Any], revision: int) -> str:
-    body = hidden("expected_revision", revision)
-    for key in ("content_hash", "review_hash", "report_hash", "feedback_hash"):
-        if review.get(key):
-            body += hidden(key, review[key])
-    body += input_field("confirmed_by", "local-user", "确认人")
-    body += input_field("change_summary", "已审阅并确认本步骤内容", "确认说明")
-    body += (
-        '<label class="check"><input type="checkbox" name="confirmed" value="yes" required>'
-        "我已审阅以上内容，明确确认</label>"
-    )
+        body += (
+            "<p>还没有材料。粘贴或上传描述你研究方向的任意文字：个人主页简介、研究计划、"
+            "开题报告、代表性论文摘要、平时笔记都可以。</p>"
+        )
+    if editable:
+        body += _material_add_form(prefill_name=prefill_name, prefill_content=prefill_content)
     return body
 
 
-def _documents(
-    session: SessionDep, kind: str, identity: str | None, version: str | None, edit: bool
-) -> str:
-    repository = ProfileRepository(session) if kind == "profile" else TaxonomyRepository(session)
-    documents = repository.list()
-    body: str = (
-        '<p class="notice">Starter 为示例/合成资料。请改成自己的研究方向；示例指标只验证流程。</p>'
+def _material_add_form(*, prefill_name: str = "", prefill_content: str = "") -> str:
+    """添加材料表单；prefill 用于校验失败后原地重渲染（X-01）。"""
+    return (
+        '<form method="post" action="/ui/setup/materials" class="stacked-form">'
+        + '<label>材料名称（可选）<input name="name" placeholder="未命名材料" value="'
+        + escape(prefill_name)
+        + '"></label>'
+        + '<label>材料内容<textarea name="content" rows="10" required '
+        'placeholder="粘贴文字，或用下方按钮选择 .md/.txt 文件">'
+        + escape(prefill_content)
+        + "</textarea></label>"
+        + '<input type="hidden" name="from_file" value="0">'
+        + '<label class="check">从文件导入（.md/.txt，可重复添加）：'
+        '<input type="file" accept=".md,.markdown,.txt" data-import-target="content" '
+        'data-file-marker="from_file"></label>'
+        + '<span data-import-status role="status" class="muted"></span>'
+        + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
+        "超长材料会提示拆分。添加的材料会在生成草案时发送给模型服务。</p>"
+        + "<button>添加材料</button></form>"
     )
-    for document in documents:
-        query = urlencode({"kind": kind, "identity": document.id, "version": document.version})
-        body += (
-            f"<p>{escape(document.id)} / {escape(document.version)}："
-            f'<a href="/ui/setup?{escape(query)}">审阅</a> · '
-            f'<a href="/ui/setup?{escape(query)}&amp;edit=true">编辑为新版本</a></p>'
-        )
-    state = get_onboarding(session)
-    review = None
-    if identity and version:
-        review = (
-            api.review_profile(identity, version, session)
-            if kind == "profile"
-            else api.review_taxonomy(identity, version, session)
-        )
-    if review is not None and not edit:
-        body += "<article><h2>全文审阅</h2><pre>" + escape(review["content_md"]) + "</pre>"
-        details = {
-            key: review[key]
-            for key in ("missing_fields", "questions", "report", "diff", "markdown_diff")
-            if key in review and review[key] is not None
-        }
-        body += (
-            "<h2>校验与影响</h2><pre>"
-            + escape(json.dumps(details, ensure_ascii=False, indent=2))
-            + "</pre></article>"
-        )
-        confirm = confirmation_fields(review, state.revision)
-        confirm += hidden("identity", review["id"]) + hidden("version", review["version"])
-        return body + form(
-            kind + "/confirm", confirm, "确认 " + ("G1" if kind == "profile" else "G2")
-        )
-    content = review["content_md"] if review else starter(kind + ".md")
-    default_id = identity or ("demo-profile" if kind == "profile" else "onboarding-taxonomy")
-    editor = input_field("identity", default_id, "文档 ID")
-    editor += hidden("base_version", version if review else "")
-    editor += "<p>编辑已有版本时，请在 Markdown 中提升 version；旧版本会保留。</p>"
-    editor += textarea(
-        "content_md", content, "研究方向 Markdown" if kind == "profile" else "分类法 Markdown"
-    )
-    if kind == "taxonomy":
-        seeds = starter("seeds.json")
-        sample_kind = "synthetic"
-        if review:
-            taxonomy = TaxonomyRepository(session).get(review["id"], review["version"])
-            assert taxonomy is not None
-            proof = _evidence(session, taxonomy)
-            seeds = json.dumps(proof["seeds"], ensure_ascii=False, indent=2)
-            sample_kind = proof["sample_kind"]
-        editor += (
-            '<label>资料性质<select name="sample_kind">'
-            f'<option value="synthetic"{" selected" if sample_kind == "synthetic" else ""}>'
-            "示例/合成</option>"
-            f'<option value="user"{" selected" if sample_kind == "user" else ""}>'
-            "我的真实资料</option></select></label>"
-        )
-        editor += (
-            '<label>导入种子 JSON 文件<input type="file" accept=".json,application/json" '
-            'data-import-target="seeds"></label>'
-        )
-        editor += textarea("seeds", seeds, "种子 JSON（paper_id/title/primary_tag）")
-    return body + form(kind + "/draft", editor, "保存草稿并审阅")
 
 
-@router.get("/static/setup.js")
-def setup_script() -> FileResponse:
-    return FileResponse(STATIC / "setup.js", media_type="application/javascript", headers=HEADERS)
+def _generate_section(session: SessionDep, summary: dict[str, Any]) -> str:
+    if not _model_ready(session):
+        return (
+            '<p class="notice">第一步未完成：请先在「连接模型」保存 API 配置，再回来生成草案。</p>'
+            '<p><a class="button" href="/ui/settings">去连接模型</a></p>'
+        )
+    if not summary["materials"]:
+        return '<p class="notice">请先添加至少一份材料，再生成草案。</p>'
+    has_drafts = summary["profile"] is not None or summary["taxonomy"] is not None
+    label = "按意见修改，重新生成草案" if has_drafts else "生成草案"
+    return (
+        '<form method="post" action="/ui/setup/generate">'
+        + hidden("run_id", "ext-" + uuid4().hex[:16])
+        + f"<button>{escape(label)}</button></form>"
+        + '<p class="muted">生成草案时，研究材料、修改意见和上一版草案会发送到你配置的'
+        "模型服务；阅读备注保存在本机。</p>"
+        + '<p class="muted">生成由后台任务执行；页面会原地显示进度，完成后自动进入审阅。</p>'
+    )
+
+
+def _active_run(session: SessionDep) -> Run | None:
+    runs = RunRepository(session).running_ui_runs()
+    return runs[0] if runs else None
+
+
+def _last_extract_note(session: SessionDep) -> str:
+    """最近一次草案生成的失败或停止原因；更早的历史不再展示。"""
+    run = RunRepository(session).latest("ui.extract")
+    if run is None:
+        return ""
+    if run.status is RunStatus.FAILED and run.errors_json:
+        messages = [
+            str(error.get("message", ""))
+            for error in run.errors_json.get("errors", [])
+            if isinstance(error, dict)
+        ]
+        text = "；".join(message for message in messages if message)
+        if text:
+            return f'<p role="alert">{escape(text)}</p>'
+    if run.status is RunStatus.CANCELLED:
+        return '<p class="notice">上一次生成已停止，已完成的数据保留。可调整材料后重新生成。</p>'
+    return ""
+
+
+def _review_overview(summary: dict[str, Any]) -> str:
+    """草案速览（UXR-12）：定位一句话、关键数量与页内锚点，审阅长页的入口。"""
+    profile, taxonomy = summary["profile"], summary["taxonomy"]
+    positioning = ""
+    stats: list[str] = []
+    try:
+        if profile is not None:
+            data = parse_profile(profile["content_md"], document_id=profile["id"]).parsed_json
+            positioning = str((data.get("positioning") or {}).get("summary") or "")
+            questions = len(data.get("core_questions") or [])
+            subdirections = len(data.get("subdirections") or [])
+            weekly = (data.get("reading") or {}).get("weekly_capacity")
+            if questions:
+                stats.append(f"核心问题 {questions} 个")
+            if subdirections:
+                stats.append(f"子方向 {subdirections} 个")
+            if weekly:
+                stats.append(f"每周建议读 {weekly} 篇")
+        if taxonomy is not None:
+            parsed_taxonomy = parse_taxonomy(taxonomy["content_md"], document_id=taxonomy["id"])
+            primary = sum(
+                1 for tag in parsed_taxonomy.tags if tag.level.value == "primary" and tag.active
+            )
+            stats.append(f"主标签 {primary} 个")
+    except (DomainError, ValueError, KeyError):
+        return ""
+    body = '<section class="review-overview"><h2>草案速览</h2>'
+    if positioning:
+        body += f"<p>{escape(positioning)}</p>"
+    if stats:
+        body += f'<p class="muted">{" · ".join(stats)}</p>'
+    links = '<p class="review-links"><a href="#setup-feedback">跳到修改意见</a>'
+    if summary.get("ready_to_confirm"):
+        links += ' <a href="#setup-confirm">跳到确认</a>'
+    body += links + "</p></section>"
+    return body
+
+
+def _draft_section(summary: dict[str, Any]) -> str:
+    profile, taxonomy = summary["profile"], summary["taxonomy"]
+    if profile is None and taxonomy is None:
+        return (
+            '<p class="notice">还没有草案。素材就绪后点击下方按钮，由 Agent 生成研究方向档案'
+            "和分类标签。</p>"
+        )
+    body = _review_overview(summary) + "<h2>最新草案</h2>"
+    if profile is not None:
+        try:
+            preview = profile_preview(profile)
+        except (DomainError, ValueError, KeyError):
+            preview = '<p class="notice">渲染预览失败，请查看 Markdown 源码。</p>'
+        body += draft_card("研究方向档案", profile, preview)
+    if taxonomy is not None:
+        try:
+            preview = taxonomy_preview(taxonomy)
+        except (DomainError, ValueError, KeyError):
+            preview = '<p class="notice">渲染预览失败，请查看 Markdown 源码。</p>'
+        body += draft_card("分类标签", taxonomy, preview)
+    return body
+
+
+def _feedback_form(*, comment: str = "") -> str:
+    """提意见表单；comment 用于校验失败后原地重渲染（X-01）。"""
+    return (
+        '<form method="post" action="/ui/setup/feedback" class="stacked-form">'
+        + hidden("run_id", "ext-" + uuid4().hex[:16])
+        + "<label>修改意见（例如“方向太窄，把 XX 也加进去”“不要子方向 S3”）"
+        + f'<textarea name="comment" rows="3" required>{escape(comment)}</textarea></label>'
+        + "<button>提交意见并重新生成</button></form>"
+    )
+
+
+def _feedback_and_confirm(session: SessionDep, summary: dict[str, Any]) -> str:
+    if summary["profile"] is None and summary["taxonomy"] is None:
+        return ""
+    body = '<h2 id="setup-feedback">提意见，直到满意</h2>'
+    for comment in summary["feedback"]:
+        body += f'<p class="muted">已提意见：{escape(comment)}</p>'
+    if _model_ready(session):
+        body += _feedback_form()
+    else:
+        body += (
+            '<p class="notice">模型连接不可用，暂时无法按意见重新生成。'
+            '请先到 <a href="/ui/settings">设置</a> 检查模型配置。</p>'
+        )
+    if summary["ready_to_confirm"]:
+        profile, taxonomy = summary["profile"], summary["taxonomy"]
+        confirm_body = (
+            hidden("expected_revision", get_onboarding(session).revision)
+            + hidden("profile_id", profile["id"])
+            + hidden("profile_version", profile["version"])
+            + hidden("profile_hash", profile["content_hash"])
+            + hidden("taxonomy_id", taxonomy["id"])
+            + hidden("taxonomy_version", taxonomy["version"])
+            + hidden("taxonomy_hash", taxonomy["content_hash"])
+            + input_field("confirmed_by", "local-user", "确认人")
+            + input_field("change_summary", "已审阅研究草案，确认开始使用", "确认说明")
+            + '<label class="check"><input type="checkbox" name="confirmed" value="yes" required>'
+            "我已审阅以上草案，确认开始使用</label>"
+        )
+        body += (
+            '<form method="post" action="/ui/setup/confirm" id="setup-confirm">'
+            + confirm_body
+            + "<button>确认，开始使用</button></form>"
+        )
+    else:
+        body += (
+            '<p class="notice">草案完整后即可确认。若缺少字段，请在意见中说明，让 Agent 补充。</p>'
+        )
+    return body
+
+
+def _legacy_section(summary: dict[str, Any]) -> str:
+    legacy = summary.get("legacy_drafts") or []
+    if not legacy:
+        return ""
+    labels = {"profile": "研究方向档案", "taxonomy": "分类标签"}
+    items = "".join(
+        f"<li>{labels.get(item['kind'], item['kind'])}："
+        f"{escape(item['id'])} v{escape(item['version'])}（{escape(item['status'])}）</li>"
+        for item in legacy
+    )
+    return (
+        "<details><summary>从旧向导导入遗留草稿</summary>"
+        "<p>检测到旧版向导留下的资料。导入后作为本次材料，由 Agent 重新整理：</p>"
+        f"<ul>{items}</ul>"
+        '<form method="post" action="/ui/setup/import-legacy"><button>导入为材料</button></form>'
+        "</details>"
+    )
 
 
 @router.get("/setup")
 def setup(
     session: SessionDep,
-    kind: str | None = None,
-    identity: str | None = None,
-    version: str | None = None,
-    edit: bool = False,
+    reset: bool = False,
+    created: bool = False,
+    copy_failed: bool = False,
+    added: bool = False,
+    removed: bool = False,
+    imported: bool = False,
 ) -> HTMLResponse:
     try:
+        flashes = ""
+        if reset:
+            flashes += (
+                '<p class="notice success">工作区已重置，原始数据库备份保存在数据目录的 '
+                "backups/，可重新开始首次设置。</p>"
+            )
+        if created:
+            flashes += (
+                '<p class="notice success">新工作区已创建并切换，完成首次设置即可开始使用。</p>'
+            )
+        if copy_failed:
+            flashes += (
+                '<p class="notice">模型连接没有自动复制过来，请在下方「连接模型」重新配置一次。</p>'
+            )
+        if added:
+            flashes += '<p class="notice success">材料已添加，生成草案时会合并全部材料。</p>'
+        if removed:
+            flashes += '<p class="notice success">材料已删除。</p>'
+        if imported:
+            flashes += '<p class="notice success">遗留草稿已导入为材料。</p>'
         state = get_onboarding(session)
-        body = (
-            '<ol class="steps"><li>G1 研究方向</li><li>G2 分类法</li>'
-            "<li>G3 校准</li><li>G4 试运行</li></ol>"
-        )
-        body += f"<p>当前：{escape(state.stage.value)} · revision {state.revision}</p>"
         stage = state.stage.value
-        if stage == "seeds":
-            body += (
-                "<p>先审阅研究方向与标签，再用校准和试运行确认设置。"
-                "未完成前不会正式入队或归档。</p>"
+        if stage == "active":
+            body = (
+                steps_bar(3) + "<p>首次设置已完成。可以随时在 "
+                '<a href="/ui/settings">设置</a> 中调整模型连接。</p>'
+                '<p><a class="button" href="/ui/today">进入阅读队列</a> '
+                '<a class="button secondary" href="/ui/settings">模型连接</a></p>'
             )
-            body += form("start", "", "开始设置")
-        elif stage in {"profile", "taxonomy"}:
-            if kind and kind != stage:
-                raise InvalidRequestError("请按当前步骤操作")
-            body += _documents(session, stage, identity, version, edit)
-        elif stage == "active":
-            from papersteward.onboarding.dry_run_service import _latest_version
+            return _page("首次设置", body + confirmed_results(session))
 
-            latest = _latest_version(session)
-            if latest:
-                preview = api.review_dry_run(latest, session)
+        summary = api.read_drafts(session)
+        ready = _model_ready(session)
+        if stage == "setup":
+            current = 2 if ready else 1
+            body = steps_bar(current)
+            if not ready:
                 body += (
-                    "<details><summary>已确认的合成试运行日报预览</summary><pre>"
-                    + escape(preview["report"]["markdown"])
-                    + "</pre></details>"
+                    '<p class="notice">第一步：连接模型。填写 API 地址、密钥与模型名并保存；'
+                    "保存即表示同意把论文与研究材料内容发送给该服务，"
+                    "具体范围见下方「添加材料」与「生成草案」的说明。</p>"
                 )
-            body += (
-                "<p>初始化已完成。示例校准仅验证流程；正式使用请在独立新工作区确认自己的资料。</p>"
-                "<p>下一步：配置 LLM 和采集数据。缺少真实模型配置时不能处理真实论文。</p>"
-                "<p>若选择不授权外发，当前工作区仅作离线体验；可用 --data-dir 新目录重新设置。</p>"
-                '<a href="/ui/today">进入今日</a>'
-            )
-        elif stage == "calibration":
-            from papersteward.api.setup_late import calibration_page
-
-            body += calibration_page(session)
-        elif stage == "dry_run":
-            from papersteward.api.setup_late import dry_run_page
-
-            body += dry_run_page(session)
-        return _page("首次设置", body)
-    except (DomainError, AppError, ValidationError, ValueError) as exc:
+                config = resolve_llm_config(session, get_settings())
+                if config.requires_api_key and not config.has_api_key:
+                    body += (
+                        '<p class="notice">当前 API 地址不是本机，保存前必须填写密钥；'
+                        "保存后点「测试连接」确认可用。</p>"
+                    )
+                body += llm_form(
+                    config.base_url,
+                    config.model or "",
+                    config.timeout_s,
+                    compact=True,
+                    next_url="/ui/setup",
+                    key_saved=config.has_api_key,
+                    key_from_env=config.api_key_from_env,
+                )
+            else:
+                body += (
+                    '<p class="notice success">模型配置已保存（连接尚未验证）。'
+                    "可用下方「测试连接」确认能真实访问；需要更换时可到 "
+                    '<a href="/ui/settings">设置</a> 修改。</p>'
+                )
+            body += _legacy_section(summary)
+            body += _materials_section(summary, editable=True)
+            body += _generate_section(session, summary)
+        else:  # draft
+            body = steps_bar(3)
+            active = _active_run(session)
+            if active is not None:
+                # 生成中：单页面只显示进度，完成后片段自动把整页刷成审阅界面。
+                body += run_body(active)
+            elif summary["profile"] is None and summary["taxonomy"] is None:
+                body += _last_extract_note(session)
+                body += _materials_section(summary, editable=True)
+                body += _generate_section(session, summary)
+                body += _legacy_section(summary)
+            else:
+                body += _draft_section(summary)
+                body += _feedback_and_confirm(session, summary)
+                body += (
+                    "<details><summary>补充或删除材料</summary>"
+                    + _materials_section(summary, editable=True)
+                    + _generate_section(session, summary)
+                    + "</details>"
+                )
+                body += _legacy_section(summary)
+        return _page("首次设置", flashes + body)
+    except PageError as exc:
         return failure(exc)
 
 
-@router.post("/setup/{kind}/{action}")
-async def document_action(
-    kind: str, action: str, request: Request, session: SessionDep
-) -> Response:
+def _enqueue_extraction(request: Request, run_id: str) -> str:
+    resolve_workspace(request).ui_flows.submit(FlowRequest(run_id=run_id, kind="extract"))
+    return run_id
+
+
+def _run_id(data: dict[str, str]) -> str:
+    value = data.get("run_id") or ""
+    if value.startswith("ext-"):
+        return value
+    return "ext-" + uuid4().hex[:16]
+
+
+def _form_error(exc: Exception) -> str:
+    """表单错误的统一提示文案（X-01：与保留输入的重渲染搭配使用）。"""
+    if isinstance(exc, ValidationError):
+        return "输入无效：" + "；".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
+        )
+    if isinstance(exc, DomainError | AppError):
+        return exc.message
+    return "输入格式无效，请检查后重试。"
+
+
+@router.post("/setup/materials")
+async def add_material_action(request: Request, session: SessionDep) -> Response:
+    data: dict[str, str] = {}
     try:
         data = await fields(request)
-        if kind in {"calibration", "dry-run"}:
-            from papersteward.api.setup_late import advance_action
-
-            return advance_action(kind, action, data, session)
-        identity = data.get("identity", "")
-        if kind not in {"profile", "taxonomy"}:
-            raise InvalidRequestError("未知文档类型")
-        if action == "draft":
-            body = {
-                "content_md": data.get("content_md", ""),
-                "base_version": data.get("base_version") or None,
-            }
-            if kind == "profile":
-                review = api.create_profile_draft(
-                    api.DraftRequest(profile_id=identity, **body), session
-                )
-            else:
-                review = api.create_taxonomy_draft(
-                    api.TaxonomyDraftRequest(
-                        taxonomy_id=identity,
-                        seeds=json.loads(data.get("seeds", "")),
-                        sample_kind=data.get("sample_kind"),
-                        **body,
-                    ),
-                    session,
-                )
-            query = urlencode(
-                {"kind": kind, "identity": review["id"], "version": review["version"]}
+        api.create_material(
+            api.MaterialRequest(
+                name=data.get("name") or "未命名材料",
+                content=data.get("content", ""),
+                kind="file" if data.get("from_file") == "1" else "text",
+            ),
+            session,
+        )
+        return RedirectResponse("/ui/setup", status_code=303)
+    except PageError as exc:
+        # HTTP 层拒绝（跨站守卫/超大表单等 AppError 与 InvariantViolation）
+        # 保持原状态码与错误页；内容校验失败才带着输入重渲染。
+        if isinstance(exc, AppError | InvariantViolation):
+            return failure(exc)
+        # X-01：校验失败时带着已填内容重渲染表单，长文输入不丢。
+        return _page(
+            "添加材料",
+            nav="首次设置",
+            body=f'<p role="alert">{escape(_form_error(exc))}</p>'
+            + _material_add_form(
+                prefill_name=data.get("name", ""), prefill_content=data.get("content", "")
             )
-            return RedirectResponse("/ui/setup?" + query, status_code=303)
-        if action == "confirm":
-            body = {**approval(data), "content_hash": data.get("content_hash", "")}
-            if kind == "profile":
-                api.confirm_profile_g1(
-                    identity, data.get("version", ""), api.ConfirmProfileRequest(**body), session
-                )
-            else:
-                api.confirm_taxonomy_g2(
-                    identity,
-                    data.get("version", ""),
-                    api.ConfirmTaxonomyRequest(review_hash=data.get("review_hash", ""), **body),
-                    session,
-                )
-            return RedirectResponse("/ui/setup", status_code=303)
-        raise InvalidRequestError("未知操作")
-    except (DomainError, AppError, ValidationError, ValueError, UnicodeError) as exc:
+            + '<p><a href="/ui/setup">返回首次设置</a></p>',
+        )
+
+
+@router.post("/setup/materials/delete")
+async def delete_material_action(request: Request, session: SessionDep) -> Response:
+    try:
+        data = await fields(request)
+        api.delete_material(data.get("material_id", ""), session)
+        return RedirectResponse("/ui/setup?removed=1", status_code=303)
+    except PageError as exc:
         return failure(exc)
 
 
-@router.post("/setup/start")
-async def begin(request: Request, session: SessionDep) -> Response:
+@router.post("/setup/import-legacy")
+async def import_legacy_action(request: Request, session: SessionDep) -> Response:
     try:
         await fields(request)
-        api.start_onboarding(session)
+        api.import_legacy(session)
+        return RedirectResponse("/ui/setup?imported=1", status_code=303)
+    except PageError as exc:
+        return failure(exc)
+
+
+@router.post("/setup/generate")
+async def generate_action(request: Request, session: SessionDep) -> Response:
+    try:
+        data = await fields(request)
+        _enqueue_extraction(request, _run_id(data))
         return RedirectResponse("/ui/setup", status_code=303)
-    except (DomainError, AppError, ValueError) as exc:
+    except PageError as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        return failure(exc)
+
+
+@router.post("/setup/feedback")
+async def feedback_action(request: Request, session: SessionDep) -> Response:
+    data: dict[str, str] = {}
+    try:
+        data = await fields(request)
+        if running := RunRepository(session).running_ui_runs():
+            # 有任务在跑：意见不落库，直接带用户去看进度，避免"已保存却不生成"。
+            return RedirectResponse(f"/ui/runs/{quote(running[0].id, safe='')}", status_code=303)
+        session.rollback()  # 检查开启的只读事务先结束，意见用下面的显式事务写入
+        with session.begin():
+            add_feedback(session, data.get("comment", ""))
+        _enqueue_extraction(request, _run_id(data))
+        return RedirectResponse("/ui/setup", status_code=303)
+    except PageError as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        if isinstance(exc, AppError | InvariantViolation):
+            return failure(exc)
+        # X-01：意见提交失败时保留已写的意见内容。
+        return _page(
+            "提意见",
+            nav="首次设置",
+            body=f'<p role="alert">{escape(_form_error(exc))}</p>'
+            + _feedback_form(comment=data.get("comment", ""))
+            + '<p><a href="/ui/setup">返回首次设置</a></p>',
+        )
+
+
+@router.post("/setup/confirm")
+async def confirm_action(request: Request, session: SessionDep) -> Response:
+    try:
+        data = await fields(request)
+        if data.get("confirmed") != "yes":
+            raise InvalidRequestError("请勾选确认后再开始使用")
+        api.confirm(
+            api.ConfirmRequest(
+                confirmed=True,
+                confirmed_by=data.get("confirmed_by", "local-user"),
+                change_summary=data.get("change_summary", "已确认"),
+                expected_revision=int(data.get("expected_revision", "1")),
+                profile_id=data.get("profile_id", ""),
+                profile_version=data.get("profile_version", ""),
+                profile_hash=data.get("profile_hash", ""),
+                taxonomy_id=data.get("taxonomy_id", ""),
+                taxonomy_version=data.get("taxonomy_version", ""),
+                taxonomy_hash=data.get("taxonomy_hash", ""),
+            ),
+            session,
+        )
+        return RedirectResponse("/ui/today", status_code=303)
+    except PageError as exc:
         return failure(exc)

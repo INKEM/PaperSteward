@@ -1,4 +1,4 @@
-"""G4日报编排与可恢复的投递边界。发送预约必须先提交，不能包在请求事务中。"""
+"""日报编排与可恢复的投递边界。发送预约必须先提交，不能包在请求事务中。"""
 
 from dataclasses import replace
 from datetime import date, datetime
@@ -19,8 +19,8 @@ from papersteward.delivery.channels import send_smtp, smtp_destination, write_fi
 from papersteward.delivery.compose import DeliveryHistory, compose_digest
 from papersteward.delivery.contracts import Digest
 from papersteward.delivery.render import render_markdown
-from papersteward.onboarding.service import _atomic
-from papersteward.scoring.queue import _context, create_snapshots, read_queue
+from papersteward.pipeline.context import bound_context
+from papersteward.scoring.queue import create_snapshots, queue_context, read_queue
 from papersteward.storage import session_scope
 from papersteward.storage.delivery import append_digest, content_hash, read_digest
 from papersteward.storage.mappers import as_utc
@@ -31,8 +31,8 @@ from papersteward.storage.repositories import (
     PaperBucketRepository,
     PaperRepository,
     PaperTagRepository,
-    ReviewRepository,
 )
+from papersteward.storage.tx import atomic
 
 
 def audit(session: Session, kind: EventType, now: datetime, payload: dict[str, Any]) -> None:
@@ -83,8 +83,9 @@ def delivery_history(session: Session) -> dict[str, DeliveryHistory]:
 def create_digest(
     session: Session, day: date, *, now: datetime, allow_downgrade: bool = False
 ) -> Digest:
-    with _atomic(session):
-        ctx = _context(session, now, execution=True)
+    with atomic(session):
+        bound_context(session, now, action="delivery.digest", enforce_schedule=True)
+        ctx = queue_context(session, now, execution=True)
         if day > now.astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date():
             raise InvariantViolation("digest.date", "不能生成未来日报")
         if session.get(DigestRow, day) is not None:
@@ -160,7 +161,7 @@ def create_digest(
             binding=ctx["binding"],
             config=ctx["config"],
             weekly_capacity=ctx["profile"].parsed_json["reading"]["weekly_capacity"],
-            pending_review=ReviewRepository(session).list_open(limit=1)[1],
+            pending_review=0,
             history=history,
             metadata=metadata,
             allow_downgrade=allow_downgrade,
@@ -174,7 +175,7 @@ def create_digest(
 
 
 def _preflight(session: Session, digest: Digest, channel: str, now: datetime) -> None:
-    ctx = _context(session, now, execution=True)
+    ctx = queue_context(session, now, execution=True)
     if digest.binding != ctx["binding"]:
         raise InvariantViolation("digest.binding", "日报依据已变化")
     history = delivery_history(session)
@@ -190,13 +191,12 @@ def _preflight(session: Session, digest: Digest, channel: str, now: datetime) ->
             raise InvariantViolation("delivery.items", "日报生成后条目已完成/拒绝/冷却；请审阅队列")
     if channel not in {"local_markdown", "smtp"}:
         raise InvariantViolation("delivery.channel", "不支持的投递渠道")
-    if channel == "smtp" and ctx["runtime"].value_json["channel"] != "smtp":
-        raise InvariantViolation("delivery.channel", "G4未确认SMTP；本地文件仍可用")
+    if channel == "smtp" and ctx["runtime"].value_json.get("channel") != "smtp":
+        raise InvariantViolation("delivery.channel", "初始化时未选择 SMTP 渠道；本地文件仍可用")
     if digest.digest_date != now.astimezone(ZoneInfo(digest.timezone)).date():
         raise InvariantViolation("delivery.date", "只允许发送本地今日日报，历史日报可审阅导出")
-    if (
-        now.astimezone(ZoneInfo(digest.timezone)).strftime("%H:%M")
-        < ctx["runtime"].value_json["push_time"]
+    if now.astimezone(ZoneInfo(digest.timezone)).strftime("%H:%M") < (
+        ctx["runtime"].value_json.get("push_time") or "00:00"
     ):
         raise InvariantViolation("delivery.time", "尚未到已确认的推送时间")
 
@@ -221,7 +221,7 @@ def deliver(
     try:
         with session_scope(factory) as session:
             digest = read_digest(session, day)
-            _context(session, now)  # 已送达回执只读；完成/暂停后重试仍返回原结果。
+            queue_context(session, now)  # 已送达回执只读；完成/暂停后重试仍返回原结果。
             row = session.get(DeliveryRow, (day, channel))
             if row is not None:
                 if row.destination_hash != destination_hash:

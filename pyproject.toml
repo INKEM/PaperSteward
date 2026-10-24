@@ -68,7 +68,7 @@ src = ["src", "tests"]
 exclude = ["docs"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "LOG", "G"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "LOG", "G", "BLE", "PERF"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["papersteward"]

@@ -60,6 +60,14 @@ def duplicate_reason(left: PaperCandidate, right: PaperCandidate) -> str | None:
     return _reason(canonicalize(left), canonicalize(right))
 
 
+def reason_canonicalized(left: PaperCandidate, right: PaperCandidate) -> str | None:
+    """对**已经 canonicalize** 的候选对直接判定；供批量去重索引复用。
+
+    与 duplicate_reason 结果一致，省去同一候选被反复 canonicalize 的开销。
+    """
+    return _reason(left, right)
+
+
 def _conflict(a: PaperCandidate, b: PaperCandidate) -> bool:
     return bool(
         (a.doi and b.doi and a.doi != b.doi)

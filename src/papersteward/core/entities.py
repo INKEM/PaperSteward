@@ -679,6 +679,32 @@ class StaticScoreSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PaperAnalysis:
+    """保存模型分析及质量标记，不构成人工审核关卡。"""
+
+    paper_id: str
+    payload_json: Mapping[str, Any]
+    quality_flags: tuple[str, ...]
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "analysis.paper_id"))
+        object.__setattr__(
+            self, "payload_json", _require_mapping(self.payload_json, "analysis.payload")
+        )
+        object.__setattr__(
+            self,
+            "quality_flags",
+            tuple(_require_text(flag, "analysis.quality_flags") for flag in self.quality_flags),
+        )
+        for name in ("created_at", "updated_at"):
+            object.__setattr__(self, name, _require_aware(getattr(self, name), f"analysis.{name}"))
+        if self.updated_at < self.created_at:
+            raise DomainValidationError("analysis.updated_at", "不能早于 created_at")
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewItem:
     """人工审核项；每篇文献一条，处理低置信度/边界/特殊提名。"""
 
@@ -1008,6 +1034,34 @@ class Config:
             "value_json",
             _require_mapping(self.value_json, "config.value_json"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeMaterial:
+    """用户上传的研究方向材料；Agent 抽取草案的输入。"""
+
+    id: str
+    name: str
+    kind: str
+    content: str
+    sha256: str
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _require_text(self.id, "intake.id"))
+        name = _require_text(self.name, "intake.name")
+        if len(name) > 256:
+            raise DomainValidationError("intake.name", "材料名称不能超过 256 个字符")
+        object.__setattr__(self, "name", name)
+        if self.kind not in {"text", "file"}:
+            raise DomainValidationError("intake.kind", "必须是 text 或 file")
+        if not isinstance(self.content, str) or not self.content.strip():
+            raise DomainValidationError("intake.content", "材料内容不能为空")
+        digest = _optional_text(self.sha256, "intake.sha256") or ""
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise DomainValidationError("intake.sha256", "必须是 64 位十六进制摘要")
+        object.__setattr__(self, "sha256", digest)
+        object.__setattr__(self, "created_at", _require_aware(self.created_at, "intake.created_at"))
 
 
 @dataclass(frozen=True, slots=True)

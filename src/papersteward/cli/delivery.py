@@ -71,7 +71,7 @@ def run(args: argparse.Namespace) -> int:
         finally:
             engine.dispose()
     except (DomainError, AppError) as exc:
-        print(f"错误：{exc.message}；请检查G4/日期/投递状态。", file=sys.stderr)
+        print(f"错误：{exc.message}；请检查初始化确认/日期/投递状态。", file=sys.stderr)
     except (SQLAlchemyError, ValidationError, OSError):
         print(
             "错误：数据库/文件/配置不可用；检查配置并运行 alembic upgrade head。", file=sys.stderr

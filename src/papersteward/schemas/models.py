@@ -26,6 +26,8 @@ SchemaName = Literal[
     "special_scoring",
     "special_nomination",
     "event",
+    "profile_extraction",
+    "query_planning",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -235,6 +237,120 @@ class EventEnvelope(_OutputModel):
         return self
 
 
+class ExtractionPositioning(_OutputModel):
+    summary: str = Field(min_length=1, max_length=500)
+    domain: str = Field(min_length=1, max_length=200)
+    career_stage: str = Field(default="", max_length=64)
+    language: str = Field(default="zh", max_length=16)
+
+
+class ExtractionCoreQuestion(_OutputModel):
+    id: str = Field(pattern=r"^Q[0-9]{1,3}$")
+    text: str = Field(min_length=1, max_length=500)
+
+
+class ExtractionSubdirection(_OutputModel):
+    id: str = Field(pattern=r"^S[0-9]{1,3}$")
+    name: str = Field(min_length=1, max_length=128)
+    priority: Literal["high", "medium", "low"] = "medium"
+    target_share: float = Field(ge=0.0, le=1.0)
+    keywords: list[str] = Field(min_length=1, max_length=10)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class ExtractionReading(_OutputModel):
+    weekly_capacity: int = Field(ge=1, le=200)
+    deep_skim_ratio: list[float] = Field(min_length=2, max_length=2)
+    reading_goals: list[str] = Field(min_length=1, max_length=5)
+    push_time: str | None = Field(default=None, pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+    @field_validator("deep_skim_ratio")
+    @classmethod
+    def _ratio_range(cls, value: list[float]) -> list[float]:
+        if any(ratio < 0.0 or ratio > 1.0 for ratio in value):
+            raise ValueError("deep_skim_ratio 的每一项必须在 0–1 之间")
+        return value
+
+
+class ExtractionAuthority(_OutputModel):
+    venues: list[str] = Field(default_factory=list, max_length=20)
+    authors: list[str] = Field(default_factory=list, max_length=20)
+    teams: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ExtractionProfile(_OutputModel):
+    positioning: ExtractionPositioning
+    core_questions: list[ExtractionCoreQuestion] = Field(min_length=3, max_length=5)
+    subdirections: list[ExtractionSubdirection] = Field(min_length=1, max_length=8)
+    include: list[str] = Field(min_length=1, max_length=10)
+    exclude: list[str] = Field(min_length=1, max_length=10)
+    methods: list[str] = Field(default_factory=list, max_length=10)
+    data: list[str] = Field(default_factory=list, max_length=10)
+    authority: ExtractionAuthority | None = None
+    negative_preferences: list[str] = Field(default_factory=list, max_length=10)
+    reading: ExtractionReading
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> ExtractionProfile:
+        question_ids = [question.id for question in self.core_questions]
+        if len(question_ids) != len(set(question_ids)):
+            raise ValueError("core_questions 的 id 不能重复")
+        sub_ids = [item.id for item in self.subdirections]
+        if len(sub_ids) != len(set(sub_ids)):
+            raise ValueError("subdirections 的 id 不能重复")
+        return self
+
+
+class ExtractionTag(_OutputModel):
+    code: str = Field(pattern=_CODE_PATTERN)
+    name: str = Field(min_length=1, max_length=64)
+    definition: str = Field(min_length=1, max_length=1000)
+    include: list[str] = Field(min_length=1, max_length=5)
+    exclude: list[str] = Field(min_length=1, max_length=5)
+    examples: list[str] = Field(min_length=3, max_length=8)
+    aliases: list[str] = Field(default_factory=list, max_length=10)
+    boundaries: list[str] = Field(default_factory=list, max_length=4)
+
+
+class ProfileExtractionOutput(_OutputModel):
+    """从用户材料抽取的研究方向草案：profile front matter + 分类标签。"""
+
+    profile: ExtractionProfile
+    tags: list[ExtractionTag] = Field(min_length=5, max_length=9)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> ProfileExtractionOutput:
+        codes = [tag.code for tag in self.tags]
+        if len(codes) != len(set(codes)):
+            raise ValueError("标签代码不能重复")
+        total = sum(item.target_share for item in self.profile.subdirections)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError("subdirections.target_share 之和必须为 1.0")
+        if abs(sum(self.profile.reading.deep_skim_ratio) - 1.0) > 1e-6:
+            raise ValueError("reading.deep_skim_ratio 之和必须为 1.0")
+        return self
+
+
+class PlannedQueryOutput(_OutputModel):
+    """一条检索式计划；keywords 为英文检索词，rationale 说明服务的方向或品味信号。"""
+
+    keywords: list[str] = Field(min_length=1, max_length=8)
+    operator: Literal["any", "all"] = "any"
+    exclude_keywords: list[str] = Field(default_factory=list, max_length=10)
+    field: Literal["all", "author", "venue", "team"] = "all"
+    date_from: date | None = None
+    date_to: date | None = None
+    max_results: int = Field(default=30, ge=5, le=100)
+    rationale: str = Field(min_length=1, max_length=500)
+
+
+class QueryPlanningOutput(_OutputModel):
+    """一轮挖掘的检索规划：多条互补检索式与整体策略说明。"""
+
+    queries: list[PlannedQueryOutput] = Field(min_length=1, max_length=8)
+    strategy_note: str = Field(min_length=1, max_length=1000)
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -244,6 +360,8 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "special_scoring": SpecialScoreSnapshotOutput,
         "special_nomination": SpecialNominationsOutput,
         "event": EventEnvelope,
+        "profile_extraction": ProfileExtractionOutput,
+        "query_planning": QueryPlanningOutput,
     }
 )
 
@@ -300,7 +418,17 @@ __all__ = [
     "DynamicScoreOutput",
     "EventEnvelope",
     "EvidenceItem",
+    "ExtractionAuthority",
+    "ExtractionCoreQuestion",
+    "ExtractionPositioning",
+    "ExtractionProfile",
+    "ExtractionReading",
+    "ExtractionSubdirection",
+    "ExtractionTag",
     "PriorityScoreOutput",
+    "ProfileExtractionOutput",
+    "PlannedQueryOutput",
+    "QueryPlanningOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
     "SpecialEvidenceOutput",

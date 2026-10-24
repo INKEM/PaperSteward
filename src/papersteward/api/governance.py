@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.review import _review_errors
+from papersteward.api.domain_errors import domain_errors
 from papersteward.core.entities import ScoringChange, utc_now
 from papersteward.errors import InvalidRequestError
 from papersteward.pipeline.context import bound_context, runtime_local_day
@@ -116,7 +116,7 @@ def detail(change_id: str, session: SessionDep) -> ScoringChangeRead:
 def preview(body: ScoringPreviewRequest, session: SessionDep) -> ScoringChangeRead:
     if (body.overrides is None) == (body.config is None):
         raise InvalidRequestError("overrides 与 config 必须二选一")
-    with _review_errors(), session.begin():
+    with domain_errors(), session.begin():
         timestamp = utc_now()
         if body.score_date is not None:
             day = body.score_date
@@ -162,7 +162,7 @@ def preview(body: ScoringPreviewRequest, session: SessionDep) -> ScoringChangeRe
 def confirm(
     change_id: str, body: ScoringConfirmRequest, session: SessionDep
 ) -> ScoringConfirmResponse:
-    with _review_errors(), session.begin():
+    with domain_errors(), session.begin():
         change, recomputed = confirm_weight_change(
             session,
             change_id,

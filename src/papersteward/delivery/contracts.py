@@ -40,11 +40,10 @@ class Digest(InputModel):
 
 class Action(InputModel):
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    kind: Literal["done", "score", "note", "snooze", "skip", "reject"]
+    kind: Literal["done", "score", "note", "reject", "restore"]
     mode: ReadMode | None = None
     score: int | None = Field(default=None, ge=1, le=5, strict=True)
     note: str | None = Field(default=None, max_length=10000)
-    days: Literal[3, 7, 14] | None = None
 
     @model_validator(mode="after")
     def coherent(self) -> "Action":
@@ -52,9 +51,8 @@ class Action(InputModel):
             "done": {"mode", "score", "note"},
             "score": {"score"},
             "note": {"note"},
-            "snooze": {"days"},
-            "skip": set(),
             "reject": {"note"},
+            "restore": set(),
         }[self.kind]
         if (self.model_fields_set - {"kind", "request_id"}) - allowed:
             raise ValueError("操作包含不适用字段")
@@ -62,8 +60,6 @@ class Action(InputModel):
             raise ValueError("完成必须提供实际阅读方式")
         if self.kind in {"score", "note"} and self.kind not in self.model_fields_set:
             raise ValueError("修订必须明确提供字段，null表示清除")
-        if self.kind == "snooze" and self.days is None:
-            raise ValueError("稍后须选择3/7/14天")
         if self.kind == "reject" and not self.note:
             raise ValueError("不相关操作须填写原因")
         return self

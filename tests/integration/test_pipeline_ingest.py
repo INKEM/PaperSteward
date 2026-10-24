@@ -1,16 +1,16 @@
 import json
 from datetime import UTC, datetime, timedelta
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import yaml
 from sqlalchemy import func, select
-from test_api_dry_run import approval, body, feedback, setup_g3
-from test_api_dry_run import client as client
 
+from conftest import activate
 from papersteward.core.entities import Config
 from papersteward.core.enums import AssignedBy, EventType, RunStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.errors import ConflictError
 from papersteward.pipeline.ingest import ingest
 from papersteward.sources.contracts import QuerySpec, SourceError
 from papersteward.sources.fixtures import FakeSourceAdapter
@@ -21,18 +21,6 @@ from papersteward.storage.repositories import ConfigRepository, EventRepository
 NOW = datetime(2026, 10, 22, 0, tzinfo=UTC)
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/sources/basic.json"
 QUERIES = [QuerySpec(keywords=("fixture",), max_results=10)]
-
-
-def activate(client, **parameters):
-    setup_g3(client)
-    data = body()
-    data["parameters"].update(parameters)
-    response = client.post("/onboarding/dry-runs", json=data)
-    assert response.status_code == 201, response.text
-    view = response.json()
-    view = client.post("/onboarding/dry-runs/1/feedback", json=feedback(view)).json()
-    response = client.post("/onboarding/dry-runs/1/confirm", json=approval(view))
-    assert response.status_code == 200, response.text
 
 
 def run(session, run_id="run-one", **kwargs):
@@ -76,7 +64,7 @@ def test_ingest_idempotency_provenance_and_dry_run(client, migrated_engine):
 def test_pre_g4_rejects_without_source_calls(migrated_engine):
     adapter = FakeSourceAdapter(FIXTURE)
     with session_scope(create_session_factory(migrated_engine)) as session:
-        with pytest.raises(InvariantViolation, match="g4"):
+        with pytest.raises(InvariantViolation, match="初始化确认"):
             ingest(session, [adapter], run_id="closed", now=lambda: NOW, queries=QUERIES)
         assert not adapter.calls and count(session, RunRow) == 0
 
@@ -85,32 +73,43 @@ def test_pre_g4_rejects_without_source_calls(migrated_engine):
     "parameters",
     [{"paused": True}, {"quiet_start": "07:00", "quiet_end": "09:00", "push_time": "10:00"}],
 )
-def test_schedule_rejects_before_network(client, migrated_engine, parameters):
+def test_legacy_schedule_does_not_block_manual_ingestion(client, migrated_engine, parameters):
     activate(client, **parameters)
     with session_scope(create_session_factory(migrated_engine)) as session:
-        with pytest.raises(InvariantViolation, match="schedule"):
-            run(session)
-        assert count(session, RunRow) == 0 and count(session, PaperSourceRow) == 0
+        result = run(session)
+        assert result.status is RunStatus.SUCCEEDED
+        assert count(session, RunRow) == 1 and count(session, PaperSourceRow) > 0
 
 
 def test_exact_config_reference_and_config_drift(client, migrated_engine):
     activate(client)
     with session_scope(create_session_factory(migrated_engine)) as session:
+        binding = run(session).stats_json["binding"]
+        runtime_version = binding["runtime_version"]
+        assert binding["scoring_version"] == "1.0.0"
+    starter = yaml.safe_load(
+        files("papersteward.resources")
+        .joinpath("starter", "scoring.yaml")
+        .read_text(encoding="utf-8")
+    )
+    starter["version"] = "1.0.1"
+    with session_scope(create_session_factory(migrated_engine)) as session:
         ConfigRepository(session).add(
             Config(
                 key="scoring",
-                version="unrelated",
-                value_json={},
+                version="1.0.1",
+                value_json=starter,
                 updated_by=AssignedBy.USER,
                 updated_at=NOW + timedelta(days=1),
             )
         )
-        assert run(session).stats_json["binding"]["scoring_version"] == "1.0.0"
-        config = session.get(ConfigRow, ("onboarding_runtime", "1"))
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        assert run(session, run_id="run-next").stats_json["binding"]["scoring_version"] == "1.0.1"
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        config = session.get(ConfigRow, ("onboarding_runtime", runtime_version))
         config.value_json = {**config.value_json, "paused": True}
         session.flush()
-        with pytest.raises(ConflictError):
-            run(session, run_id="drifted")
+        assert run(session, run_id="drifted").status is RunStatus.SUCCEEDED
 
 
 def test_source_failure_isolated_and_all_failed_reported(client, migrated_engine):

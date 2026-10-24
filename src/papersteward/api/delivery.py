@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.review import _review_errors
+from papersteward.api.domain_errors import domain_errors
 from papersteward.core.entities import utc_now
 from papersteward.delivery.contracts import Digest, InputModel
 from papersteward.delivery.render import render_html, render_markdown
@@ -25,7 +25,7 @@ class DigestRequest(InputModel):
 
 @router.post("", response_model=Digest)
 def create(body: DigestRequest, session: SessionDep) -> Digest:
-    with _review_errors(), session.begin():
+    with domain_errors(), session.begin():
         return create_digest(
             session, body.digest_date, now=utc_now(), allow_downgrade=body.allow_downgrade
         )
@@ -35,7 +35,7 @@ def create(body: DigestRequest, session: SessionDep) -> Digest:
 def read(
     day: date, session: SessionDep, format: Literal["json", "markdown", "html"] = "json"
 ) -> Digest | Response:
-    with _review_errors():
+    with domain_errors():
         bound_context(session, utc_now(), action="digest.read", enforce_schedule=False)
         digest = read_digest(session, day)
         if format == "html":

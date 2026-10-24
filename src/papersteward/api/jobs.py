@@ -7,7 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import Field
 
 from papersteward.api.deps import SessionDep
-from papersteward.api.review import _review_errors
+from papersteward.api.domain_errors import domain_errors
 from papersteward.core.entities import utc_now
 from papersteward.delivery.contracts import InputModel
 from papersteward.jobs.preference import refresh_weekly
@@ -23,5 +23,5 @@ class WeeklyRequest(InputModel):
 
 @router.post("/preference/weekly")
 def weekly(body: WeeklyRequest, session: SessionDep) -> dict[str, Any]:
-    with _review_errors(), session.begin():
+    with domain_errors(), session.begin():
         return dict(jsonable_encoder(refresh_weekly(session, now=utc_now(), run_id=body.run_id)))

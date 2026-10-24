@@ -2,11 +2,10 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
 import papersteward.delivery.service as delivery_service
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import PaperStatus
@@ -102,12 +101,12 @@ def test_smtp_failure_is_durable_and_file_still_works(
         assert session.get(DeliveryRow, (DAY, "smtp")).status == "uncertain"
 
 
-def test_smtp_requires_g4_and_generation_outer_rollback(client, migrated_engine):
+def test_smtp_requires_confirmed_channel_and_generation_outer_rollback(client, migrated_engine):
     factory = prepared(client, migrated_engine)
     settings = Settings(
         _env_file=None, smtp_host="example.org", smtp_from="a@example.org", smtp_to="b@example.org"
     )
-    with pytest.raises(InvariantViolation, match="G4未确认"):
+    with pytest.raises(InvariantViolation, match="初始化时未选择 SMTP"):
         deliver(factory, DAY, now=NOW, settings=settings, channel="smtp")
     with factory() as session:
         create_digest(session, DAY + timedelta(days=1), now=NOW + timedelta(days=1))

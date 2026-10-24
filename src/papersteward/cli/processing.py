@@ -1,4 +1,4 @@
-"""P4 process/review CLI：离线处理与人工审核队列。"""
+"""处理 CLI：模型分析直接进入阅读流程。"""
 
 from __future__ import annotations
 
@@ -7,35 +7,31 @@ import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from papersteward.config import LLMProviderKind
-from papersteward.core.entities import Bucket, Paper, ResearchProfile, ReviewItem, Taxonomy, utc_now
+from papersteward.core.entities import Bucket, ResearchProfile, Taxonomy, utc_now
 from papersteward.core.enums import PaperStatus
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError, NotFoundError
 from papersteward.llm import FakeLLM, LLMGateway, build_llm_provider
 from papersteward.llm.errors import LLMError
-from papersteward.pipeline.context import bound_context, runtime_local_day
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
-from papersteward.pipeline.process import ensure_topic_buckets, process_paper
-from papersteward.pipeline.review import (
-    approve_review,
-    list_open_reviews,
-    relabel_review,
+from papersteward.pipeline.process import (
+    process_paper,
+    reconcile_legacy_reviews,
 )
-from papersteward.scoring.config import ScoringConfig, validate_scoring_config
+from papersteward.pipeline.processor import processor_context
+from papersteward.scoring.config import ScoringConfig
 from papersteward.storage import (
     PaperRepository,
     create_db_engine,
     create_session_factory,
     session_scope,
 )
-from papersteward.storage.repositories import ConfigRepository, TaxonomyRepository
 
 FIXTURE_KEYS = ("relevance", "summary", "classification", "special_nomination")
 
@@ -49,27 +45,6 @@ def add_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
     )
     process.add_argument("--live", action="store_true", help="显式允许真实 LLM")
     process.add_argument("--json", action="store_true", help="输出 JSON")
-
-    review = subparsers.add_parser("review", help="审核队列")
-    commands = review.add_subparsers(dest="review_command", required=True)
-    listing = commands.add_parser("list", help="列出待审核项")
-    listing.add_argument("--limit", type=int, default=50)
-    listing.add_argument("--offset", type=int, default=0)
-    listing.add_argument("--json", action="store_true")
-
-    approve = commands.add_parser("approve", help="批准审核项")
-    approve.add_argument("paper_id")
-    approve.add_argument("--by", required=True, help="审核人")
-    approve.add_argument("--note")
-    approve.add_argument("--json", action="store_true")
-
-    relabel = commands.add_parser("relabel", help="人工改主/副标签")
-    relabel.add_argument("paper_id")
-    relabel.add_argument("--primary", required=True, help="主标签 code")
-    relabel.add_argument("--secondary", action="append", default=[], help="副标签 code，可重复")
-    relabel.add_argument("--by", required=True, help="审核人")
-    relabel.add_argument("--note")
-    relabel.add_argument("--json", action="store_true")
 
 
 def _fixture_provider(path: str) -> FakeLLM:
@@ -87,18 +62,10 @@ def _fixture_provider(path: str) -> FakeLLM:
 
 
 def _processor_context(
-    session: Session, now: datetime
+    session: Session, now: datetime, *, ensure_buckets: bool = True
 ) -> tuple[ResearchProfile, Taxonomy, ScoringConfig, dict[str, Bucket], date]:
-    profile, binding = bound_context(session, now, action="process")
-    taxonomy = TaxonomyRepository(session).get(binding["taxonomy_id"], binding["taxonomy_version"])
-    if taxonomy is None:
-        raise InvalidRequestError("选定分类法不存在")
-    config_row = ConfigRepository(session).get("scoring", binding["scoring_version"])
-    if config_row is None:
-        raise InvalidRequestError("选定评分配置不存在")
-    config = validate_scoring_config(ScoringConfig.model_validate(config_row.value_json))
-    local_day = runtime_local_day(session, now, binding)
-    return profile, taxonomy, config, ensure_topic_buckets(session, taxonomy), local_day
+    # 组装逻辑下沉 pipeline.processor（Q-03）；CLI 保留同名薄包装供内部调用。
+    return processor_context(session, now, ensure_buckets=ensure_buckets)
 
 
 def _run_process(args: argparse.Namespace) -> int:
@@ -132,18 +99,22 @@ def _run_process(args: argparse.Namespace) -> int:
         factory = create_session_factory(engine)
         with session_scope(factory) as session:
             profile, taxonomy, config, buckets, local_day = _processor_context(session, now)
+            reconcile_legacy_reviews(session, now=now)
             papers_repo = PaperRepository(session)
             papers = []
             if args.paper:
                 paper = papers_repo.get(args.paper)
                 if paper is None:
                     raise NotFoundError("文献不存在")
-                papers = [paper]
+                papers = (
+                    [] if paper.status in (PaperStatus.CLASSIFIED, PaperStatus.SHELVED) else [paper]
+                )
             else:
                 papers = [
                     paper
-                    for paper in papers_repo.list(limit=args.limit)
-                    if paper.status is PaperStatus.SCREENED
+                    for paper in papers_repo.list()
+                    if paper.status
+                    in (PaperStatus.SCREENED, PaperStatus.ENRICHED, PaperStatus.SUMMARIZED)
                 ][: args.limit]
             outcomes = [
                 process_paper(
@@ -165,12 +136,12 @@ def _run_process(args: argparse.Namespace) -> int:
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
                 for outcome in outcomes:
-                    flag = "review" if outcome.needs_review else "classified"
+                    flag = outcome.status.value
                     print(
                         f"{outcome.paper_id}: {flag} "
                         f"R={outcome.relevance.R:.1f} A={outcome.static.authority:.1f} "
                         f"E={outcome.static.extra_value:.1f} S={outcome.static.static_score:.1f} "
-                        f"({len(outcome.reasons)} reasons)"
+                        f"({len(outcome.quality_flags)} reasons)"
                     )
                 if not outcomes:
                     print("没有可处理的 screened 文献")
@@ -182,78 +153,9 @@ def _run_process(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
-def _review_json(item: ReviewItem, paper: Paper) -> dict[str, Any]:
-    return {
-        "paper_id": item.paper_id,
-        "title": paper.title,
-        "status": paper.status.value,
-        "reasons": list(item.reasons),
-        "review_status": item.status.value,
-        "resolution": item.resolution.value if item.resolution else None,
-        "resolved_by": item.resolved_by,
-        "note": item.note,
-    }
-
-
-def _run_review(args: argparse.Namespace) -> int:
-    from papersteward.config import get_settings
-
-    settings = get_settings()
-    engine = create_db_engine(settings.db_url)
-    try:
-        factory = create_session_factory(engine)
-        with session_scope(factory) as session:
-            if args.review_command == "list":
-                pairs, total = list_open_reviews(session, limit=args.limit, offset=args.offset)
-                items = [_review_json(item, paper) for item, paper in pairs]
-                if args.json:
-                    print(
-                        json.dumps(
-                            {
-                                "items": items,
-                                "total": total,
-                                "limit": args.limit,
-                                "offset": args.offset,
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                    )
-                else:
-                    for entry in items:
-                        print(f"{entry['paper_id']}: {', '.join(entry['reasons'])}")
-                    if not items:
-                        print("审核队列为空")
-                return 0
-            if args.review_command == "approve":
-                item = approve_review(session, args.paper_id, reviewed_by=args.by, note=args.note)
-            else:
-                item = relabel_review(
-                    session,
-                    args.paper_id,
-                    primary_tag=args.primary,
-                    secondary_tags=args.secondary,
-                    reviewed_by=args.by,
-                    note=args.note,
-                )
-            paper = PaperRepository(session).get(args.paper_id)
-            if paper is None:
-                raise NotFoundError("文献不存在")
-            payload = _review_json(item, paper)
-            if args.json:
-                print(json.dumps(payload, ensure_ascii=False, indent=2))
-            else:
-                print(f"{payload['paper_id']}: {payload['resolution']} → {payload['status']}")
-            return 0
-    finally:
-        engine.dispose()
-
-
 def run(args: argparse.Namespace) -> int:
     try:
-        if args.command == "process":
-            return _run_process(args)
-        return _run_review(args)
+        return _run_process(args)
     except (AppError, DomainError) as exc:
         message = exc.message if hasattr(exc, "message") else str(exc)
         print(f"错误：{message}", file=sys.stderr)

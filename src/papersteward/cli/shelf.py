@@ -14,15 +14,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from papersteward.core.entities import Paper, SpecialNominationRecord, SpecialTierSnapshot
 from papersteward.core.enums import ScoreTier, SpecialBucketKind
 from papersteward.core.errors import DomainError
-from papersteward.delivery.shelf_view import (
-    ShelfItem,
-    ShelfPage,
-    ShelfSummary,
-    list_shelf,
-    parse_tier_filter,
-    shelf_item_for_paper,
-    shelf_summaries,
-)
 from papersteward.delivery.special import (
     SpecialRotationPlan,
     load_special_candidates,
@@ -38,6 +29,15 @@ from papersteward.pipeline.shelf import (
     promote_to_topic,
     reject_nomination,
     reopen_nomination,
+)
+from papersteward.reading.shelf_view import (
+    ShelfItem,
+    ShelfPage,
+    ShelfSummary,
+    list_shelf,
+    parse_tier_filter,
+    shelf_item_for_paper,
+    shelf_summaries,
 )
 from papersteward.scoring.special import assess_special, override_special_tier
 from papersteward.storage import create_db_engine, create_session_factory, session_scope

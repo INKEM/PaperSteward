@@ -41,7 +41,7 @@ def run(args: argparse.Namespace) -> int:
         finally:
             engine.dispose()
     except (DomainError, AppError) as exc:
-        print(f"错误：{exc.message}；检查G4、计划时段和运行ID。", file=sys.stderr)
+        print(f"错误：{exc.message}；检查初始化确认、计划时段和运行ID。", file=sys.stderr)
     except (SQLAlchemyError, ValidationError, OSError):
         print("错误：数据库/配置不可用；检查迁移和任务输入。", file=sys.stderr)
     return 1

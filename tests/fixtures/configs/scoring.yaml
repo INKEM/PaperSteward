@@ -31,6 +31,8 @@ gates:
   relevance_weight_floor: 0.50
   static_weight_floor: 0.60
   authority_weight_cap: 0.20
+  min_queue_yield: 5
+  quota_fill_relevance_floor: 40
 stability:
   rank_ema: 0.70
   max_daily_delta: 8

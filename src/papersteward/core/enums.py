@@ -228,13 +228,15 @@ class EventType(StrEnum):
     ONBOARDING_G3_CONFIRMED = "onboarding.g3.confirmed"
     ONBOARDING_G4_CONFIRMED = "onboarding.g4.confirmed"
     ONBOARDING_TAXONOMY_DRAFTED = "onboarding.taxonomy.drafted"
-    ONBOARDING_DRY_RUN_CREATED = "onboarding.dry_run.created"
-    ONBOARDING_DRY_RUN_FEEDBACK = "onboarding.dry_run.feedback"
     ONBOARDING_SEEDS_IMPORTED = "onboarding.seeds.imported"
-    ONBOARDING_CALIBRATION_CREATED = "onboarding.calibration.created"
-    ONBOARDING_AGENT_LABELED = "onboarding.calibration.agent_labeled"
-    ONBOARDING_USER_LABELED = "onboarding.calibration.user_labeled"
-    ONBOARDING_CALIBRATION_REPORTED = "onboarding.calibration.reported"
+    # 新引导流程（P9 重设计）；旧门禁事件值保留，用于读取历史工作区的事件。
+    ONBOARDING_LLM_CONFIGURED = "onboarding.llm.configured"
+    ONBOARDING_DRAFT_ENTERED = "onboarding.draft.entered"
+    ONBOARDING_CONFIRMED = "onboarding.confirmed"
+    INTAKE_MATERIAL_ADDED = "onboarding.intake.material_added"
+    INTAKE_MATERIAL_REMOVED = "onboarding.intake.material_removed"
+    INTAKE_DRAFT_GENERATED = "onboarding.intake.generated"
+    INTAKE_FEEDBACK_RECORDED = "onboarding.intake.feedback"
 
 
 class RecalculationTrigger(StrEnum):

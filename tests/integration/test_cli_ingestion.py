@@ -2,9 +2,8 @@ import json
 from pathlib import Path
 
 from sqlalchemy import func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.models import RunRow
@@ -72,12 +71,12 @@ def test_cli_fixture_serves_multiple_pages_in_order(
     assert report["stats_json"]["sources"][0]["requests"] == 2
 
 
-def test_cli_preflight_and_fixture_do_not_bypass_g4(migrated_engine, monkeypatch, capsys):
+def test_cli_preflight_and_fixture_require_active_workspace(migrated_engine, monkeypatch, capsys):
     monkeypatch.setenv("PAPERSTEWARD_DATABASE_URL", str(migrated_engine.url))
     assert main(["ingest", "--source", "arxiv"]) == 1
     assert "--live" in capsys.readouterr().err
     assert main(["ingest", "--source", "fake", "--fixture", str(FIXTURE)]) == 1
-    assert "g4" in capsys.readouterr().err
+    assert "初始化确认" in capsys.readouterr().err
     assert main(["runs", "show", "--last"]) == 1
     assert "未找到" in capsys.readouterr().err
     with session_scope(create_session_factory(migrated_engine)) as session:

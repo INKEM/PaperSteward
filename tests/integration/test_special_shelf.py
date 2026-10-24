@@ -34,7 +34,6 @@ from papersteward.errors import ConflictError
 from papersteward.llm import FakeLLM, LLMGateway
 from papersteward.pipeline.embeddings import HashingEmbeddingProvider
 from papersteward.pipeline.process import process_paper
-from papersteward.pipeline.review import list_open_reviews
 from papersteward.pipeline.shelf import (
     accept_nomination,
     ensure_special_buckets,
@@ -127,18 +126,22 @@ def _setup(session: Session) -> None:
 
 
 def _process(session: Session):
-    return process_paper(
-        session,
-        PAPER,
-        profile=PROFILE,
-        taxonomy=TAXONOMY,
-        topic_buckets=_buckets(),
-        config=CONFIG,
-        gateway=_gateway(),
-        embedding_provider=HashingEmbeddingProvider(),
-        now=NOW,
-        score_date=NOW.date(),
-    )
+    from unittest.mock import patch
+
+    # 可选 shelf 手工操作测试需要未决策的提名夹具。
+    with patch("papersteward.pipeline.process.auto_decide_special", return_value=False):
+        return process_paper(
+            session,
+            PAPER,
+            profile=PROFILE,
+            taxonomy=TAXONOMY,
+            topic_buckets=_buckets(),
+            config=CONFIG,
+            gateway=_gateway(),
+            embedding_provider=HashingEmbeddingProvider(),
+            now=NOW,
+            score_date=NOW.date(),
+        )
 
 
 def _nomination(paper_id: str, reasons: tuple[str, ...] = ()) -> SpecialNominationRecord:
@@ -164,9 +167,9 @@ def test_process_persists_nominations_without_paper_review(migrated_engine):
     with session_scope(factory) as session:
         _setup(session)
         outcome = _process(session)
-        assert outcome.needs_review is False
+        assert not outcome.quality_flags
         assert outcome.status is PaperStatus.CLASSIFIED
-        assert list_open_reviews(session)[1] == 0
+        assert ReviewRepository(session).list_open()[1] == 0
 
         records = SpecialNominationRepository(session).list_for_paper(PAPER.id)
         assert {record.kind for record in records} == {
@@ -388,8 +391,11 @@ def test_accept_requires_classified_and_force_with_note(migrated_engine):
         )
         ReviewRepository(session).open("shelf-open-review", ["boundary"], {}, now=NOW)
         SpecialNominationRepository(session).upsert(_nomination("shelf-open-review"))
-        with pytest.raises(ConflictError, match="普通审核项"):
-            accept_nomination(session, "shelf-open-review", reviewed_by="fixture-user", now=NOW)
+        decision = accept_nomination(
+            session, "shelf-open-review", reviewed_by="fixture-user", now=NOW
+        )
+        assert decision.paper.status is PaperStatus.SHELVED
+        assert ReviewRepository(session).get("shelf-open-review").status.value == "open"
 
 
 def test_shelf_cli_lists_and_rejects(migrated_engine, monkeypatch, capsys):
@@ -432,3 +438,83 @@ def test_shelf_cli_lists_and_rejects(migrated_engine, monkeypatch, capsys):
     assert main(["shelf", "review", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 2
     get_settings.cache_clear()
+
+
+def test_automatic_special_accepts_valid_high_confidence_and_rejects_rest(migrated_engine):
+    from papersteward.pipeline.shelf import auto_decide_special
+
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        _setup(session)
+        _process(session)
+        assert auto_decide_special(session, PAPER.id, now=NOW)
+        assert PaperRepository(session).get(PAPER.id).status is PaperStatus.SHELVED
+        records = SpecialNominationRepository(session).list_for_paper(PAPER.id)
+        assert sum(item.status is SpecialNominationStatus.ACCEPTED for item in records) == 1
+        assert not any(item.status is SpecialNominationStatus.PENDING for item in records)
+
+
+def test_automatic_special_failure_rolls_back_and_leaves_topic(migrated_engine, monkeypatch):
+    from papersteward.pipeline.shelf import auto_decide_special
+
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        _setup(session)
+        _process(session)
+        original = PaperBucketRepository(session).list_for_paper(PAPER.id)
+
+        def fail(*args, **kwargs):
+            raise ConflictError("无法分档")
+
+        monkeypatch.setattr("papersteward.pipeline.shelf.assess_special", fail)
+        assert not auto_decide_special(session, PAPER.id, now=NOW)
+        assert PaperRepository(session).get(PAPER.id).status is PaperStatus.CLASSIFIED
+        assert PaperBucketRepository(session).list_for_paper(PAPER.id) == original
+        assert all(
+            item.status is SpecialNominationStatus.REJECTED
+            for item in SpecialNominationRepository(session).list_for_paper(PAPER.id)
+        )
+
+
+@pytest.mark.parametrize("confidence,reasons", [(0.79, ()), (0.95, ("invalid_evidence",))])
+def test_automatic_special_rejects_low_confidence_or_invalid(migrated_engine, confidence, reasons):
+    from papersteward.pipeline.shelf import auto_decide_special
+    from papersteward.storage.models import SpecialNominationRow
+
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        _setup(session)
+        _process(session)
+        original = PaperBucketRepository(session).list_for_paper(PAPER.id)
+        for record in SpecialNominationRepository(session).list_for_paper(PAPER.id):
+            row = session.get(SpecialNominationRow, record.id)
+            row.confidence = confidence
+            row.reasons_json = list(reasons)
+        session.flush()
+        assert not auto_decide_special(session, PAPER.id, now=NOW)
+        assert PaperRepository(session).get(PAPER.id).status is PaperStatus.CLASSIFIED
+        assert PaperBucketRepository(session).list_for_paper(PAPER.id) == original
+        assert all(
+            record.status is SpecialNominationStatus.REJECTED
+            for record in SpecialNominationRepository(session).list_for_paper(PAPER.id)
+        )
+
+
+def test_process_automatically_shelves_high_confidence_nomination(migrated_engine):
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        _setup(session)
+        outcome = process_paper(
+            session,
+            PAPER,
+            profile=PROFILE,
+            taxonomy=TAXONOMY,
+            topic_buckets=_buckets(),
+            config=CONFIG,
+            gateway=_gateway(),
+            embedding_provider=HashingEmbeddingProvider(),
+            now=NOW,
+        )
+        assert outcome.auto_shelved
+        assert outcome.status is PaperStatus.SHELVED
+        assert not SpecialNominationRepository(session).has_pending(PAPER.id)
+        assert ReviewRepository(session).list_open()[1] == 0
+        assert (
+            PaperBucketRepository(session).list_for_paper(PAPER.id)[0].assigned_by.value == "system"
+        )

@@ -3,20 +3,19 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import event, func, select
-from test_api_dry_run import client as client
-from test_pipeline_ingest import activate
 from test_priority_queue import DAY, NOW, seed
 
+from conftest import activate
 from papersteward.cli.main import main
 from papersteward.config import Settings, get_settings
 from papersteward.core.enums import EventType, PaperStatus, RunStatus
 from papersteward.core.errors import InvariantViolation
-from papersteward.delivery.actions import apply_action
-from papersteward.delivery.archive import read_archive
 from papersteward.delivery.contracts import Action
 from papersteward.delivery.service import create_digest, deliver
 from papersteward.jobs.preference import refresh_weekly
-from papersteward.scoring.queue import _context, _history
+from papersteward.reading.actions import apply_action
+from papersteward.reading.archive import read_archive
+from papersteward.scoring.queue import queue_context, reading_history
 from papersteward.storage import create_session_factory, session_scope
 from papersteward.storage.models import PaperRow, RatingRow, RunRow, ScoreSnapshotRow
 from papersteward.storage.repositories import (
@@ -132,13 +131,22 @@ def test_weekly_includes_delivered_unread_candidates(client, migrated_engine, tm
 def test_weekly_resumes_due_snoozed_candidate(client, migrated_engine, tmp_path):
     factory = delivered_factory(client, migrated_engine, tmp_path)
     with session_scope(factory) as session:
-        apply_action(
-            session,
-            "unread",
-            Action(request_id="later", kind="snooze", days=3),
-            now=NOW,
+        from papersteward.core.entities import Event
+        from papersteward.core.enums import EventType
+        from papersteward.storage.models import PaperRow
+        from papersteward.storage.repositories import EventRepository
+
+        session.get(PaperRow, "unread").status = "snoozed"
+        session.flush()
+        EventRepository(session).append(
+            Event(
+                "legacy-snooze",
+                EventType.PAPER_SNOOZED,
+                NOW,
+                "unread",
+                {"until": str(NOW.date() + timedelta(days=3))},
+            )
         )
-        assert PaperRepository(session).get("unread").status is PaperStatus.SNOOZED
         result = refresh_weekly(session, now=SUNDAY)
         assert result.stats_json["resumed"] == 1
         assert PaperRepository(session).get("unread").status is PaperStatus.QUEUED
@@ -185,7 +193,7 @@ def test_reading_metadata_used_even_if_current_paper_changes(client, migrated_en
         row = session.get(PaperRow, "read-0")
         row.authors_json, row.venue = ["Later Author"], "Later Venue"
         session.flush()
-        _, feedback = _history(session, _context(session, SUNDAY), SUNDAY.date())
+        _, feedback = reading_history(session, queue_context(session, SUNDAY), SUNDAY.date())
         assert feedback[0].authors == ("Original Author",) and feedback[0].venue == "Original Venue"
 
 
