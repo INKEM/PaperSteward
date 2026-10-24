@@ -34,6 +34,7 @@ from papersteward.api.profile_view import (
 )
 from papersteward.api.settings_pages import llm_form
 from papersteward.api.workflow_pages import run_body
+from papersteward.api.workspace_runtime import resolve_workspace
 from papersteward.config import get_settings
 from papersteward.core.entities import Run
 from papersteward.core.enums import RunStatus
@@ -301,6 +302,8 @@ def _legacy_section(summary: dict[str, Any]) -> str:
 def setup(
     session: SessionDep,
     reset: bool = False,
+    created: bool = False,
+    copy_failed: bool = False,
     added: bool = False,
     removed: bool = False,
     imported: bool = False,
@@ -311,6 +314,14 @@ def setup(
             flashes += (
                 '<p class="notice success">工作区已重置，原始数据库备份保存在数据目录的 '
                 "backups/，可重新开始首次设置。</p>"
+            )
+        if created:
+            flashes += (
+                '<p class="notice success">新工作区已创建并切换，完成首次设置即可开始使用。</p>'
+            )
+        if copy_failed:
+            flashes += (
+                '<p class="notice">模型连接没有自动复制过来，请在下方「连接模型」重新配置一次。</p>'
             )
         if added:
             flashes += '<p class="notice success">材料已添加，生成草案时会合并全部材料。</p>'
@@ -391,7 +402,7 @@ def setup(
 
 
 def _enqueue_extraction(request: Request, run_id: str) -> str:
-    request.app.state.ui_flows.submit(FlowRequest(run_id=run_id, kind="extract"))
+    resolve_workspace(request).ui_flows.submit(FlowRequest(run_id=run_id, kind="extract"))
     return run_id
 
 

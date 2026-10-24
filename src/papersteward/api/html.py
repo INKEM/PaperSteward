@@ -102,8 +102,15 @@ def page(
         f'<div class="nav-menu">{explore_items}</div></details>'
     )
     navigation = leading + explore_group + trailing
+    # 多工作区：桌面切换器是 htmx 懒加载片段（容器 id 稳定，错误可就地重试）；
+    # 移动端不占两处片段，直接给管理页入口。
     mobile_navigation = "".join(
-        _nav_link(url, label, key, active) for url, label, key in (*_NAV_LINKS, *_EXPLORE_LINKS)
+        _nav_link(url, label, key, active)
+        for url, label, key in (
+            *_NAV_LINKS,
+            *_EXPLORE_LINKS,
+            ("/ui/workspaces", "工作区管理", "工作区管理"),
+        )
     )
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -117,7 +124,10 @@ def page(
         '<a class="skip-link" href="#main">跳到内容</a><header>'
         '<a class="brand" href="/ui/queue"><span class="brand-mark" aria-hidden="true">P</span>'
         "PaperSteward<small>留一点时间，读重要的论文</small></a>"
-        f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
+        f'<nav class="desktop-nav" aria-label="主导航">'
+        '<div id="workspace-switcher" hx-get="/ui/workspaces/switcher?fragment=1" '
+        'hx-trigger="load" hx-swap="outerHTML"></div>'
+        f"{navigation}</nav>"
         '<details class="mobile-nav"><summary>导航菜单</summary>'
         f'<nav aria-label="移动导航">{mobile_navigation}</nav></details></header>'
         # UXR-20：htmx 请求网络失败/服务错误时的全局提示条，由 setup.js 填充与聚焦。

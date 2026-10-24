@@ -317,6 +317,96 @@ nav a[aria-current] {
   padding: 8px 10px;
 }
 
+/* 工作区切换器（片段经 htmx 懒加载填充 #workspace-switcher） */
+.ws-name {
+  display: inline-block;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.nav-menu form {
+  display: block;
+  margin: 0;
+}
+
+.nav-menu form button {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-menu form button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.nav-menu form button[aria-current="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ws-mark {
+  color: var(--accent);
+}
+
+.ws-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 7px;
+  border: 1px solid var(--warn-line);
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ws-badge.warn {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 工作区管理页列表 */
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.ws-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.ws-list h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.ws-meta p {
+  margin: 2px 0 0;
+}
+
 .mobile-nav {
   display: none;
 }

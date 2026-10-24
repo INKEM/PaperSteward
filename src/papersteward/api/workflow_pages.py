@@ -15,6 +15,7 @@ from papersteward.api.deps import SessionDep
 from papersteward.api.form_utils import PageError, conflict_redirect, failure, fields, hidden
 from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import page as _page
+from papersteward.api.workspace_runtime import resolve_workspace
 from papersteward.config import Settings
 from papersteward.core.entities import Run, utc_now
 from papersteward.core.enums import RunStatus
@@ -571,7 +572,7 @@ async def submit_run(request: Request) -> Response:
             focus=values.get("focus", ""),
             target=values.get("target", "0"),
         )
-        identity = request.app.state.ui_flows.submit(spec)
+        identity = resolve_workspace(request).ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)
     except PageError as exc:
         redirected = conflict_redirect(exc)
@@ -585,7 +586,7 @@ async def cancel_run(request: Request, identity: str, session: SessionDep) -> Re
     """停止任务并回到当前阶段的页面；任务已结束时同样回退（幂等）。"""
     try:
         await fields(request)
-        request.app.state.ui_flows.cancel(identity)
+        resolve_workspace(request).ui_flows.cancel(identity)
     except PageError as exc:
         return failure(exc)
     if get_onboarding(session).stage.value == "active":

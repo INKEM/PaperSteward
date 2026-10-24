@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 
 from papersteward.api.deps import SessionDep
+from papersteward.api.workspace_runtime import resolve_workspace
 from papersteward.config import get_settings
 from papersteward.core.entities import utc_now as utc_now
 from papersteward.core.errors import DomainError, InvariantViolation
@@ -140,7 +141,7 @@ class ExtractAccepted(BaseModel):
 def _enqueue_extraction(request: Request, run_id: str | None) -> str:
     identity = run_id or f"ext-{uuid4().hex[:16]}"
     with _onboarding_errors():
-        request.app.state.ui_flows.submit(FlowRequest(run_id=identity, kind="extract"))
+        resolve_workspace(request).ui_flows.submit(FlowRequest(run_id=identity, kind="extract"))
     return identity
 
 

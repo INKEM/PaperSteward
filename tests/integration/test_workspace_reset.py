@@ -26,7 +26,8 @@ def test_confirmed_results_are_visible_in_setup_and_settings(client):
 @pytest.mark.parametrize("keep_model", [True, False])
 def test_reset_backs_up_and_restarts_setup(client, tmp_path, keep_model):
     manager = ready(client)
-    client.app.state.settings = manager.settings.model_copy(update={"data_dir": tmp_path})
+    runtime = client.app.state.workspaces.default()
+    runtime.settings = runtime.settings.model_copy(update={"data_dir": tmp_path})
     with session_scope(manager.factory) as session:
         seed(session)
     invalid = post(client, "/ui/settings/reset", {"confirmation": "wrong"})
@@ -58,7 +59,8 @@ def test_reset_backs_up_and_restarts_setup(client, tmp_path, keep_model):
 
 def test_reset_is_blocked_during_task_and_csrf_guarded(client, tmp_path):
     manager = ready(client)
-    client.app.state.settings = manager.settings.model_copy(update={"data_dir": tmp_path})
+    runtime = client.app.state.workspaces.default()
+    runtime.settings = runtime.settings.model_copy(update={"data_dir": tmp_path})
     with session_scope(manager.factory) as session:
         RunRepository(session).add(Run("busy-reset", "ui.sync", started_at=utc_now()))
     response = post(client, "/ui/settings/reset", {"confirmation": "重置工作区"})
@@ -77,7 +79,8 @@ def test_reset_is_blocked_during_task_and_csrf_guarded(client, tmp_path):
 
 def test_backup_failure_keeps_original_data(client, tmp_path, monkeypatch):
     manager = ready(client)
-    client.app.state.settings = manager.settings.model_copy(update={"data_dir": tmp_path})
+    runtime = client.app.state.workspaces.default()
+    runtime.settings = runtime.settings.model_copy(update={"data_dir": tmp_path})
     with session_scope(manager.factory) as session:
         seed(session)
 

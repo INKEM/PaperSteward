@@ -7,7 +7,9 @@
 
 | 组件 | 生成位置 | 用途 |
 |---|---|---|
-| `page(title, body, nav=, heading_actions=)` | `api/html.py` | 全站外壳：主导航（阅读队列/归档/探索▾/首次设置/设置/帮助）、标题区、`#network-alert` 提示条、页脚。`nav=` 显式声明所属导航项（动态标题页必传）；`heading_actions=` 放标题行右侧任务工具条 |
+| `page(title, body, nav=, heading_actions=)` | `api/html.py` | 全站外壳：主导航（工作区切换器 + 阅读队列/归档/探索▾/首次设置/设置/帮助）、标题区、`#network-alert` 提示条、页脚。`nav=` 显式声明所属导航项（动态标题页必传）；`heading_actions=` 放标题行右侧任务工具条 |
+| `#workspace-switcher` + `_switcher_fragment()` | 外壳占位 + `api/workspace_pages.py` | 顶栏工作区切换器：htmx 懒加载片段（`hx-trigger="load"`，桌面导航首位；移动端导航用「工作区管理」链接代替），`<details class="nav-group">` 同构「探索▾」；行内 `POST /ui/workspaces/switch`，当前项 `aria-current` + ✓，运行中加 `.ws-badge` |
+| `.ws-list` / `_workspace_row()` | `api/workspace_pages.py` | 管理页工作区列表行：名称/创建时间/运行徽章 + 切换与删除动作；当前行标注「当前使用」并给重置入口 |
 | `.page-heading` / `.queue-toolbar` | `workflow_pages.dashboard` | 队列页标题行 + 「挖掘新论文/采集参数/刷新排序」工具条 |
 | `fragment_error(container_id, message)` / `error_fragment(exc)` | `api/html.py` | htmx 片段错误：保留稳定容器 id，`role=alert` 并接管焦点 |
 | `#network-alert` + `setup.js` htmx 事件 | 外壳 + `static/setup.js` | 网络失败/服务错误全局提示条，成功请求后自动收起（UXR-20） |

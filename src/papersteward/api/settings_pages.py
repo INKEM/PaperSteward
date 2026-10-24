@@ -21,6 +21,7 @@ from papersteward.llm.runtime import (
 )
 
 from .form_utils import failure, fields, input_field
+from .workspace_runtime import resolve_workspace
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
@@ -216,15 +217,15 @@ async def reset_workspace(request: Request, session: SessionDep) -> Response:
         data = await fields(request)
         if data.get("confirmation") != "重置工作区":
             raise InvalidRequestError("请输入“重置工作区”确认清空")
-        manager = request.app.state.ui_flows
-        with manager.lock, session.begin():
+        runtime = resolve_workspace(request)
+        with runtime.ui_flows.lock, session.begin():
             if session.get_bind().dialect.name == "sqlite":
                 session.execute(text("BEGIN IMMEDIATE"))
             if RunRepository(session).running_ui_runs():
                 raise ConflictError("有任务正在运行，完成后才能重置工作区")
             backup_workspace(
-                request.app.state.engine,
-                request.app.state.settings.data_dir / "backups",
+                runtime.engine,
+                runtime.settings.data_dir / "backups",
                 now=utc_now(),
             )
             clear_workspace(session, keep_model=data.get("keep_model") == "yes")

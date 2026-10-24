@@ -1,4 +1,4 @@
-# AGENT.md — 代理开发须知
+# AGENTS.md — 代理开发须知
 
 给在本仓库工作的编码代理/协作者的高信号要点汇总。产品语义详见 `docs/queue-first-plan.md`，用户文档在 `docs/`，本文只收录散落各处的开发约定与本机环境坑。
 
@@ -30,6 +30,7 @@ make check                # ruff format --check + ruff check + mypy + 非 e2e �
 make test                 # 仅测试；make e2e 为 3 项真实 Uvicorn 冒烟
 make migrate-check        # 临时库 upgrade → downgrade → upgrade
 make secret-scan          # 疑似密钥扫描（sk-…/AKIA…/私钥块）
+newgrp docker             # 开放docker权限
 ```
 
 - Python 3.11+，虚拟环境在 `.venv`，一律用 `.venv/bin/…` 的工具，不要用系统 Python。
@@ -76,7 +77,7 @@ tests/fixtures/     profiles/ taxonomies/ llm/ process/ configs/
 ## 产品不变量（违反即走偏）
 
 - 挖掘完全手动触发；不做 cron/APScheduler/每日任务（`api/jobs.py` 只有周度偏好刷新）。
-- 同一时刻只允许一个 `ui.*` 任务（409/303 语义见 `workflow_pages.py`）；同日重复挖掘幂等，只追加新论文。
+- 每个工作区同一时刻只允许一个 `ui.*` 任务（409/303 语义见 `workflow_pages.py`；多工作区见 ADR 0020，`app.state.workspaces` 按请求经 cookie 解析）；同日重复挖掘幂等，只追加新论文。
 - 队列持久：合格论文进长期队列，不按日期切分、不按容量隐藏；`snooze/skip` 已移除。
 - 配置治理（`docs/advanced/config-governance.md`）：治理入口只允许改线性权重字段；`gates`/`stability`/half_life 等非权重字段 400 拒绝。
 - 档案激活后改研究方向只能走设置页重新生成或 documents CLI；材料/意见仅 DRAFT 阶段可写。
