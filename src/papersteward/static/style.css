@@ -638,6 +638,7 @@ tr:last-child td {
 
 .paper-card {
   transition: border-color var(--speed) var(--ease);
+  padding: 20px 24px;
 }
 
 .paper-card:hover {
@@ -652,12 +653,106 @@ tr:last-child td {
   text-decoration: none;
 }
 
-.paper-score {
+/* UXR-07：阅读卡层次——徽章行 / 标题+推荐参考分 / 元信息 / 概括 / 操作。 */
+.card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.card-title {
+  margin: 0 0 6px;
+  line-height: 1.45;
+}
+
+.score-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  vertical-align: middle;
   font-variant-numeric: tabular-nums;
 }
 
-.paper-score strong {
+.card-meta {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.card-meta .source {
+  margin-right: 0;
+}
+
+.card-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0 0 12px;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-actions details {
+  margin: 0;
+}
+
+.card-actions summary {
+  display: inline-block;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  padding: 9px 14px;
+  min-height: 20px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 14px;
+  font-weight: 550;
+  list-style: none;
+}
+
+.action-reject summary {
+  background: var(--surface);
   color: var(--accent);
+  border-color: var(--accent-line);
+}
+
+.action-reject summary:hover {
+  background: var(--accent-soft);
+}
+
+.quota-note {
+  display: inline-block;
+  margin: 0;
+}
+
+.quota-note summary {
+  list-style: none;
+  padding: 3px 9px;
+}
+
+.quota-note summary::-webkit-details-marker {
+  display: none;
+}
+
+.quota-note[open] small {
+  display: block;
+  margin-top: 6px;
+  max-width: 320px;
+  color: var(--ink-muted);
+  font-size: 12px;
 }
 
 .score-overview strong {

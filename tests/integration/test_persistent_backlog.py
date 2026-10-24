@@ -81,7 +81,11 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     page = client.get("/ui/queue")
     assert page.status_code == 200
     assert "第 1 名" in page.text and "第 2 名" in page.text
-    assert "综合评分" in page.text and str(DAY) in page.text
+    # UXR-07：列表卡片明确写「推荐参考分」，与个人 1–5 分区分。
+    assert "推荐参考分" in page.text and "综合评分" not in page.text and str(DAY) in page.text
+    # 标题即详情入口，不再有重复的「查看论文与推荐依据」链接。
+    assert "查看论文与推荐依据" not in page.text
+    assert 'class="score-pill"' in page.text and 'class="card-actions"' in page.text
     assert "挖掘新论文" in page.text and "刷新排序" in page.text
     # UXR-04：挖掘表单如实说明检索规划会把研究档案与已读历史发给模型服务。
     assert "相关内容会发送给你配置的模型服务" in page.text

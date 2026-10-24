@@ -200,41 +200,54 @@ def _card(
         if taxonomy
         else item.primary_tag
     )
-    body = f'<article class="paper-card{" newly-added" if is_new else ""}">'
+    # UXR-07：阅读卡顺序——徽章行 → 标题+推荐参考分 → 元信息行 → 概括 → 操作。
+    badges = []
     if is_new:
-        body += '<span class="tag new-badge">本次新增</span> '
+        badges.append('<span class="tag new-badge">最近挖掘新增</span>')
     if "quota_fill" in item.explanation.reasons:
-        # X-05：保底填充的论文在列表可识别（相关度未达正常门槛、按名次补足）。
-        body += (
-            '<span class="tag quota-fill" '
-            'title="相关度未达正常门槛，按名次补足入队">保底填充</span> '
+        # X-05/UXR-07：保底填充说明可键盘展开，不只依赖悬浮提示。
+        badges.append(
+            '<details class="quota-note"><summary class="tag quota-fill">保底填充</summary>'
+            "<small>相关度未达正常门槛，按名次补足入队。</small></details>"
         )
-    body += f'<span class="tag">{escape(label)}</span>'
+    badges.append(f'<span class="tag">{escape(label)}</span>')
+    body = f'<article class="paper-card{" newly-added" if is_new else ""}">'
+    body += f'<div class="card-badges">{"".join(badges)}</div>'
     body += (
-        f'<h2><a href="/ui/papers/{quote(item.paper_id, safe="")}">{escape(item.title)}</a></h2>'
+        f'<h2 class="card-title"><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
+        f'{escape(item.title)}</a><span class="score-pill">'
+        f"推荐参考分 {item.priority:.1f}</span></h2>"
     )
-    body += _paper_links(session, item.paper_id, paper=paper, enrichment=enrichment)
-    body += f"<blockquote>{escape(item.summary_100)}</blockquote>"
-    body += '<p class="paper-score">'
+    meta = []
     if rank is not None:
-        body += f"<strong>第 {rank} 名</strong> · "
-    body += (
-        f"综合评分 {item.priority:.1f} / 100 · "
-        f'<span class="muted">评分于 {item.score_date}</span></p>'
-    )
-    body += f'<a href="/ui/papers/{quote(item.paper_id, safe="")}">查看论文与推荐依据</a>'
+        meta.append(f"第 {rank} 名")
+    if paper is not None and paper.authors:
+        meta.append(escape(", ".join(paper.authors[:3]) or "作者未知"))
+    if paper is not None and paper.venue:
+        meta.append(escape(paper.venue))
+    for label_text, raw in (
+        ("原文", paper.url if paper else None),
+        ("PDF", paper.pdf_url if paper else None),
+        ("代码", enrichment.signals.code_url if enrichment else None),
+    ):
+        if url := safe_url(raw):
+            meta.append(f'<a class="source" rel="noreferrer" href="{escape(url)}">{label_text}</a>')
+    meta.append(f"<span>评分于 {item.score_date}</span>")
+    body += f'<p class="card-meta">{" · ".join(meta)}</p>'
+    body += f'<blockquote class="card-summary">{escape(item.summary_100)}</blockquote>'
     if readonly:
         return body + "</article>"
     if paper and paper.status in {PaperStatus.DONE, PaperStatus.ARCHIVED}:
         body += '<p class="success">已完成归档</p>'
     elif paper and paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
         body += (
-            "<details><summary>完成并记录阅读</summary>"
+            '<div class="card-actions">'
+            '<details class="action-record"><summary class="action-primary">记录阅读</summary>'
             + _form(item.paper_id, "done", mode=mode)
             + "</details>"
-        )
-        body += (
-            "<details><summary>不感兴趣</summary>" + _form(item.paper_id, "reject") + "</details>"
+            '<details class="action-reject"><summary>不感兴趣</summary>'
+            + _form(item.paper_id, "reject")
+            + "</details></div>"
         )
     return body + "</article>"
 
