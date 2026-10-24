@@ -100,3 +100,25 @@ def test_ingest_run_renders_report_and_source_failures() -> None:
     assert "候选 12 篇" in html and "arXiv：检索式成功 2 条" in html
     assert "来源失败明细" in html
     assert "arXiv 第 2 条检索式：来源限流（请求太频繁）（rate_limited）" in html
+
+
+def test_collecting_phase_titles_are_honest() -> None:
+    # queued 仅覆盖 worker 接手瞬间；规划与抓取各有如实标题。
+    queued = run_body(_run(status=RunStatus.RUNNING, stats={"stage": "queued"}))
+    assert "正在开始…" in queued
+    planning = run_body(
+        _run(
+            status=RunStatus.RUNNING,
+            stats={"stage": "collecting", "collecting_phase": "planning"},
+        )
+    )
+    assert "正在规划检索式" in planning and "正在采集论文" not in planning
+    fetching = run_body(
+        _run(
+            status=RunStatus.RUNNING,
+            stats={"stage": "collecting", "collecting_phase": "fetching"},
+        )
+    )
+    assert "正在采集论文" in fetching
+    legacy = run_body(_run(status=RunStatus.RUNNING, stats={"stage": "collecting"}))
+    assert "正在采集论文" in legacy  # 无相位的旧运行记录保持默认标题

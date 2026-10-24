@@ -116,9 +116,11 @@ def run_body(
         )
     else:
         phase = str(stats.get("processing_phase", ""))
+        collecting_phase = str(stats.get("collecting_phase", ""))
         title = {
             "queued": "正在开始…",
-            "collecting": "正在采集论文",
+            # 采集大步的两个子相位：检索规划（模型调用）与实际抓取。
+            "collecting": "正在规划检索式" if collecting_phase == "planning" else "正在采集论文",
             "processing": (
                 f"正在{'初筛排序' if phase == 'triage' else '深处理'}论文 {index} / {total}"
             ),

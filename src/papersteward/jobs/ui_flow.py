@@ -491,6 +491,8 @@ class UIFlowManager:
     def collect(self, request: FlowRequest, plan: QueryPlan) -> None:
         clients: list[SourceHTTP] = []
         ingest_id = "ui-ingest-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:40]
+        # 规划完成后进入实际抓取：多条检索式逐条请求（间隔 3 秒），相位如实标注。
+        self._update(request.run_id, collecting_phase="fetching")
         try:
             adapters = build_adapters([request.source], self.settings, clients, live=True)
             with session_scope(self.factory) as session:
@@ -517,6 +519,8 @@ class UIFlowManager:
         used_keywords: str = "",
         feedback: str = "",
     ) -> QueryPlan:
+        # 检索规划是一次真实模型调用，可能耗时数十秒：相位先落库再调用。
+        self._update(request.run_id, collecting_phase="planning")
         with session_scope(self.factory) as session:
             plan = plan_queries(
                 session,
@@ -820,7 +824,11 @@ class UIFlowManager:
             for round_index in range(1, MAX_PLAN_ROUNDS + 1):
                 if self.stopped.is_set():
                     raise InvalidRequestError("应用正在停止")
-                if round_index > 1:
+                if round_index == 1:
+                    # 真正的“排队”只是等待 worker 取任务（通常瞬间完成）；取到后
+                    # 规划与采集都是实际工作，立即离开 queued 以免误标为排队。
+                    self._update(request.run_id, stage="collecting")
+                else:
                     self._update(request.run_id, stage="collecting", completed=["collecting"])
                 plan = self._plan(
                     request,
