@@ -127,6 +127,11 @@ def bench_read_paths(engine: Engine, papers: int) -> dict[str, Any]:
         metrics["ui_queue_page"] = timed(engine, lambda: client.get("/ui/queue"))
         metrics["ui_queue_page"]["status"] = metrics["ui_queue_page"]["result"].status_code
         metrics["ui_queue_page"].pop("result")
+        # UXR-24：归档与排序视图也是日常读路径，纳入基线（无归档记录时页面走空态）。
+        for path, key in (("/ui/archive", "ui_archive_page"), ("/ui/views", "ui_views_page")):
+            metrics[key] = timed(engine, lambda p=path: client.get(p))
+            metrics[key]["status"] = metrics[key]["result"].status_code
+            metrics[key].pop("result")
     return metrics
 
 
