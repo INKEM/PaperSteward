@@ -252,6 +252,59 @@ nav a[aria-current] {
   color: var(--ink-strong);
 }
 
+/* UXR-14：「探索」下拉组 */
+.desktop-nav .nav-group {
+  position: relative;
+  display: inline-block;
+}
+
+.desktop-nav .nav-group summary {
+  list-style: none;
+  cursor: pointer;
+  text-decoration: none;
+  padding: 7px 9px;
+  font-size: 14px;
+  border-radius: var(--radius-s);
+  color: inherit;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+
+.desktop-nav .nav-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.desktop-nav .nav-group summary::after {
+  content: " ▾";
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.desktop-nav .nav-group summary:hover,
+.desktop-nav .nav-group[open] summary {
+  background: var(--accent-soft-hover);
+  color: var(--ink-strong);
+}
+
+.nav-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-card);
+  z-index: 20;
+}
+
+.nav-menu a {
+  display: block;
+  padding: 8px 10px;
+}
+
 .mobile-nav {
   display: none;
 }
@@ -720,6 +773,15 @@ tr:last-child td {
 }
 
 /* ---------- 详情页内容区块（UXR-08：先理解论文，再解释评分） ---------- */
+
+.back-link {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.back-link a {
+  color: var(--ink-muted);
+}
 
 .detail-badges {
   display: flex;

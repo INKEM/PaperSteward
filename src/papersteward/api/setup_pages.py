@@ -435,7 +435,8 @@ async def add_material_action(request: Request, session: SessionDep) -> Response
         # X-01：校验失败时带着已填内容重渲染表单，长文输入不丢。
         return _page(
             "添加材料",
-            f'<p role="alert">{escape(_form_error(exc))}</p>'
+            nav="首次设置",
+            body=f'<p role="alert">{escape(_form_error(exc))}</p>'
             + _material_add_form(
                 prefill_name=data.get("name", ""), prefill_content=data.get("content", "")
             )
@@ -498,7 +499,8 @@ async def feedback_action(request: Request, session: SessionDep) -> Response:
         # X-01：意见提交失败时保留已写的意见内容。
         return _page(
             "提意见",
-            f'<p role="alert">{escape(_form_error(exc))}</p>'
+            nav="首次设置",
+            body=f'<p role="alert">{escape(_form_error(exc))}</p>'
             + _feedback_form(comment=data.get("comment", ""))
             + '<p><a href="/ui/setup">返回首次设置</a></p>',
         )

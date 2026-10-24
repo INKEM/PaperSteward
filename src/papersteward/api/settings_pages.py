@@ -200,7 +200,7 @@ def reset_preview(session: SessionDep) -> HTMLResponse:
         f'<button class="danger"{disabled}>清空数据并重新开始</button></form>'
         '<a href="/ui/settings">取消，返回设置</a></article>'
     )
-    return _page("重置工作区", body)
+    return _page("重置工作区", body, nav="设置")
 
 
 @router.post("/settings/reset")

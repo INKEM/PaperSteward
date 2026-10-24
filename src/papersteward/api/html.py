@@ -48,15 +48,25 @@ HTML_HEADERS = {
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 }
 
+# 顶层导航按阅读任务组织（UXR-14）：阅读主线在前，探索类入口收进「探索」下拉。
 _NAV_LINKS = (
     ("/ui/queue", "阅读队列", "阅读队列"),
-    ("/ui/shelves", "特殊桶", "特殊桶"),
-    ("/ui/views", "排序视图", "排序视图"),
     ("/ui/archive", "归档", "归档"),
     ("/ui/setup", "首次设置", "首次设置"),
     ("/ui/settings", "设置", "设置"),
     ("/ui/help", "帮助", "使用帮助"),
 )
+# 「探索」下拉组：特殊桶（探索收藏）与排序视图；key 与对应页面 title/nav 一致。
+_EXPLORE_LINKS = (
+    ("/ui/shelves", "探索收藏", "特殊桶"),
+    ("/ui/views", "排序视图", "排序视图"),
+)
+_EXPLORE_KEYS = frozenset(key for _, _, key in _EXPLORE_LINKS)
+
+
+def _nav_link(url: str, label: str, key: str, active: str) -> str:
+    current = ' aria-current="page"' if active == key else ""
+    return f'<a href="{url}"{current}>{label}</a>'
 
 
 def page(
@@ -78,9 +88,22 @@ def page(
         ],
     }
     active = nav or title
-    navigation = "".join(
-        f'<a href="{url}"' + (' aria-current="page"' if active == key else "") + f">{label}</a>"
-        for url, label, key in _NAV_LINKS
+    # UXR-14：桌面主导航「阅读队列 / 归档 / 探索▾ / 首次设置 / 设置 / 帮助」；
+    # 当前页属于探索组时下拉默认展开并高亮组名。
+    leading = "".join(_nav_link(url, label, key, active) for url, label, key in _NAV_LINKS[:2])
+    trailing = "".join(_nav_link(url, label, key, active) for url, label, key in _NAV_LINKS[2:])
+    explore_items = "".join(
+        _nav_link(url, label, key, active) for url, label, key in _EXPLORE_LINKS
+    )
+    explore_group = (
+        '<details class="nav-group"'
+        + (" open" if active in _EXPLORE_KEYS else "")
+        + "><summary>探索</summary>"
+        f'<div class="nav-menu">{explore_items}</div></details>'
+    )
+    navigation = leading + explore_group + trailing
+    mobile_navigation = "".join(
+        _nav_link(url, label, key, active) for url, label, key in (*_NAV_LINKS, *_EXPLORE_LINKS)
     )
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -96,7 +119,7 @@ def page(
         "PaperSteward<small>留一点时间，读重要的论文</small></a>"
         f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
         '<details class="mobile-nav"><summary>导航菜单</summary>'
-        f'<nav aria-label="移动导航">{navigation}</nav></details></header>'
+        f'<nav aria-label="移动导航">{mobile_navigation}</nav></details></header>'
         f'<main id="main"><div class="page-heading"><div class="page-heading-text">'
         f'<p class="eyebrow">你的研究书桌</p><h1>{escape(title)}</h1></div>'
         f"{heading_actions}</div>{body}</main>"

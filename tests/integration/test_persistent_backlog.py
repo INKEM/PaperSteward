@@ -220,6 +220,30 @@ def test_truly_empty_queue_hides_filter_form(client):
     assert "挖掘新论文" in page.text
 
 
+def test_navigation_highlights_section_for_dynamic_titles(client, migrated_engine):
+    """UXR-14：动态标题页（归档计数/详情）也稳定高亮所属导航项。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        refresh_queue(session, now=NOW)
+        apply_action(
+            session, "one", Action(kind="done", request_id="nav-done", mode="skim"), now=NOW
+        )
+    queue = client.get("/ui/queue").text
+    assert '<a href="/ui/queue" aria-current="page">阅读队列</a>' in queue
+    assert 'aria-current="page">特殊桶' not in queue
+    # 归档页标题动态带计数，仍高亮「归档」
+    archive = client.get("/ui/archive")
+    assert 'href="/ui/archive" aria-current="page">归档</a>' in archive.text
+    # 已归档论文详情：高亮「归档」并提供返回入口
+    detail = client.get("/ui/papers/one")
+    assert 'href="/ui/archive" aria-current="page">归档</a>' in detail.text
+    assert "← 返回归档" in detail.text
+    # 重置预览页归属设置
+    reset = client.get("/ui/settings/reset")
+    assert 'href="/ui/settings" aria-current="page">设置</a>' in reset.text
+
+
 def test_detail_presents_summary_slots_and_source_material(client, migrated_engine):
     """UXR-08：详情页先帮助理解论文——四槽概括、模型标注、证据折叠、推荐依据后置。"""
     activate(client)

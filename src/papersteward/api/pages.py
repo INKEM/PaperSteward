@@ -835,7 +835,7 @@ def historical_digest(day: date, session: SessionDep) -> HTMLResponse:
         )
         for item in digest.items
     )
-    return _page("历史日报", body)
+    return _page("历史日报", body, nav="阅读队列")
 
 
 @router.get("/shelves")
@@ -875,7 +875,14 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
             raise NotFoundError("文献不存在")
-        return _page(paper.title, _detail_article(session, paper_id, paper=paper))
+        # UXR-14：详情页按论文归属高亮导航（归档/探索收藏/阅读队列）。
+        if paper.status is PaperStatus.ARCHIVED:
+            nav_key = "归档"
+        elif shelf_item_for_paper(session, paper_id) is not None:
+            nav_key = "探索收藏"
+        else:
+            nav_key = "阅读队列"
+        return _page(paper.title, _detail_article(session, paper_id, paper=paper), nav=nav_key)
     except (DomainError, AppError) as exc:
         rendered = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
         if isinstance(exc, NotFoundError):
@@ -906,7 +913,11 @@ def _detail_article(
         from papersteward.api.score_render import score_explanation
 
         summary_data = record.content.get("summary", {})
-        body = notice_html + '<p class="success">已完成归档</p>'
+        body = (
+            notice_html
+            + '<p class="back-link"><a href="/ui/archive">← 返回归档</a></p>'
+            + '<p class="success">已完成归档</p>'
+        )
         body += _paper_links(session, paper_id)
         body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
         body += _summary_slots(summary_data)
@@ -949,7 +960,12 @@ def _detail_article(
     shelf_item = shelf_item_for_paper(session, paper_id)
     if shelf_item is not None:
         summary = SummaryRepository(session).get(paper_id)
-        body = "<article>" + notice_html + "<blockquote>"
+        body = (
+            "<article>"
+            + notice_html
+            + '<p class="back-link"><a href="/ui/shelves">← 返回探索收藏</a></p>'
+            + "<blockquote>"
+        )
         body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
         body += _shelf_inner(shelf_item)
         if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
@@ -981,7 +997,12 @@ def _detail_article(
         if taxonomy and tag_code
         else None
     )
-    body = "<article>" + notice_html + '<p class="detail-badges">'
+    body = (
+        "<article>"
+        + notice_html
+        + '<p class="back-link"><a href="/ui/queue">← 返回阅读队列</a></p>'
+        + '<p class="detail-badges">'
+    )
     if paper.status is PaperStatus.SCREENED:
         # UXR-10：移回待处理的论文不在队列，详情页如实说明去向与下一步。
         body += (
@@ -1091,9 +1112,9 @@ def archive(
             if min_score is not None:
                 params["min_score"] = min_score
             body += f'<a href="/ui/archive?{escape(urlencode(params))}">下一页</a>'
-        return _page(f"阅读归档 · {page['total']} 篇", body)
+        return _page(f"阅读归档 · {page['total']} 篇", body, nav="归档")
     except (DomainError, AppError) as exc:
-        return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
 
 
 def _failed_action_card(

@@ -531,4 +531,6 @@ def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> 
     running = repository.running_ui_runs()
     home = ("/ui/today", "返回队列") if onboarding_active else ("/ui/setup", "返回首次设置")
     body = run_body(run, current=running[0] if running else None, home=home)
-    return HTMLResponse(body, headers=HEADERS) if fragment else _page("运行进度", body)
+    return (
+        HTMLResponse(body, headers=HEADERS) if fragment else _page("运行进度", body, nav="阅读队列")
+    )
