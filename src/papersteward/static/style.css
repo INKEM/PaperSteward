@@ -394,6 +394,54 @@ form {
   min-width: 0;
 }
 
+/* ---------- 表单布局（UXR-11）：按填写任务分组，不再一律横排 ---------- */
+
+/* 材料、意见、备注等「正文为主」的表单：标签与控件纵向，正文占满宽度。 */
+.stacked-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  align-items: stretch;
+}
+
+.stacked-form > span,
+.stacked-form > p,
+.stacked-form > details {
+  grid-column: 1 / -1;
+}
+
+.stacked-form textarea {
+  width: 100%;
+  min-height: 110px;
+}
+
+/* 模型设置等「多个短字段」的表单：最多两列，长字段单独占行。 */
+.settings-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  padding: 12px 0;
+  align-items: start;
+}
+
+.settings-form > label:first-of-type,
+.settings-form > .actions,
+.settings-form > p,
+.settings-form > details {
+  grid-column: 1 / -1;
+}
+
+.settings-form .actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-form > .check {
+  grid-column: 1 / -1;
+}
+
 form > p,
 form > details,
 form > textarea,
@@ -1232,6 +1280,10 @@ tr:last-child td {
   }
 
   /* UXR-06：手机筛选双列排布；搜索独占一行，「更多筛选」收起为一行芯片。 */
+  .settings-form {
+    grid-template-columns: 1fr;
+  }
+
   .queue-filters {
     display: grid;
     grid-template-columns: 1fr 1fr;

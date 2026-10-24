@@ -161,7 +161,8 @@ def _form(
             " required" if kind == "reject" else ""
         ) + f">{escape(note or '')}</textarea></label>"
     return (
-        f'<form method="post" action="{url}" hx-post="{url}" hx-target="closest article" '
+        f'<form method="post" action="{url}" class="stacked-form" hx-post="{url}" '
+        'hx-target="closest article" '
         'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\''
         f"{confirm}>"
         f'<input type="hidden" name="kind" value="{kind}">'

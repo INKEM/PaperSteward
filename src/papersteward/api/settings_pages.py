@@ -52,8 +52,10 @@ def llm_form(
         + placeholder
         + '" autocomplete="off"></label>'
         + input_field("model", config_model, "模型名称（如 deepseek-chat、gpt-4o-mini）")
+        # UXR-11/§7.2：超时属于低频配置，收进高级设置。
+        + '<details class="advanced"><summary>高级设置（请求超时）</summary>'
         + '<label>请求超时（秒，模型响应慢可调大）<input type="number" name="timeout_s" '
-        f'value="{int(config_timeout)}" min="5" max="600" step="1" required></label>'
+        f'value="{int(config_timeout)}" min="5" max="600" step="1" required></label>' + "</details>"
     )
     consent = (
         '<label class="check"><input type="checkbox" name="consent" value="yes" required>'
@@ -68,9 +70,13 @@ def llm_form(
     )
     heading = "" if compact else "<h2>连接模型</h2>"
     return (
-        f'{heading}<form id="llm-settings" method="post" action="/ui/settings/llm">'
+        f'{heading}<form id="llm-settings" method="post" action="/ui/settings/llm" '
+        'class="settings-form">'
         f'<input type="hidden" name="next" value="{escape(next_url)}">{body}'
-        f"{consent}{actions}</form>"
+        f"{consent}{actions}"
+        # UXR-13：说明测试的取值来源，区分「保存配置」与「验证连接」。
+        + '<p class="muted">「测试连接」用上方表单当前值发起一次真实请求（不保存）；'
+        "密钥留空时沿用已保存的密钥。</p></form>"
     )
 
 
