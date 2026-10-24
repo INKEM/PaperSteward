@@ -14,7 +14,8 @@ def test_public_head_excludes_local_development_documents() -> None:
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
     forbidden = ("docs/phases/", "docs/adr/", "dev-docs/")
     assert not [name for name in tracked if name.startswith(forbidden)]
-    assert "AGENTS.md" not in tracked
+    # AGENT.md 已更名 AGENTS.md 并决定随仓库公开（开发过程资料不入库的唯一例外）。
+    assert "AGENTS.md" in tracked
     assert not [name for name in tracked if name.startswith("docs/PaperSteward_")]
     assert "dev-docs/" in (ROOT / ".gitignore").read_text()
     assert "dev-docs" in (ROOT / ".dockerignore").read_text().splitlines()
