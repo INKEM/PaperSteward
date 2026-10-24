@@ -176,7 +176,7 @@ def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine
         == 200
     )
     page = client.get("/ui/setup")
-    assert "模型已连接" in page.text and "研究材料" in page.text
+    assert "模型配置已保存" in page.text and "研究材料" in page.text
 
     add_material(client)
     generated = post(client, "/ui/setup/generate", {"run_id": "ext-first"})

@@ -102,7 +102,7 @@ def _materials_section(
 def _material_add_form(*, prefill_name: str = "", prefill_content: str = "") -> str:
     """添加材料表单；prefill 用于校验失败后原地重渲染（X-01）。"""
     return (
-        '<form method="post" action="/ui/setup/materials">'
+        '<form method="post" action="/ui/setup/materials" class="stacked-form">'
         + '<label>材料名称（可选）<input name="name" placeholder="未命名材料" value="'
         + escape(prefill_name)
         + '"></label>'
@@ -191,7 +191,7 @@ def _draft_section(summary: dict[str, Any]) -> str:
 def _feedback_form(*, comment: str = "") -> str:
     """提意见表单；comment 用于校验失败后原地重渲染（X-01）。"""
     return (
-        '<form method="post" action="/ui/setup/feedback">'
+        '<form method="post" action="/ui/setup/feedback" class="stacked-form">'
         + hidden("run_id", "ext-" + uuid4().hex[:16])
         + "<label>修改意见（例如“方向太窄，把 XX 也加进去”“不要子方向 S3”）"
         + f'<textarea name="comment" rows="3" required>{escape(comment)}</textarea></label>'
@@ -318,8 +318,9 @@ def setup(
                 )
             else:
                 body += (
-                    '<p class="notice success">模型已连接。'
-                    '需要更换时可到 <a href="/ui/settings">设置</a> 修改。</p>'
+                    '<p class="notice success">模型配置已保存（连接尚未验证）。'
+                    "可用下方「测试连接」确认能真实访问；需要更换时可到 "
+                    '<a href="/ui/settings">设置</a> 修改。</p>'
                 )
             body += _legacy_section(summary)
             body += _materials_section(summary, editable=True)

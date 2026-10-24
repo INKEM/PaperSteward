@@ -28,9 +28,9 @@ class LLMProviderError(LLMError):
         self.retryable = retryable
 
     def __str__(self) -> str:
-        if self.usage is None:
-            return str(self.args[0]) if self.args else "provider 调用失败"
-        return f"{self.args[0]} (calls={self.usage.calls}, retries={self.usage.retries})"
+        # UXR-13：界面文案只保留可操作原因；calls/retries 是诊断信息，
+        # 需要时由 CLI/日志从 ``usage`` 属性自行格式化，不混进用户可见消息。
+        return str(self.args[0]) if self.args else "provider 调用失败"
 
 
 class LLMTimeoutError(LLMProviderError):

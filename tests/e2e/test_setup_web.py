@@ -120,7 +120,7 @@ def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None
                     },
                 )
                 assert saved.status_code == 200
-                assert "模型已连接" in saved.text
+                assert "模型配置已保存" in saved.text
                 status = client.get("/settings/llm").json()
                 assert status["configured"] is True and status["ready"] is True
 
