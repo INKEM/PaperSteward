@@ -17,6 +17,7 @@ from papersteward.api.form_utils import fields as form_fields
 from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import fragment_error
 from papersteward.api.html import page as _page
+from papersteward.api.html import pagination as _pagination
 from papersteward.api.workflow_pages import dashboard, queue_stats_line
 from papersteward.core.entities import Enrichment, Paper, Summary, Taxonomy, ViewConfig, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
@@ -1092,6 +1093,11 @@ def archive(
         page = list_archives(session, query=query, tag=tag, min_score=min_score, offset=offset)
         # X-06：tag/min_score 后端早已支持，补齐 UI 控件并让筛选条件随导出/翻页保留。
         taxonomy = TaxonomyRepository(session).latest_confirmed()
+        tag_names = (
+            {t.code: t.name for t in taxonomy.tags if t.level.value == "primary"}
+            if taxonomy
+            else {}
+        )
         body = '<form method="get" class="queue-filters"><label>搜索<input name="query" value="'
         body += escape(query or "") + '"></label><label>研究标签<select name="tag">'
         body += '<option value="">全部标签</option>'
@@ -1121,18 +1127,25 @@ def archive(
             }
         )
         export_suffix = ("&" + export_params) if export_params else ""
+        total = page["total"]
+        filtered = bool((query or "").strip() or tag or min_score is not None)
+        clear_link = ' · <a href="/ui/archive">清除筛选</a>' if filtered else ""
         body += (
-            f'<p>导出：<a href="/archive/export?format=bibtex{escape(export_suffix)}">BibTeX</a> · '
+            f'<p class="muted">共 {total} 条记录{clear_link}。'
+            f'导出：<a href="/archive/export?format=bibtex{escape(export_suffix)}">BibTeX</a> · '
         )
         body += f'<a href="/archive/export?format=csv{escape(export_suffix)}">CSV</a> · '
         body += f'<a href="/archive/export?format=markdown{escape(export_suffix)}">Markdown</a> · '
         body += f'<a href="/archive/export?format=json{escape(export_suffix)}">JSON</a>'
-        body += "（导出跟随当前筛选）</p>"
+        # UXR-18：导出路由现已接受筛选参数，说明与实际行为一致。
+        body += f"（将导出当前筛选的全部 {total} 条，含备注与评分）</p>"
         if not page["items"]:
-            if query:
+            if filtered:
                 body += (
-                    f'<p class="muted">没有匹配「{escape(query)}」的归档记录。'
-                    "可更换关键词，或清除搜索查看全部。</p>"
+                    '<article class="empty"><h2>没有匹配的归档记录</h2>'
+                    "<p>可调整筛选条件，或清除后查看全部。</p>"
+                    '<p><a class="button secondary" href="/ui/archive">清除筛选，显示全部</a></p>'
+                    "</article>"
                 )
             else:
                 body += (
@@ -1140,19 +1153,30 @@ def archive(
                     "会出现在这里。</p>"
                 )
         for record in page["items"]:
-            title = record.content.get("metadata", {}).get("title", record.paper_id)
-            rating = record.score if record.score is not None else "未评分"
+            metadata = record.content.get("metadata", {})
+            title = metadata.get("title", record.paper_id)
+            reading = record.content.get("reading") or {}
+            mode_label = {"deep": "精读", "skim": "粗读"}.get(str(reading.get("actual_mode")))
+            machine_score = (record.content.get("score") or {}).get("scores", {}).get("P")
+            # UXR-18：标签用名称；个人评分与机器推荐参考分明确区分。
+            tag_name = tag_names.get(record.primary_tag, record.primary_tag)
+            personal = f"我的评分 {record.score}/5" if record.score is not None else "未评分"
+            meta = [escape(str(tag_name)), personal]
+            if mode_label:
+                meta.append(mode_label)
+            meta.append(f"完成于 {record.archived_at.date()}")
+            if machine_score is not None:
+                meta.append(f"推荐参考分 {float(machine_score):.1f}")
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
-            body += f"{escape(title)}</a></h2><p>{escape(record.primary_tag)} · 评分 {rating}</p>"
+            body += f"{escape(title)}</a></h2><p>{' · '.join(meta)}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
-        if offset + 50 < page["total"]:
-            params: dict[str, str | int] = {"query": query or "", "offset": offset + 50}
-            if tag:
-                params["tag"] = tag
-            if min_score is not None:
-                params["min_score"] = min_score
-            body += f'<a href="/ui/archive?{escape(urlencode(params))}">下一页</a>'
-        return _page(f"阅读归档 · {page['total']} 篇", body, nav="归档")
+        page_params = {
+            key: value
+            for key, value in {"query": query, "tag": tag, "min_score": min_score}.items()
+            if value not in (None, "")
+        }
+        body += _pagination("/ui/archive", page_params, offset=offset, total=total, page_size=50)
+        return _page(f"阅读归档 · {total} 篇", body, nav="归档")
     except (DomainError, AppError) as exc:
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
 

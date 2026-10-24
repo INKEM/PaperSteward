@@ -101,6 +101,38 @@ def test_archive_api_filter_export_and_no_delete(client, migrated_engine, monkey
     assert client.delete("/archive/p").status_code == 405
 
 
+def test_archive_page_enrichment_pagination_and_filtered_export(
+    client, migrated_engine, monkeypatch
+):
+    """UXR-18：归档卡片可读（标签名/双评分/方式/时间）、双向翻页；导出真正跟随筛选。"""
+    factory = prepared(client, migrated_engine)
+    monkeypatch.setattr("papersteward.api.actions.utc_now", lambda: NOW)
+    with session_scope(factory) as session:
+        finish(session)
+    html = client.get("/ui/archive").text
+    # 卡片展示标签名称而非代码（筛选表单之后的正文区域不含 T01 代码）
+    body_after_form = html.split("</form>", 1)[1]
+    assert "T01" not in body_after_form
+    assert "我的评分 4/5" in html and "推荐参考分" in html
+    assert "精读" in html and "完成于" in html
+    assert "初始备注" in html
+    # 结果行带总数；未筛选页不显示清除入口，单页时无翻页链接。
+    assert "共 1 条记录" in html and "清除筛选" not in html
+    assert "下一页" not in html
+    # UXR-18：双向翻页——offset 超界时提供保留条件的「上一页」。
+    paged = client.get("/ui/archive?offset=50&tag=T01")
+    assert "上一页" in paged.text
+    assert "tag=T01" in paged.text
+    # 带筛选的导出现在真的跟随筛选：tag=SSS（无记录）导出不含任何记录内容
+    empty_export = client.get("/archive/export?format=json&tag=SSS")
+    assert empty_export.status_code == 200 and "初始备注" not in empty_export.text
+    matched_export = client.get("/archive/export?format=json&tag=T01&min_score=4")
+    assert "初始备注" in matched_export.text
+    # 筛选空结果给一键清除
+    empty_page = client.get("/ui/archive?tag=SSS")
+    assert "清除筛选，显示全部" in empty_page.text
+
+
 def test_archive_cli_list_export_and_protect_existing_output(
     client, migrated_engine, tmp_path, monkeypatch, capsys
 ):

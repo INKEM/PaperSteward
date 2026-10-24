@@ -42,12 +42,26 @@ def listing(
 
 
 @router.get("/export", response_class=PlainTextResponse)
-def export(session: SessionDep, format: ExportFormat = "bibtex") -> str:
+def export(
+    session: SessionDep,
+    format: ExportFormat = "bibtex",
+    query: str | None = None,
+    tag: str | None = None,
+    min_score: int | None = None,
+) -> str:
+    """导出归档记录；筛选参数与归档页一致（UXR-18：此前筛选被忽略）。"""
     with domain_errors():
         records = []
         offset = 0
         while True:
-            page = list_archives(session, limit=200, offset=offset)
+            page = list_archives(
+                session,
+                limit=200,
+                offset=offset,
+                query=query,
+                tag=tag,
+                min_score=min_score,
+            )
             records.extend(page["items"])
             offset += len(page["items"])
             if offset >= page["total"]:
