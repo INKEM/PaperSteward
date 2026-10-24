@@ -1181,6 +1181,15 @@ class RunRepository(_Repository):
         self._flush()
         return run_from_row(row)
 
+    def mark_stopping(self, run_id: str) -> None:
+        """标记「正在停止」（UXR-15）：取消落库被写锁占用时留痕，
+        运行页据此立即显示停止中状态；worker 检查点随后补写 CANCELLED。"""
+        row = self._session.get(RunRow, run_id)
+        if row is None:
+            return
+        row.stats_json = {**row.stats_json, "stopping": True}
+        self._flush()
+
 
 class ProfileRepository(_Repository):
     """研究方向档案版本。"""

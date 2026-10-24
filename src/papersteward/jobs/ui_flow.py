@@ -324,6 +324,12 @@ class UIFlowManager:
                     "取消落库暂被运行中的事务占用，已请求停止，任务将在检查点结束",
                     extra={"run_id": run_id},
                 )
+                # UXR-15：留痕「正在停止」，运行页据此立即反馈而不是继续显示运行中。
+                try:
+                    with session_scope(self.factory) as session:
+                        RunRepository(session).mark_stopping(run_id)
+                except SQLAlchemyError:
+                    logger.info("正在停止标记暂未落库", extra={"run_id": run_id})
                 return "pending"
 
     def _terminated(self, identity: str) -> bool:

@@ -84,6 +84,62 @@ def _timing(run: Run) -> str:
     return body
 
 
+def _run_result_summary(run: Run) -> str:
+    """终态结果摘要（UXR-15）：四个关键结论先行，明细留在下方各区块。"""
+    stats = dict(run.stats_json)
+    if run.status is RunStatus.CANCELLED:
+        return "任务已停止——已完成的数据保留。"
+    if run.status is RunStatus.FAILED:
+        return "任务未能完成，原因见下方说明。"
+    if run.run_type == "ui.sync":
+        collected = stats.get("collected")
+        collected = collected if isinstance(collected, dict) else {}
+        new = _number(collected, "new")
+        processed = _number(stats, "processed")
+        queued = stats.get("queued_this_run")
+        if not isinstance(queued, int):
+            queued = len(stats.get("added_ids") or [])
+        partial = bool(collected.get("partial"))
+        if queued == 0:
+            text = "本次没有论文入队（候选已挖尽，宁缺毋滥）。"
+        else:
+            text = f"本次入队 {queued} 篇 · 新增候选 {new} 篇 · 处理完成 {processed} 篇。"
+        if partial:
+            text += " 部分来源失败，明细见下方来源报告。"
+        return text
+    if run.run_type == "ingest":
+        return (
+            f"采集完成：候选 {_number(stats, 'candidates')} 篇，新增 {_number(stats, 'new')} 篇。"
+        )
+    if run.run_type == "ui.extract":
+        return "草案已生成，可继续审阅或提意见。"
+    return "任务已完成。"
+
+
+def _run_next_step(run: Run) -> str:
+    """终态下一步指引（UXR-15）。"""
+    stats = dict(run.stats_json)
+    if run.status is RunStatus.CANCELLED:
+        return "可随时用原参数重新开始；已完成的数据不受影响。"
+    if run.status is RunStatus.FAILED:
+        return "检查上方原因并调整后，点「用原参数重试」。"
+    if run.run_type == "ui.sync":
+        collected = stats.get("collected")
+        collected = collected if isinstance(collected, dict) else {}
+        partial = bool(collected.get("partial"))
+        queued = stats.get("queued_this_run")
+        if not isinstance(queued, int):
+            queued = len(stats.get("added_ids") or [])
+        if partial:
+            return "失败来源会在下次挖掘时自动重试；可先阅读已入队的论文。"
+        if queued == 0:
+            return "可换个「关注点」再挖一次，或先阅读队列已有的论文。"
+        return "到阅读队列开始阅读；也可以继续挖掘补充。"
+    if run.run_type == "ui.extract":
+        return "在下方提意见继续调整，或确认开始使用。"
+    return ""
+
+
 def run_body(
     run: Run,
     *,
@@ -129,6 +185,10 @@ def run_body(
             "extracting": "正在生成研究草案",
             "completed": "正在保存运行结果",
         }.get(stage, "任务正在运行")
+    # UXR-15：取消落库被写锁占用时，运行页立即显示「正在停止」而非继续说运行中。
+    stopping = active and bool(stats.get("stopping"))
+    if stopping:
+        title = "正在停止——当前批次处理完后生效"
     body = f'<section class="run-progress" id="{"current-run" if card else "run-status"}"{poll}>'
     status_label = LABELS.get(run.status.value, run.status.value)
     body += f'<p class="muted">{escape(kind)} · {escape(status_label)}</p>'
@@ -187,13 +247,22 @@ def run_body(
                 "草案版本都保留，本次结果不保存。"
             ),
         }.get(run.run_type, "停止后已完成的数据保留。")
-        body += (
-            f'<form method="post" action="/ui/runs/{identity}/cancel" class="inline">'
-            "<button>停止任务</button></form>"
-            f'<p class="muted">{caption}</p>'
-        )
+        if stopping:
+            # UXR-15：停止已请求（落库待检查点生效），不重复提供停止按钮。
+            body += f'<p class="notice">{escape(caption)}</p>'
+        else:
+            body += (
+                f'<form method="post" action="/ui/runs/{identity}/cancel" class="inline">'
+                "<button>停止任务</button></form>"
+                f'<p class="muted">{caption}</p>'
+            )
     if not active:
         body += f"<p>最后阶段：{escape(LABELS.get(stage, stage))}</p>"
+        # UXR-15：终态先给结果摘要与下一步指引；明细仍在下方各区块。
+        body += f'<p class="run-result">{escape(_run_result_summary(run))}</p>'
+        next_step = _run_next_step(run)
+        if next_step:
+            body += f'<p class="muted">下一步：{escape(next_step)}</p>'
         if run.run_type == "ingest":
             # ingest run 的 stats 顶层就是采集字段；报告页展示来源统计与失败明细。
             filtered_raw = stats.get("filtered", [])
@@ -460,15 +529,33 @@ def dashboard(
     if recent is not None:
         run = recent
         stats = dict(run.stats_json)
-        collected = stats.get("collected", {})
-        collected = collected if isinstance(collected, dict) else {}
-        body += (
-            f'<p>上一次挖掘：<a href="/ui/runs/{quote(run.id, safe="")}">'
-            f"{escape(LABELS.get(run.status.value, run.status.value))}</a> · "
-            f"采集新增 {_number(collected, 'new')} 篇 · "
-            f"已存在 {_number(collected, 'existing')} 篇 · 处理 {_number(stats, 'processed')} 篇 · "
-            f"队列新增 {len(stats.get('added_ids', []))} 篇</p>"
-        )
+        # UXR-15：失败/停止的最近运行不再显示一串 0，直接给状态与原因摘要。
+        if run.status is RunStatus.FAILED:
+            errors = run.errors_json.get("errors") if isinstance(run.errors_json, dict) else None
+            reason = ""
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                reason = str(errors[0].get("message", ""))[:80]
+            body += (
+                f'<p>上一次挖掘：<a href="/ui/runs/{quote(run.id, safe="")}">'
+                f"{escape(LABELS.get(run.status.value, run.status.value))}</a>"
+                + f"——{escape(reason or '原因见运行报告')}</p>"
+            )
+        elif run.status is RunStatus.CANCELLED:
+            body += (
+                f'<p>上一次挖掘：<a href="/ui/runs/{quote(run.id, safe="")}">已取消</a>'
+                "——已停止，已完成的数据保留。</p>"
+            )
+        else:
+            collected = stats.get("collected", {})
+            collected = collected if isinstance(collected, dict) else {}
+            body += (
+                f'<p>上一次挖掘：<a href="/ui/runs/{quote(run.id, safe="")}">'
+                f"{escape(LABELS.get(run.status.value, run.status.value))}</a> · "
+                f"采集新增 {_number(collected, 'new')} 篇 · "
+                f"已存在 {_number(collected, 'existing')} 篇 · "
+                f"处理 {_number(stats, 'processed')} 篇 · "
+                f"队列新增 {len(stats.get('added_ids', []))} 篇</p>"
+            )
     return toolbar, body + "</section>"
 
 

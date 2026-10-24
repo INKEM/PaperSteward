@@ -132,3 +132,64 @@ def test_ingest_run_id_is_deterministic_and_unique_per_round() -> None:
     assert ingest_run_id("run-a", 1) == first  # 同轮确定
     assert ingest_run_id("run-a", 2) != first  # 跨轮唯一
     assert ingest_run_id("run-b", 1) != first  # 跨挖掘唯一
+
+
+def test_terminal_shows_result_summary_and_next_step() -> None:
+    """UXR-15：终态先给结果摘要与下一步指引。"""
+    succeeded = run_body(
+        _run(
+            status=RunStatus.SUCCEEDED,
+            stats={
+                "stage": "completed",
+                "collected": {"new": 5, "existing": 2},
+                "processed": 8,
+                "queued_this_run": 3,
+                "added_ids": ["a", "b", "c"],
+            },
+        )
+    )
+    assert "本次入队 3 篇 · 新增候选 5 篇 · 处理完成 8 篇" in succeeded
+    assert "到阅读队列开始阅读" in succeeded
+
+    zero = run_body(
+        _run(
+            status=RunStatus.SUCCEEDED,
+            stats={"stage": "completed", "queued_this_run": 0, "added_ids": []},
+        )
+    )
+    assert "本次没有论文入队" in zero and "换个「关注点」" in zero
+
+    cancelled = run_body(_run(status=RunStatus.CANCELLED, stats={"stage": "processing"}))
+    assert "任务已停止——已完成的数据保留" in cancelled
+    assert "用原参数重新开始" in cancelled
+
+    failed = run_body(
+        _run(
+            status=RunStatus.FAILED,
+            stats={"stage": "collecting"},
+            errors={"errors": [{"code": "step_failed", "message": "采集失败：来源限流"}]},
+        )
+    )
+    assert "任务未能完成，原因见下方说明" in failed
+    assert "用原参数重试" in failed
+
+
+def test_running_with_stopping_flag_shows_stopping_state() -> None:
+    """UXR-15：取消落库被锁时，运行页立即显示「正在停止」并隐藏停止按钮。"""
+    stats = {
+        "stage": "processing",
+        "processing_total": 5,
+        "processed": 1,
+        "stopping": True,
+    }
+    html = run_body(_run(status=RunStatus.RUNNING, stats=stats))
+    assert "正在停止——当前批次处理完后生效" in html
+    assert "停止任务</button>" not in html
+    assert 'hx-trigger="every 2s"' in html  # 仍在轮询，最终转为「已取消」
+
+
+def test_running_without_stopping_flag_keeps_stop_button() -> None:
+    stats = {"stage": "processing", "processing_total": 5, "processed": 1}
+    html = run_body(_run(status=RunStatus.RUNNING, stats=stats))
+    assert "正在停止" not in html
+    assert "停止任务</button>" in html
