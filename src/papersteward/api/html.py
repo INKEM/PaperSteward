@@ -197,10 +197,22 @@ def error_response(
     return rendered
 
 
+def fragment_error(container_id: str, message: str, *, status_code: int = 409) -> HTMLResponse:
+    """htmx 片段请求的错误返回（UXR-02）：保留稳定容器 id，
+    后续请求仍能以同一容器为目标；错误就近展示并接管焦点。"""
+    return HTMLResponse(
+        f'<div id="{escape(container_id)}">'
+        f'<p role="alert" tabindex="-1" autofocus>{escape(message)}</p></div>',
+        status_code=status_code,
+        headers=HTML_HEADERS,
+    )
+
+
 __all__ = [
     "HTML_HEADERS",
     "error_fragment",
     "error_response",
+    "fragment_error",
     "guard",
     "page",
     "paper_link",

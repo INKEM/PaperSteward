@@ -89,9 +89,9 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     assert "为什么推荐这篇" in detail and "研究相关性" in detail and "<meter" in detail
     assert "static_input_hash" not in detail and "rounding_adjustment" not in detail
     assert client.get("/ui/queue?min_priority=101").status_code == 422
-    # min>max 不再返回裸 JSON，而是带提示的 HTML 页面。
+    # UXR-02：min>max 返回带提示的 HTML 页面（状态码如实 422），不再返回裸 JSON。
     bad_range = client.get("/ui/queue?min_priority=90&max_priority=10")
-    assert bad_range.status_code == 200 and "最低分不能高于最高分" in bad_range.text
+    assert bad_range.status_code == 422 and "最低分不能高于最高分" in bad_range.text
     assert client.get("/backlog?tag=unknown").json()["total"] == 0
     assert client.get("/queue").json()["items"][0]["rank"] == 1
     assert client.post("/ui/digests", headers=HEADERS, data={}).status_code == 404
@@ -105,6 +105,57 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     assert "HX-Refresh" not in completed.headers
     assert "已归档这篇论文" in completed.text
     assert client.get("/queue").json()["total"] == 1
+
+
+def test_invalid_filter_keeps_queue_list_container_for_htmx(client):
+    """UXR-02 回归：非法筛选在局部刷新下返回稳定的 #queue-list 容器。
+
+    此前片段请求的错误路径会返回整页外壳（或 FastAPI 的 422 JSON 信封），
+    把 #queue-list 一起换掉，后续筛选报 htmx:targetError 永久失效。
+    """
+    activate(client)
+    headers = {**HEADERS, "HX-Request": "true"}
+
+    def fragment(**params):
+        return client.get("/ui/queue", params={**params, "fragment": "1"}, headers=headers)
+
+    invalid = fragment(min_priority="90", max_priority="10")
+    assert invalid.status_code == 422
+    assert 'id="queue-list"' in invalid.text
+    assert "<html" not in invalid.text and "<h1" not in invalid.text
+    assert "最低分不能高于最高分" in invalid.text
+    for params in (
+        {"min_priority": "101"},
+        {"min_priority": "abc"},
+        {"max_priority": "-5"},
+        {"read_status": "bogus"},
+        {"offset": "-1"},
+        {"offset": "abc"},
+        {"search": "长" * 201},
+    ):
+        response = fragment(**params)
+        assert response.status_code == 422, params
+        assert 'id="queue-list"' in response.text, params
+        assert "<html" not in response.text, params
+    # 错误之后正常筛选仍走同一容器：局部刷新链路没有断。
+    recovered = fragment()
+    assert recovered.status_code == 200 and 'id="queue-list"' in recovered.text
+    # 整页请求（直接访问/刷新）得到完整外壳 + 返回链接。
+    page = client.get("/ui/queue?min_priority=90&max_priority=10")
+    assert page.status_code == 422 and "<html" in page.text
+    assert "最低分不能高于最高分" in page.text and "返回阅读队列" in page.text
+
+
+def test_queue_fragment_redirects_by_hx_header_before_activation(client):
+    """UXR-02：未完成设置时，片段请求经 HX-Redirect 整页跳转，
+    不把设置页外壳换进列表容器。"""
+    response = client.get(
+        "/ui/queue", params={"fragment": "1"}, headers={**HEADERS, "HX-Request": "true"}
+    )
+    assert response.status_code == 200
+    assert response.headers.get("HX-Redirect") == "/ui/setup"
+    full = client.get("/ui/queue", follow_redirects=False)
+    assert full.status_code == 303 and full.headers["location"] == "/ui/setup"
 
 
 def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(

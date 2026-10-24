@@ -3,7 +3,7 @@
 from datetime import date
 from html import escape
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from papersteward.api.deps import SessionDep
 from papersteward.api.form_utils import fields as form_fields
 from papersteward.api.html import HTML_HEADERS as HEADERS
+from papersteward.api.html import fragment_error
 from papersteward.api.html import page as _page
 from papersteward.api.workflow_pages import dashboard
 from papersteward.core.entities import Enrichment, Paper, Taxonomy, ViewConfig, utc_now
@@ -456,6 +457,14 @@ def favicon() -> FileResponse:
     )
 
 
+def _is_fragment(request: Request) -> bool:
+    """X-02/UXR-02：htmx 提交的筛选只换列表区（fragment=1 + hx-request 双条件判定，
+    直接访问带该参数的 URL 仍返回整页）。所有队列响应路径都必须保持这一契约。"""
+    return (
+        request.query_params.get("fragment") == "1" and request.headers.get("hx-request") == "true"
+    )
+
+
 def _backlog_page(
     request: Request,
     session: SessionDep,
@@ -464,12 +473,11 @@ def _backlog_page(
     search: str = "",
 ) -> Response:
     if get_onboarding(session).stage.value != "active":
+        if _is_fragment(request):
+            # UXR-02：片段请求不能跟随 303 把整页设置外壳换进列表容器。
+            return HTMLResponse("", headers={**HEADERS, "HX-Redirect": "/ui/setup"})
         return RedirectResponse("/ui/setup", status_code=303)
-    # X-02：htmx 提交的筛选只换列表区（fragment=1 + hx-request 双条件判定，
-    # 直接访问带该参数的 URL 仍返回整页），地址栏经 hx-push-url 同步可分享。
-    fragment_mode = (
-        request.query_params.get("fragment") == "1" and request.headers.get("hx-request") == "true"
-    )
+    fragment_mode = _is_fragment(request)
     try:
         now = utc_now()
         page = read_backlog(
@@ -576,6 +584,8 @@ def _backlog_page(
         body += list_body
         return _page("阅读队列", body)
     except (DomainError, AppError) as exc:
+        if fragment_mode:
+            return fragment_error("queue-list", exc.message)
         return _page("阅读队列", f'<p role="alert">{escape(exc.message)}</p>')
 
 
@@ -592,34 +602,81 @@ def today(request: Request, session: SessionDep, day: date | None = None) -> Res
     return _backlog_page(request, session, BacklogFilters(), 0)
 
 
+def _parse_queue_filters(
+    min_priority: str | None, max_priority: str | None, read_status: str
+) -> BacklogFilters | str:
+    """解析并校验队列筛选参数；非法时返回可直接展示的中文原因（UXR-02）。
+
+    UI 路由在参数层不用 FastAPI 的 Query 约束：那会返回 422 JSON 信封，
+    被 htmx 的 responseHandling 原样换进列表容器。JSON API 的 /queue、/backlog
+    仍由 BacklogFilters 的字段校验兜底，契约不变。
+    """
+
+    def score(value: str | None, default: float, label: str) -> float | str:
+        if value is None or value == "":
+            return default
+        try:
+            number = float(value)
+        except ValueError:
+            return f"{label}必须是 0–100 之间的数字，请修正后重新筛选。"
+        if not 0 <= number <= 100:
+            return f"{label}必须在 0–100 之间，请修正后重新筛选。"
+        return number
+
+    low = score(min_priority, 0.0, "最低分")
+    if isinstance(low, str):
+        return low
+    high = score(max_priority, 100.0, "最高分")
+    if isinstance(high, str):
+        return high
+    if low > high:
+        return "最低分不能高于最高分。请调整分数范围后重新筛选。"
+    if read_status not in ("unread", "read", "all"):
+        return "阅读状态取值无效，请返回队列重新筛选。"
+    return BacklogFilters(
+        min_priority=low,
+        max_priority=high,
+        read_status=cast(Literal["unread", "read", "all"], read_status),
+    )
+
+
+def _queue_filter_error(request: Request, message: str) -> Response:
+    """筛选参数非法：片段请求返回稳定列表容器（表单输入在容器外自然保留），
+    整页请求返回带返回链接的完整页面；都不破坏 #queue-list（UXR-02）。"""
+    if _is_fragment(request):
+        return fragment_error("queue-list", message, status_code=422)
+    rendered = _page(
+        "阅读队列",
+        f'<p role="alert">{escape(message)}</p>'
+        '<p><a class="button secondary" href="/ui/queue">返回阅读队列</a></p>',
+    )
+    rendered.status_code = 422
+    return rendered
+
+
 @router.get("/queue")
 def queue(
     request: Request,
     session: SessionDep,
     tag: str | None = None,
-    min_priority: Annotated[float, Query(ge=0, le=100)] = 0,
-    max_priority: Annotated[float, Query(ge=0, le=100)] = 100,
-    read_status: Literal["unread", "read", "all"] = "unread",
-    search: Annotated[str, Query(max_length=200)] = "",
-    offset: Annotated[int, Query(ge=0)] = 0,
+    min_priority: str | None = None,
+    max_priority: str | None = None,
+    read_status: str = "unread",
+    search: str = "",
+    offset: str | None = None,
 ) -> Response:
-    if min_priority > max_priority:
-        return _page(
-            "阅读队列",
-            '<p role="alert">最低分不能高于最高分。请调整分数范围后重新筛选。</p>',
-        )
-    return _backlog_page(
-        request,
-        session,
-        BacklogFilters(
-            tag=tag or None,
-            min_priority=min_priority,
-            max_priority=max_priority,
-            read_status=read_status,
-        ),
-        offset,
-        search=search,
-    )
+    parsed = _parse_queue_filters(min_priority, max_priority, read_status)
+    if isinstance(parsed, str):
+        return _queue_filter_error(request, parsed)
+    try:
+        offset_value = int(offset) if offset else 0
+    except ValueError:
+        offset_value = -1
+    if offset_value < 0:
+        return _queue_filter_error(request, "页码参数无效，请返回队列重新浏览。")
+    if len(search) > 200:
+        return _queue_filter_error(request, "搜索关键词最长 200 字，请缩短后重试。")
+    return _backlog_page(request, session, parsed, offset_value, search=search)
 
 
 @router.get("/digests/{day}")
