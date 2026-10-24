@@ -369,9 +369,11 @@ def _shelf_inner(item: ShelfItem) -> str:
     if item.nomination is not None:
         body += f"<p>{escape(item.nomination.reason)}</p>"
     if item.needs_assessment:
+        # UXR-17：档位评估目前仅有命令行入口，如实标注为高级功能。
         body += (
-            '<p class="muted">尚未评估档位；运行命令行 <code>papersteward shelf assess</code> '
-            "后会显示高/中/低档位。</p>"
+            '<p class="muted">尚未评估档位（高级功能，需在命令行运行 '
+            "<code>papersteward shelf assess</code>）；评估后显示高/中/低档位。"
+            "不影响阅读原文。</p>"
         )
     for evidence in item.evidence:
         label = "有效证据" if evidence.valid else "未核对证据"
@@ -401,21 +403,28 @@ def _shelf_inner(item: ShelfItem) -> str:
     return body
 
 
-def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | None) -> str:
+def _shelf_section(
+    summary: ShelfSummary, page: ShelfPage, *, next_url: str | None, prev_url: str | None = None
+) -> str:
     body = (
-        f"<section><h2>{escape(summary.name)} "
-        f'<span class="tag">{escape(summary.kind.value)}</span></h2>'
-        f'<p class="muted">周上限 {summary.quota} · 共 {summary.total} 篇 · '
-        f"高 {summary.high} · 中 {summary.medium} · 低 {summary.low} · "
-        f"未评估 {summary.unrated}</p>"
+        f"<section><h2>{escape(summary.name)}</h2>"
+        # UXR-17：配额如实标注为提示性上限（当前实现不强制截断收录）。
+        f'<p class="muted">提示性周上限 {summary.quota} 篇（不强制截断收录） · '
+        f"共 {summary.total} 篇 · 高 {summary.high} · 中 {summary.medium} · "
+        f"低 {summary.low} · 未评估 {summary.unrated}</p>"
     )
+    if not page.items:
+        body += (
+            '<p class="muted">该收藏暂无论文——挖掘后与主题相关的论文会自动收录在此。</p>'
+            '<p><a class="button secondary" href="/ui/queue">返回阅读队列</a></p>'
+        )
     for item in page.items:
         body += (
             f'<article><h2><a href="/ui/papers/{quote(item.paper.id, safe="")}">'
             f"{escape(item.paper.title)}</a></h2>{_shelf_inner(item)}</article>"
         )
-    if not page.items:
-        body += '<p class="muted">该桶暂无论文。</p>'
+    if prev_url is not None:
+        body += f'<p><a href="{escape(prev_url)}">上一页</a></p>'
     if next_url is not None:
         body += f'<p><a href="{escape(next_url)}">查看更多</a></p>'
     return body + "</section>"
@@ -866,13 +875,18 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
         if kind is not None:
             parsed = parse_kind(kind)
             summaries = [summary for summary in summaries if summary.kind is parsed]
+        # UXR-17：先解释「为什么不在常规阅读队列」，再展示各收藏。
+        intro = (
+            '<p class="muted">这些论文不在常规阅读队列——跨层综述、远邻领域与经典/奠基论文'
+            "按主题收藏在此，供拓展阅读，不占常规队列容量。</p>"
+        )
         links = '<p><a href="/ui/shelves">全部</a>'
         for summary in all_summaries:
             links += (
                 f' · <a href="/ui/shelves?kind={quote(summary.kind.value)}">'
                 f"{escape(summary.name)}（{summary.total}）</a>"
             )
-        body = links + "</p>"
+        body = intro + links + "</p>"
         for summary in summaries:
             page = list_shelf(
                 session,
@@ -881,12 +895,18 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
                 offset=offset if kind is not None else 0,
             )
             next_url = None
-            if kind is not None and offset + 50 < page.total:
-                next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
-            body += _shelf_section(summary, page, next_url=next_url)
-        return _page("特殊桶", body)
+            prev_url = None
+            if kind is not None:
+                if offset + 50 < page.total:
+                    next_url = f"/ui/shelves?kind={quote(summary.kind.value)}&offset={offset + 50}"
+                if offset > 0:
+                    prev_url = (
+                        f"/ui/shelves?kind={quote(summary.kind.value)}&offset={max(0, offset - 50)}"
+                    )
+            body += _shelf_section(summary, page, next_url=next_url, prev_url=prev_url)
+        return _page("探索收藏", body, nav="探索收藏")
     except (DomainError, AppError) as exc:
-        return _page("特殊桶", f'<p role="alert">{escape(exc.message)}</p>')
+        return _page("探索收藏", f'<p role="alert">{escape(exc.message)}</p>', nav="探索收藏")
 
 
 @router.get("/papers/{paper_id}")

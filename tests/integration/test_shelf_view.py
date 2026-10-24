@@ -219,7 +219,10 @@ def test_page_empty_shelves_show_no_placeholder(migrated_engine):
     with _client(migrated_engine) as client:
         page = client.get("/ui/shelves")
         assert page.status_code == 200
-        assert "该桶暂无论文" in page.text
+        # UXR-17：空收藏给出收录说明与返回队列入口。
+        assert "该收藏暂无论文" in page.text
+        assert "返回阅读队列" in page.text
+        assert "不占常规队列容量" in page.text
     factory = create_session_factory(migrated_engine)
     with session_scope(factory) as session:
         assert BucketRepository(session).list() == []

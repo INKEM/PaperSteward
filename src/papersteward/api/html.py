@@ -56,9 +56,9 @@ _NAV_LINKS = (
     ("/ui/settings", "设置", "设置"),
     ("/ui/help", "帮助", "使用帮助"),
 )
-# 「探索」下拉组：特殊桶（探索收藏）与排序视图；key 与对应页面 title/nav 一致。
+# 「探索」下拉组：探索收藏（特殊桶）与排序视图；key 与对应页面 title/nav 一致。
 _EXPLORE_LINKS = (
-    ("/ui/shelves", "探索收藏", "特殊桶"),
+    ("/ui/shelves", "探索收藏", "探索收藏"),
     ("/ui/views", "排序视图", "排序视图"),
 )
 _EXPLORE_KEYS = frozenset(key for _, _, key in _EXPLORE_LINKS)
