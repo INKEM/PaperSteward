@@ -671,23 +671,16 @@ def _backlog_page(
                     "论文会直接出现在这里。</p></article>"
                 )
         if offset or offset + 50 < page.total:
-            query_params = {
+            # UXR-21：统一用分页条组件（保留筛选条件）。
+            page_params: dict[str, Any] = {
                 **filters.model_dump(exclude_none=True),
-                "offset": offset + 50,
+                "fragment": 1,
             }
             if search.strip():
-                query_params["search"] = search.strip()
-            if offset:
-                prev_params = {**query_params, "offset": max(0, offset - 50)}
-                list_body += (
-                    '<a class="button secondary" '
-                    f'href="/ui/queue?{escape(urlencode(prev_params))}">上一页</a> '
-                )
-            if offset + 50 < page.total:
-                list_body += (
-                    '<a class="button secondary" '
-                    f'href="/ui/queue?{escape(urlencode(query_params))}">下一页</a> '
-                )
+                page_params["search"] = search.strip()
+            list_body += _pagination(
+                "/ui/queue", page_params, offset=offset, total=page.total, page_size=50
+            )
         total_attr = f' data-total="{page.total}"' if page.total else ""
         list_body = f'<div id="queue-list"{total_attr}>{list_body}</div>'
         if fragment_mode:

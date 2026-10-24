@@ -3,6 +3,7 @@
    分节：设计令牌 → 基础 → 布局外壳 → 卡片与文章 → 表单与按钮 →
    表格 → 徽章与评分 → 运行进度 → 组件细节 → 动效 → 打印 → 响应式。
    所有颜色/圆角/阴影/动效时长一律走 :root 令牌；暗色模式仅覆盖令牌。
+   组件类清单与使用约定见 docs/ui-components.md（UXR-21）。
    ============================================================ */
 
 :root {
@@ -251,6 +252,15 @@ nav a:hover {
 nav a[aria-current] {
   background: var(--accent-soft-hover);
   color: var(--ink-strong);
+}
+
+/* UXR-21：分页条组件（html.pagination 生成） */
+.pagination {
+  margin: 14px 0;
+}
+
+.pagination a {
+  margin-right: 10px;
 }
 
 /* UXR-14：「探索」下拉组 */

@@ -167,7 +167,7 @@ def pagination(
     next_label: str = "下一页",
     next_only: bool = False,
 ) -> str:
-    """分页链接；params 含筛选参数（不含 offset），自动拼接。"""
+    """分页条（UXR-21 组件）：params 含筛选参数（不含 offset），自动拼接并保留条件。"""
     links = ""
     if not next_only and offset:
         query = urlencode({**params, "offset": max(0, offset - page_size)})
@@ -175,7 +175,9 @@ def pagination(
     if offset + page_size < total:
         query = urlencode({**params, "offset": offset + page_size})
         links += f'<a class="button secondary" href="{base_url}?{escape(query)}">{next_label}</a> '
-    return links
+    if not links:
+        return ""
+    return f'<nav class="pagination" aria-label="分页">{links}</nav>'
 
 
 def steps(
