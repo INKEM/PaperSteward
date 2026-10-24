@@ -29,6 +29,34 @@ SourceErrorCode = Literal[
     "budget_exceeded",
 ]
 
+# 面向浏览器用户的错误描述；与代码值一一对应，未知值兜底原文（排障可检索）。
+SOURCE_ERROR_LABELS: dict[str, str] = {
+    "timeout": "来源响应超时",
+    "rate_limited": "来源限流（请求太频繁）",
+    "unavailable": "来源服务暂不可用",
+    "invalid_response": "来源返回了无法解析的内容",
+    "fixture_invalid": "测试数据文件无效",
+    "fixture_io": "测试数据文件无法读取",
+    "unsupported_query": "来源不支持这类检索式",
+    "budget_exceeded": "来源请求预算用尽",
+}
+
+
+def describe_source_error(code: str) -> str:
+    return SOURCE_ERROR_LABELS.get(code, code)
+
+
+# 来源的展示名；UI 与错误文案共用，未知来源回退原文。
+SOURCE_DISPLAY_NAMES: dict[str, str] = {
+    "arxiv": "arXiv",
+    "openalex": "OpenAlex",
+    "semantic_scholar": "Semantic Scholar",
+}
+
+
+def display_source_name(source: str) -> str:
+    return SOURCE_DISPLAY_NAMES.get(source, source)
+
 
 class SourceModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

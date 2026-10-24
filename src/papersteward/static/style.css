@@ -778,9 +778,9 @@ tr:last-child td {
 /* ---------- 动效（尊重系统减少动态偏好） ---------- */
 
 @media (prefers-reduced-motion: no-preference) {
+  /* 不含 .run-progress：进度卡片每 2s 被轮询整段替换，重播动画会造成闪烁。 */
   article,
-  .dashboard,
-  .run-progress {
+  .dashboard {
     animation: rise-in 240ms var(--ease);
   }
 

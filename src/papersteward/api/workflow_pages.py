@@ -23,6 +23,7 @@ from papersteward.jobs.ui_flow import FlowRequest, processing_problem
 from papersteward.pipeline.context import bound_context
 from papersteward.scoring.queue import read_backlog
 from papersteward.scoring.service import read_scoring_config
+from papersteward.sources.contracts import describe_source_error, display_source_name
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.onboarding import get_onboarding
 from papersteward.storage.repositories import RunRepository
@@ -44,6 +45,7 @@ LABELS = {
     "ui.sync": "挖掘新论文",
     "ui.digest": "历史日报任务",
     "ui.extract": "生成研究草案",
+    "ingest": "来源采集",
 }
 
 
@@ -100,6 +102,9 @@ def run_body(
     poll = f' hx-get="{path}" hx-trigger="every 2s" hx-swap="outerHTML"' if active else ""
     stats = dict(run.stats_json)
     stage = str(stats.get("stage", "queued"))
+    if run.run_type == "ingest" and active:
+        # 来源采集 run 的 stats 没有 stage 键；运行中即视为采集中。
+        stage = "collecting"
     total, processed = _number(stats, "processing_total"), _number(stats, "processed")
     index = _number(stats, "current_index") or min(processed + 1, total)
     kind = LABELS.get(run.run_type, run.run_type)
@@ -126,11 +131,16 @@ def run_body(
     status_label = LABELS.get(run.status.value, run.status.value)
     body += f'<p class="muted">{escape(kind)} · {escape(status_label)}</p>'
     body += f'<h2 role="status">{escape(title)}</h2>'
-    stages = (
-        ["queued", "collecting", "processing", "refreshing", "completed"]
-        if run.run_type == "ui.sync"
-        else ["queued", "refreshing" if run.run_type == "ui.refresh" else "extracting", "completed"]
-    )
+    if run.run_type == "ui.sync":
+        stages = ["queued", "collecting", "processing", "refreshing", "completed"]
+    elif run.run_type == "ingest":
+        stages = ["queued", "collecting", "completed"]
+    else:
+        stages = [
+            "queued",
+            "refreshing" if run.run_type == "ui.refresh" else "extracting",
+            "completed",
+        ]
     body += '<ol class="steps" aria-label="运行步骤">'
     for step in stages:
         attributes = ' class="current" aria-current="step"' if step == stage else ""
@@ -182,6 +192,33 @@ def run_body(
         )
     if not active:
         body += f"<p>最后阶段：{escape(LABELS.get(stage, stage))}</p>"
+        if run.run_type == "ingest":
+            # ingest run 的 stats 顶层就是采集字段；报告页展示来源统计与失败明细。
+            filtered_raw = stats.get("filtered", [])
+            filtered_count = (
+                len(filtered_raw) if isinstance(filtered_raw, list) else _number(stats, "filtered")
+            )
+            body += (
+                f"<p>候选 {_number(stats, 'candidates')} 篇 · "
+                f"新增 {_number(stats, 'new')} · 已存在 {_number(stats, 'existing')} · "
+                f"去重 {_number(stats, 'deduplicated')} · 过滤 {filtered_count} · "
+                f"附带源版本 {_number(stats, 'source_versions_added')}</p>"
+            )
+            for item in stats.get("sources", []):
+                if not isinstance(item, dict):
+                    continue
+                body += (
+                    f"<p>{escape(display_source_name(str(item.get('source', ''))))}："
+                    f"检索式成功 {item.get('queries_succeeded', 0)} 条 · "
+                    f"候选 {item.get('candidates', 0)} 篇 · "
+                    f"请求 {item.get('requests', 0)} 次"
+                    + (
+                        f" · 缓存命中 {item.get('cache_hits', 0)} 次"
+                        if item.get("cache_hits")
+                        else ""
+                    )
+                    + "</p>"
+                )
         if run.run_type == "ui.sync":
             collected = stats.get("collected", {})
             collected = collected if isinstance(collected, dict) else {}
@@ -213,10 +250,15 @@ def run_body(
                         "相关度未达正常门槛、按名次补足，详情页有标注。</p>"
                     )
                 body += line
+    # 轮询每 2s 整段替换本 section：details 带 hx-preserve 保留用户展开状态，
+    # 终态（不再轮询/整页刷新）默认展开。
+    preserve_attrs = " hx-preserve" if active else ""
+    open_attrs = "" if active else " open"
     flags = stats.get("quality_flags", {})
     if isinstance(flags, dict) and flags:
         body += (
-            "<details><summary>质量标记</summary><ul>"
+            f'<details id="run-quality-flags"{preserve_attrs}{open_attrs}>'
+            "<summary>质量标记</summary><ul>"
             + "".join(
                 f"<li>{escape(str(paper))}：{escape(' / '.join(map(str, values)))}</li>"
                 for paper, values in flags.items()
@@ -241,7 +283,8 @@ def run_body(
                 )
         if items:
             body += (
-                "<details><summary>本次使用的检索式（"
+                f'<details id="run-query-plans"{preserve_attrs}{open_attrs}>'
+                "<summary>本次使用的检索式（"
                 + str(len(items))
                 + " 条）</summary><ul>"
                 + "".join(items)
@@ -262,11 +305,39 @@ def run_body(
             for error in run.errors_json.get("errors", [])
             if isinstance(error, dict)
         ]
-        body += (
-            '<p role="alert">'
-            + escape("；".join(messages) or "步骤失败，请检查后重试。")
-            + '</p><a href="/ui/settings">检查模型与设置</a>'
-        )
+        if messages:
+            body += (
+                '<p role="alert">'
+                + escape("；".join(messages))
+                + '</p><a href="/ui/settings">检查模型与设置</a>'
+            )
+        source_failures = []
+        for item in run.errors_json.get("sources", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("stage") == "persist":
+                source_failures.append(
+                    "入库阶段失败：已采集数据未落库，原数据不受影响，可直接重试（pipeline_failed）"
+                )
+                continue
+            code = str(item.get("code", ""))
+            query_index = item.get("query_index")
+            position = (
+                f"第 {int(query_index) + 1} 条检索式：" if isinstance(query_index, int) else ""
+            )
+            source_failures.append(
+                f"{display_source_name(str(item.get('source', '来源')))} {position}"
+                f"{describe_source_error(code)}（{code}）"
+            )
+        if source_failures:
+            body += (
+                "<p>来源失败明细：</p><ul>"
+                + "".join(f"<li>{escape(line)}</li>" for line in source_failures)
+                + "</ul>"
+            )
+    ingest_id = stats.get("ingest_run_id")
+    if not active and run.run_type == "ui.sync" and isinstance(ingest_id, str) and ingest_id:
+        body += f'<p><a href="/ui/runs/{quote(ingest_id, safe="")}">查看来源运行报告</a></p>'
     if (
         run.run_type not in {"ui.digest", "ui.extract"}
         and run.status in (RunStatus.FAILED, RunStatus.CANCELLED)

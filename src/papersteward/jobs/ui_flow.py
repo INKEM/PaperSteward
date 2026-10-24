@@ -47,6 +47,7 @@ from papersteward.pipeline.relevance import (
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.queue import refresh_queue
 from papersteward.scoring.service import read_scoring_config
+from papersteward.sources.contracts import describe_source_error, display_source_name
 from papersteward.sources.http import SourceHTTP
 from papersteward.sources.planner import QueryPlan, plan_queries
 from papersteward.sources.registry import build_adapters
@@ -103,6 +104,39 @@ class FlowRequest(BaseModel):
 def processing_problem(session: Session, settings: Settings) -> str | None:
     """同步/处理前置检查：模型服务就绪即可运行；授权随设置页保存。"""
     return resolve_llm_config(session, settings).readiness_problem()
+
+
+def _collection_failure_message(request: FlowRequest, report: Run) -> str:
+    """采集失败时把来源报告里的真实原因翻译成可操作的中文提示。
+
+    ingest run 的 errors_json={"sources":[{source, code, retryable}, ...]}；
+    文案说清「发生了什么 + 下一步做什么」，并指向运行报告页。
+    """
+    sources = report.errors_json.get("sources", []) if report.errors_json else []
+    reasons = [
+        f"{display_source_name(str(item.get('source', '来源')))}"
+        f" {describe_source_error(str(item.get('code', '')))}"
+        for item in sources
+        if isinstance(item, dict) and item.get("stage") != "persist"
+    ][:2]
+    retryable = any(isinstance(item, dict) and item.get("retryable") for item in sources)
+    unsupported_only = bool(sources) and all(
+        isinstance(item, dict) and item.get("code") == "unsupported_query" for item in sources
+    )
+    if reasons:
+        head = "采集失败：" + "；".join(reasons) + "。"
+    elif any(isinstance(item, dict) and item.get("stage") == "persist" for item in sources):
+        head = "采集完成但入库失败：已采集数据不落库，原数据不受影响。"
+        retryable = True
+    else:
+        head = "采集失败：来源没有返回可用结果。"
+    if unsupported_only:
+        tail = "用「原参数重试」会自动换一批检索式；仍失败可换一个来源再挖。"
+    elif retryable:
+        tail = "稍等一两分钟再「用原参数重试」，或换一个来源再挖。"
+    else:
+        tail = "可「用原参数重试」，或换一个来源再挖；运行结束后的报告页有来源详情。"
+    return f"{head}{tail}"
 
 
 def llm_failure_message(exc: LLMError) -> str:
@@ -456,18 +490,19 @@ class UIFlowManager:
 
     def collect(self, request: FlowRequest, plan: QueryPlan) -> None:
         clients: list[SourceHTTP] = []
+        ingest_id = "ui-ingest-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:40]
         try:
             adapters = build_adapters([request.source], self.settings, clients, live=True)
             with session_scope(self.factory) as session:
                 report = ingest(
                     session,
                     adapters,
-                    run_id="ui-ingest-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:40],
+                    run_id=ingest_id,
                     queries=[planned.spec for planned in plan.queries],
                 )
-            self._update(request.run_id, collected=dict(report.stats_json))
+            self._update(request.run_id, collected=dict(report.stats_json), ingest_run_id=ingest_id)
             if report.status is RunStatus.FAILED:
-                raise InvalidRequestError("采集失败，请查看来源运行报告")
+                raise InvalidRequestError(_collection_failure_message(request, report))
         finally:
             for client in clients:
                 client.close()

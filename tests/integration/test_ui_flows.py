@@ -246,6 +246,56 @@ def test_ui_sync_failed_step_preserves_data_and_shows_retry(client, monkeypatch)
     assert "model failure" in retry_page.text
 
 
+def test_collection_failure_names_reason_and_links_ingest_report(client, monkeypatch):
+    """采集失败：错误消息给出具体来源与原因，运行报告页可从进度页直达。"""
+    manager = ready(client)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+
+    def _failing_ingest(session, adapters, *, run_id, queries=None, dry_run=False):
+        assert run_id.startswith("ui-ingest-")
+        report = Run(
+            id=run_id,
+            run_type="ingest",
+            status=RunStatus.FAILED,
+            started_at=utc_now(),
+            finished_at=utc_now(),
+            stats_json={
+                "candidates": 0,
+                "new": 0,
+                "existing": 0,
+                "deduplicated": 0,
+                "source_versions_added": 0,
+                "filtered": [],
+                "sources": [],
+            },
+            errors_json={
+                "sources": [
+                    {"source": "arxiv", "query_index": 1, "code": "rate_limited", "retryable": True}
+                ]
+            },
+        )
+        # 真实 ingest 会经 finish_run 落库；模拟之，让报告页可访问。
+        RunRepository(session).add(report)
+        return report
+
+    monkeypatch.setattr("papersteward.jobs.ui_flow.ingest", _failing_ingest)
+    assert post(client, "/ui/runs", request("collect-fail")).status_code == 200
+    failed = wait(manager, "collect-fail")
+    assert failed.status is RunStatus.FAILED
+    message = failed.errors_json["errors"][0]["message"]
+    assert "arXiv 来源限流（请求太频繁）" in message
+    assert "原参数重试" in message
+    ingest_id = failed.stats_json["ingest_run_id"]
+    assert isinstance(ingest_id, str) and ingest_id.startswith("ui-ingest-")
+    page = client.get("/ui/runs/collect-fail")
+    assert "查看来源运行报告" in page.text and ingest_id in page.text
+    report = client.get(f"/ui/runs/{ingest_id}")
+    assert report.status_code == 200
+    assert "来源采集" in report.text
+    assert "来源失败明细" in report.text
+    assert "来源限流（请求太频繁）（rate_limited）" in report.text
+
+
 def test_restart_marks_unfinished_ui_runs_failed(client):
     manager = ready(client)
     with session_scope(manager.factory) as session:
