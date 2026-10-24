@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from papersteward.config import Settings
 from papersteward.core.entities import Bucket, ResearchProfile, Run, Taxonomy, utc_now
 from papersteward.core.enums import PaperStatus, RunStatus
-from papersteward.core.errors import DomainError
+from papersteward.core.errors import DomainError, DomainValidationError
 from papersteward.errors import AppError, ConflictError, InvalidRequestError, NotFoundError
 from papersteward.llm import LLMGateway, build_llm_provider
 from papersteward.llm.cache import DatabaseLLMCache
@@ -435,7 +435,13 @@ class UIFlowManager:
                     "errors": [
                         {
                             "code": "step_failed",
-                            "message": exc.message
+                            "message": (
+                                # 字段级校验错误附带定位，避免“必须带时区”这类
+                                # 无上下文消息；其余领域错误文案本身已可操作。
+                                f"{exc.message}（{exc.field}）"
+                                if isinstance(exc, DomainValidationError)
+                                else exc.message
+                            )
                             if isinstance(exc, DomainError | AppError)
                             else (
                                 llm_failure_message(exc)

@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from papersteward.core.entities import utc_now
 from papersteward.llm.gateway import LLMCache, LLMCacheEntry
 from papersteward.storage.db import session_scope
+from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import LLMCacheRow
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,10 @@ class DatabaseLLMCache(LLMCache):
                     raw_text=row.raw_text,
                     repair_used=bool(row.repair_used),
                     prompt_version=row.prompt_version,
-                    generated_at=row.generated_at,
+                    # SQLite 的 DateTime 列往返会丢时区；缓存条目的生成时间按
+                    # 全库约定（naive 即 UTC）补回，否则缓存命中会把 naive 时间
+                    # 带进 Provenance 实体校验，让重复挖掘整批失败。
+                    generated_at=as_utc(row.generated_at),
                 )
         except Exception:
             # 缓存自身故障（写锁/磁盘）按未命中处理，绝不阻塞挖掘；留痕便于发现持续失效。
