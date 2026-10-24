@@ -11,6 +11,7 @@ from papersteward.core.entities import Taxonomy
 from papersteward.core.errors import DomainValidationError, InvariantViolation
 from papersteward.core.onboarding import OnboardingStage
 from papersteward.documents import diff_taxonomies, parse_taxonomy, render_diff
+from papersteward.documents.diff import DiffEntry
 from papersteward.documents.frontmatter import load_yaml_mapping, split_front_matter
 from papersteward.errors import ConflictError, NotFoundError
 from papersteward.onboarding.profile import MAX_PROFILE_BYTES
@@ -53,7 +54,39 @@ def latest_taxonomy_draft(session: Session, taxonomy_id: str | None = None) -> T
     return max(drafts, key=lambda document: version_key(document.version))
 
 
+def describe_taxonomy_changes(entries: list[DiffEntry]) -> list[str]:
+    """面向阅读的变更摘要（UXR-12）。"""
+    changes: list[str] = []
+    added = sorted(
+        e.path.split(".")[1]
+        for e in entries
+        if e.change == "add" and e.path.startswith("tags.") and e.path.count(".") == 1
+    )
+    removed = sorted(
+        e.path.split(".")[1]
+        for e in entries
+        if e.change == "remove" and e.path.startswith("tags.") and e.path.count(".") == 1
+    )
+    if added:
+        changes.append("新增标签：" + "、".join(added))
+    if removed:
+        changes.append("移除标签：" + "、".join(removed))
+    changed = sorted(
+        {
+            e.path.split(".")[1]
+            for e in entries
+            if e.change == "change" and e.path.startswith("tags.")
+        }
+    )
+    if changed:
+        changes.append("标签定义有调整：" + "、".join(changed))
+    if not changes:
+        changes.append("分类规则有微调")
+    return changes
+
+
 def taxonomy_review(taxonomy: Taxonomy, base: Taxonomy | None = None) -> dict[str, Any]:
+    entries = None if base is None else diff_taxonomies(base, taxonomy)
     return {
         "id": taxonomy.id,
         "version": taxonomy.version,
@@ -65,7 +98,9 @@ def taxonomy_review(taxonomy: Taxonomy, base: Taxonomy | None = None) -> dict[st
             for tag in taxonomy.tags
             if tag.level.value == "primary"
         ],
-        "diff": None if base is None else render_diff(diff_taxonomies(base, taxonomy)),
+        "diff": None if entries is None else render_diff(entries),
+        # UXR-12：面向阅读的变更摘要，默认展示；原始逐行 diff 折叠在审阅页。
+        "change_summary": None if entries is None else describe_taxonomy_changes(entries),
         "markdown_diff": None
         if base is None
         else "\n".join(

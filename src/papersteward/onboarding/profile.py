@@ -11,6 +11,7 @@ from papersteward.core.entities import ResearchProfile
 from papersteward.core.errors import DomainValidationError, InvariantViolation
 from papersteward.core.onboarding import OnboardingStage
 from papersteward.documents import diff_profiles, parse_profile, render_diff
+from papersteward.documents.diff import DiffEntry
 from papersteward.documents.frontmatter import split_front_matter
 from papersteward.errors import ConflictError, NotFoundError
 from papersteward.onboarding.render import version_key
@@ -18,6 +19,56 @@ from papersteward.storage.onboarding import get_onboarding
 from papersteward.storage.repositories import ProfileRepository
 
 MAX_PROFILE_BYTES = 128 * 1024
+
+
+def describe_profile_changes(entries: list[DiffEntry]) -> list[str]:
+    """面向阅读的变更摘要（UXR-12）；逐行原始 diff 仍可在审阅页展开查看。"""
+    changes: list[str] = []
+
+    def added_removed(prefix: str, label: str) -> None:
+        added = sorted(
+            e.path.split(".")[1]
+            for e in entries
+            if e.change == "add" and e.path.startswith(prefix) and e.path.count(".") == 1
+        )
+        removed = sorted(
+            e.path.split(".")[1]
+            for e in entries
+            if e.change == "remove" and e.path.startswith(prefix) and e.path.count(".") == 1
+        )
+        if added:
+            changes.append(f"新增{label}：" + "、".join(added))
+        if removed:
+            changes.append(f"移除{label}：" + "、".join(removed))
+
+    added_removed("subdirections.", "子方向")
+    if any(e.path == "positioning.summary" for e in entries):
+        changes.append("研究定位描述有调整")
+    if any(e.path.startswith("positioning.") and e.path != "positioning.summary" for e in entries):
+        changes.append("定位信息有调整")
+    if any(e.path.startswith("core_questions.") for e in entries):
+        changes.append("核心问题有调整")
+    shares = sorted(
+        {
+            e.path.split(".")[1]
+            for e in entries
+            if e.path.endswith(".target_share") and e.change == "change"
+        }
+    )
+    if shares:
+        changes.append("子方向占比有调整（" + "、".join(shares) + "）")
+    if any(
+        e.change == "change"
+        and e.path.startswith("subdirections.")
+        and not e.path.endswith(".target_share")
+        for e in entries
+    ):
+        changes.append("子方向内容有调整")
+    if any(e.path.startswith("reading.") for e in entries):
+        changes.append("阅读节奏有调整")
+    if not changes:
+        changes.append("研究档案有微调")
+    return changes
 
 
 def parse_draft(content_md: str, profile_id: str) -> ResearchProfile:
@@ -84,6 +135,7 @@ def content_hash(text: str) -> str:
 
 def profile_review(profile: ResearchProfile, base: ResearchProfile | None = None) -> dict[str, Any]:
     missing = missing_fields(parse_draft(profile.content_md, profile.id))
+    entries = None if base is None else diff_profiles(base, profile)
     return {
         "id": profile.id,
         "version": profile.version,
@@ -92,7 +144,9 @@ def profile_review(profile: ResearchProfile, base: ResearchProfile | None = None
         "content_hash": content_hash(profile.content_md),
         "missing_fields": missing,
         "ready": not missing,
-        "diff": None if base is None else render_diff(diff_profiles(base, profile)),
+        "diff": None if entries is None else render_diff(entries),
+        # UXR-12：面向阅读的变更摘要，默认展示；原始逐行 diff 折叠在审阅页。
+        "change_summary": None if entries is None else describe_profile_changes(entries),
         "markdown_diff": None
         if base is None
         else "\n".join(

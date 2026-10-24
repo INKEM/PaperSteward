@@ -38,6 +38,7 @@ from papersteward.config import get_settings
 from papersteward.core.entities import Run
 from papersteward.core.enums import RunStatus
 from papersteward.core.errors import DomainError, InvariantViolation
+from papersteward.documents import parse_profile, parse_taxonomy
 from papersteward.errors import AppError, InvalidRequestError
 from papersteward.jobs.ui_flow import FlowRequest
 from papersteward.llm.runtime import resolve_llm_config
@@ -165,6 +166,44 @@ def _last_extract_note(session: SessionDep) -> str:
     return ""
 
 
+def _review_overview(summary: dict[str, Any]) -> str:
+    """草案速览（UXR-12）：定位一句话、关键数量与页内锚点，审阅长页的入口。"""
+    profile, taxonomy = summary["profile"], summary["taxonomy"]
+    positioning = ""
+    stats: list[str] = []
+    try:
+        if profile is not None:
+            data = parse_profile(profile["content_md"], document_id=profile["id"]).parsed_json
+            positioning = str((data.get("positioning") or {}).get("summary") or "")
+            questions = len(data.get("core_questions") or [])
+            subdirections = len(data.get("subdirections") or [])
+            weekly = (data.get("reading") or {}).get("weekly_capacity")
+            if questions:
+                stats.append(f"核心问题 {questions} 个")
+            if subdirections:
+                stats.append(f"子方向 {subdirections} 个")
+            if weekly:
+                stats.append(f"每周建议读 {weekly} 篇")
+        if taxonomy is not None:
+            parsed_taxonomy = parse_taxonomy(taxonomy["content_md"], document_id=taxonomy["id"])
+            primary = sum(
+                1 for tag in parsed_taxonomy.tags if tag.level.value == "primary" and tag.active
+            )
+            stats.append(f"主标签 {primary} 个")
+    except (DomainError, ValueError, KeyError):
+        return ""
+    body = '<section class="review-overview"><h2>草案速览</h2>'
+    if positioning:
+        body += f"<p>{escape(positioning)}</p>"
+    if stats:
+        body += f'<p class="muted">{" · ".join(stats)}</p>'
+    links = '<p class="review-links"><a href="#setup-feedback">跳到修改意见</a>'
+    if summary.get("ready_to_confirm"):
+        links += ' <a href="#setup-confirm">跳到确认</a>'
+    body += links + "</p></section>"
+    return body
+
+
 def _draft_section(summary: dict[str, Any]) -> str:
     profile, taxonomy = summary["profile"], summary["taxonomy"]
     if profile is None and taxonomy is None:
@@ -172,7 +211,7 @@ def _draft_section(summary: dict[str, Any]) -> str:
             '<p class="notice">还没有草案。素材就绪后点击下方按钮，由 Agent 生成研究方向档案'
             "和分类标签。</p>"
         )
-    body = "<h2>最新草案</h2>"
+    body = _review_overview(summary) + "<h2>最新草案</h2>"
     if profile is not None:
         try:
             preview = profile_preview(profile)
@@ -202,7 +241,7 @@ def _feedback_form(*, comment: str = "") -> str:
 def _feedback_and_confirm(session: SessionDep, summary: dict[str, Any]) -> str:
     if summary["profile"] is None and summary["taxonomy"] is None:
         return ""
-    body = "<h2>提意见，直到满意</h2>"
+    body = '<h2 id="setup-feedback">提意见，直到满意</h2>'
     for comment in summary["feedback"]:
         body += f'<p class="muted">已提意见：{escape(comment)}</p>'
     if _model_ready(session):
@@ -228,7 +267,7 @@ def _feedback_and_confirm(session: SessionDep, summary: dict[str, Any]) -> str:
             "我已审阅以上草案，确认开始使用</label>"
         )
         body += (
-            '<form method="post" action="/ui/setup/confirm">'
+            '<form method="post" action="/ui/setup/confirm" id="setup-confirm">'
             + confirm_body
             + "<button>确认，开始使用</button></form>"
         )

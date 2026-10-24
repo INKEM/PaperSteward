@@ -84,6 +84,14 @@ def draft_card(title: str, review: dict[str, Any], preview: str) -> str:
             + escape("、".join(str(field) for field in review["missing_fields"]))
             + "。可以提意见让 Agent 补全。</p>"
         )
+    changes = review.get("change_summary")
+    if changes:
+        # UXR-12：默认先给面向阅读的变化摘要；逐行原始 diff 折叠在后。
+        body += (
+            "<details open><summary>与上一版的变化摘要</summary><ul>"
+            + "".join(f"<li>{escape(str(item))}</li>" for item in changes)
+            + "</ul></details>"
+        )
     body += (
         "<details open><summary>渲染视图</summary>"
         + preview
@@ -93,7 +101,7 @@ def draft_card(title: str, review: dict[str, Any], preview: str) -> str:
     )
     if review.get("markdown_diff"):
         body += (
-            "<details><summary>与上一版的差异</summary><pre>"
+            "<details><summary>与上一版的原始差异</summary><pre>"
             + escape(str(review["markdown_diff"]))
             + "</pre></details>"
         )

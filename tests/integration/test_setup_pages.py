@@ -199,7 +199,14 @@ def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine
     assert feedback.status_code == 200, feedback.text
     assert wait_run(migrated_engine, "ext-second").status is RunStatus.SUCCEEDED
     updated = client.get("/ui/setup")
-    assert "与上一版的差异" in updated.text
+    # UXR-12：默认展示面向阅读的变化摘要，原始逐行 diff 折叠为「原始差异」。
+    assert "与上一版的变化摘要" in updated.text
+    assert "研究定位描述有调整" in updated.text
+    assert "与上一版的原始差异" in updated.text
+    # UXR-12：草案速览与页内锚点。
+    assert "草案速览" in updated.text
+    assert 'href="#setup-feedback"' in updated.text
+    assert 'href="#setup-confirm"' in updated.text
     assert "修改后的定位" in updated.text
     drafts = client.get("/onboarding/drafts").json()
     assert drafts["profile"]["version"] == "0.2"

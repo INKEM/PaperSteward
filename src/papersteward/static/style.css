@@ -760,6 +760,30 @@ tr:last-child td {
   margin: 12px 0;
 }
 
+/* ---------- 草案审阅（UXR-12）：速览与页内锚点 ---------- */
+
+.review-overview {
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-line);
+  border-radius: var(--radius-m);
+  padding: 14px 18px;
+  margin: 12px 0;
+}
+
+.review-overview h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.review-overview p {
+  margin: 4px 0;
+}
+
+.review-links a {
+  margin-right: 14px;
+}
+
 .source-material p {
   white-space: pre-line;
 }
