@@ -83,7 +83,7 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:8000/health
           curl -fsS http://127.0.0.1:8000/papers
-          curl -fsS http://127.0.0.1:8000/ui/setup | grep '开始设置'
+          curl -fsS http://127.0.0.1:8000/ui/setup | grep '首次设置'
           curl -fsS http://127.0.0.1:8000/ui/static/setup.js >/dev/null
           docker compose exec -T papersteward papersteward doctor
           test "$(docker compose exec -T papersteward id -u)" != 0

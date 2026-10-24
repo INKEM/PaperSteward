@@ -157,7 +157,7 @@ def test_browser_only_setup_from_api_connection_to_today(tmp_path: Path) -> None
                 )
                 assert feedback.status_code == 200
                 drafts = _wait_drafts(client, "0.2")
-                _wait_setup_text(client, "与上一版的差异")
+                _wait_setup_text(client, "与上一版的变化摘要")
                 page = client.get("/ui/setup")
                 assert "第二版定位" in page.text
 
