@@ -585,45 +585,55 @@ def _backlog_page(
         if fragment_mode:
             return HTMLResponse(list_body, headers=HEADERS)
 
-        body = dashboard(
+        toolbar, dash_body = dashboard(
             session, request.app.state.settings, _day(session), unread_total=unread_total
         )
+        body = dash_body
         if "cancelled" in request.query_params:
             body += '<p class="notice success">任务已停止，已完成的数据保留。</p>'
         # UXR-19：真的空队列不展示成排筛选控件，把注意力留给「挖掘新论文」。
         if page.items or active_filters:
-            filter_form = (
-                '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
-                'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
-                '<input type="hidden" name="fragment" value="1">'
-                '<label>搜索<input name="search" value="'
-                + escape(search)
-                + '" placeholder="标题或摘要关键词"></label><label>研究标签'
-                '<select name="tag"><option value="">全部标签</option>'
+            # UXR-06：标签/状态/分数收进「更多筛选」——桌面始终展开（display:contents），
+            # 手机由复选框控制默认收起；不用 details，规避其 contents 布局限制。
+            advanced = (
+                '<input type="checkbox" id="adv-toggle" class="adv-toggle">'
+                '<label for="adv-toggle" class="adv-chip">更多筛选</label>'
+                '<div class="adv-fields"><label>研究标签<select name="tag">'
+                '<option value="">全部标签</option>'
             )
             for tag in taxonomy.tags if taxonomy else ():
                 if tag.level.value == "primary" and tag.active:
                     selected = " selected" if filters.tag == tag.code else ""
-                    filter_form += (
+                    advanced += (
                         f'<option value="{escape(tag.code)}"{selected}>{escape(tag.name)}</option>'
                     )
-            filter_form += '</select></label><label>阅读状态<select name="read_status">'
+            advanced += '</select></label><label>阅读状态<select name="read_status">'
             for value, label in (("unread", "未读"), ("read", "已读"), ("all", "全部")):
                 selected = " selected" if filters.read_status == value else ""
-                filter_form += f'<option value="{value}"{selected}>{label}</option>'
-            filter_form += "</select></label>"
+                advanced += f'<option value="{value}"{selected}>{label}</option>'
+            advanced += "</select></label>"
             for name, number, label in (
                 ("min_priority", filters.min_priority, "最低分"),
                 ("max_priority", filters.max_priority, "最高分"),
             ):
-                filter_form += (
+                advanced += (
                     f'<label>{label}<input type="number" name="{name}" value="{number:g}" '
                     'min="0" max="100" step="0.1"></label>'
                 )
-            filter_form += "<button>应用筛选</button></form>"
+            advanced += "</div>"
+            filter_form = (
+                '<form action="/ui/queue" class="queue-filters" hx-get="/ui/queue" '
+                'hx-target="#queue-list" hx-swap="outerHTML" hx-push-url="true">'
+                '<input type="hidden" name="fragment" value="1">'
+                '<label class="filter-search">搜索<input name="search" value="'
+                + escape(search)
+                + '" placeholder="标题或摘要关键词"></label>'
+                + advanced
+                + "<button>应用筛选</button></form>"
+            )
             body += filter_form
         body += list_body
-        return _page("阅读队列", body)
+        return _page("阅读队列", body, heading_actions=toolbar)
     except (DomainError, AppError) as exc:
         if fragment_mode:
             return fragment_error("queue-list", exc.message)

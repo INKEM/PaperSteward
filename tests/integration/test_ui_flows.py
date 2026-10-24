@@ -224,7 +224,7 @@ def test_ui_sync_idempotency_and_form_has_no_query_field(client, monkeypatch):
     assert 'name="query"' not in today.text
     assert 'name="focus"' in today.text
     assert 'name="target"' in today.text
-    assert "自动生成检索式" in today.text
+    assert "生成检索式" in today.text
 
 
 def test_ui_sync_failed_step_preserves_data_and_shows_retry(client, monkeypatch):

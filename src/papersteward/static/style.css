@@ -194,6 +194,8 @@ header {
   gap: 28px;
   justify-content: space-between;
   align-items: center;
+  padding-top: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -268,7 +270,21 @@ nav a[aria-current] {
 }
 
 .page-heading {
-  padding: 12px 0 6px;
+  padding: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.page-heading h1 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+.page-heading:has(.queue-toolbar) .eyebrow {
+  display: none;
 }
 
 .eyebrow {
@@ -308,6 +324,25 @@ article h2:first-child {
 .dashboard {
   background: var(--surface-alt);
   border-top: 3px solid var(--accent-line);
+}
+
+/* UXR-06：队列顶部仪表盘轻量化，为第一篇论文让出首屏。 */
+.dashboard {
+  padding: 10px 20px;
+  margin: 10px 0;
+}
+
+.dashboard .queue-stats {
+  margin: 0 0 6px;
+}
+
+.dashboard .notice {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.dashboard > p {
+  margin: 6px 0;
 }
 
 .empty {
@@ -639,6 +674,7 @@ tr:last-child td {
 .paper-card {
   transition: border-color var(--speed) var(--ease);
   padding: 20px 24px;
+  margin: 16px 0;
 }
 
 .paper-card:hover {
@@ -792,8 +828,21 @@ tr:last-child td {
   height: 16px;
 }
 
+.queue-filters {
+  padding: 8px 0;
+}
+
 .queue-filters label {
-  flex: 1 1 140px;
+  gap: 4px;
+}
+
+#queue-list > p.muted {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+.queue-filters label {
+  flex: 1 1 110px;
 }
 
 /* ---------- 队列顶部工具条（UXR-06） ---------- */
@@ -803,41 +852,68 @@ tr:last-child td {
   font-size: 15px;
 }
 
+/* 工具条位于标题行右侧（heading_actions），占满剩余宽度并右对齐 */
 .queue-toolbar {
+  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin: 10px 0 6px;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
 }
 
 .queue-toolbar form {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
   padding: 0;
   margin: 0;
+}
+
+/* 收起状态下三个控件保持一行；展开采集面板时才允许换行。 */
+.toolbar-sync:not(:has(details[open])),
+.toolbar-refresh {
+  flex-wrap: nowrap;
+}
+
+.queue-toolbar button,
+.queue-toolbar summary {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .collect-params {
   margin: 0;
 }
 
-.collect-params summary {
+.collect-params > summary {
   display: inline-block;
   border: 1px solid var(--accent-line);
   border-radius: 7px;
   padding: 10px 12px;
-  min-height: 44px;
+  min-height: 20px;
   color: var(--accent);
   background: var(--surface);
   font-size: 14px;
   font-weight: 550;
 }
 
-.collect-params summary:hover {
+.collect-params > summary:hover {
   background: var(--accent-soft);
+}
+
+/* 更多筛选（UXR-06）：桌面字段原地内联流动（chip 隐藏），
+   手机显示 chip，未勾选时折叠字段。 */
+.adv-toggle,
+.adv-chip {
+  display: none;
+}
+
+.adv-fields {
+  display: contents;
 }
 
 .collect-params[open] {
@@ -1091,21 +1167,82 @@ tr:last-child td {
     width: 100%;
   }
 
-  /* UXR-06：手机筛选字段双列排布，压缩首卡前的筛选区高度。 */
+  /* UXR-06：手机首屏密度优先——长说明移出首屏（完整文案在展开面板/帮助页）。 */
+  .stats-note,
+  .dashboard > p.muted {
+    display: none;
+  }
+
+  .dashboard {
+    padding: 8px 14px;
+    margin: 8px 0;
+  }
+
+  .paper-card {
+    margin: 12px 0;
+  }
+
+  .dashboard .notice {
+    font-size: 12.5px;
+  }
+
+  /* UXR-06：手机筛选双列排布；搜索独占一行，「更多筛选」收起为一行芯片。 */
   .queue-filters {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
     align-items: end;
-    padding: 10px 0;
+    padding: 4px 0;
   }
 
   .queue-filters label {
     width: auto;
   }
 
-  .queue-filters button {
+  .queue-filters > .filter-search {
+    order: -1;
     grid-column: 1 / -1;
+  }
+
+  .adv-toggle {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+  }
+
+  .adv-chip {
+    display: inline-block;
+    align-self: center;
+    border: 1px solid var(--accent-line);
+    border-radius: 7px;
+    padding: 10px 12px;
+    color: var(--accent);
+    background: var(--surface);
+    font-size: 14px;
+    font-weight: 550;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .adv-toggle:focus-visible + .adv-chip {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .adv-toggle:checked + .adv-chip {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .adv-toggle:not(:checked) ~ .adv-fields {
+    display: none;
+  }
+
+  .queue-filters > button {
+    grid-column: auto;
+    justify-self: start;
+    min-width: 120px;
   }
 
   footer {

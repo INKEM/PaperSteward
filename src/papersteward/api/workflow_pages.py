@@ -388,35 +388,33 @@ def queue_stats_line(session: SessionDep, unread_total: int, *, oob: bool = Fals
     return (
         f'<p id="queue-stats" class="queue-stats"{oob_attr}>'
         f"未读 <strong>{unread_total}</strong> 篇 · 按你的容量，今天建议先看 "
-        f"<strong>{suggested}</strong> 篇。全部论文会一直保留，随时可读。</p>"
+        f'<strong>{suggested}</strong> 篇。<span class="stats-note">'
+        "全部论文会一直保留，随时可读。</span></p>"
     )
 
 
-def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_total: int = -1) -> str:
+def dashboard(
+    session: SessionDep, settings: Settings, day: date, *, unread_total: int = -1
+) -> tuple[str, str]:
+    """队列顶部（UXR-06）：返回 (标题行任务工具条, 仪表盘正文)。
+
+    工具条由调用方放进 page() 的 heading_actions，与 h1 同行展示。
+    """
     profile, _ = bound_context(
         session, utc_now(), action="ui.dashboard", enforce_schedule=False, day=day
     )
     repository = RunRepository(session)
     running = repository.running_ui_runs()
     busy = bool(running)
-    body = run_body(running[0], card=True) if busy else ""
     if unread_total < 0:
         # 调用方未提供时自行读取；队列页已算出未读总数，传入可省一次查询。
         unread_total = read_backlog(session, now=utc_now(), limit=1).total
-    body += '<section class="dashboard">'
-    body += queue_stats_line(session, unread_total)
     problem = processing_problem(session, settings)
-    if problem:
-        body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">连接模型</a></p>'
-    elif busy:
-        body += "<p>等待当前任务，完成后再开始新任务。</p>"
-    elif not unread_total:
-        body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
     scoring = read_scoring_config(session)
     default_target = int(scoring.gates.min_queue_yield) if scoring is not None else 5
-    # UXR-06：顶部压缩为一行工具条——挖掘主按钮、折叠的采集参数、次级的刷新排序。
+    # 挖掘主按钮、折叠的采集参数、次级的刷新排序，一行排布。
     collect = (
-        '<details class="collect-params"><summary>采集参数（来源 / 关注点 / 篇数）</summary>'
+        '<details class="collect-params"><summary>采集参数与检索说明</summary>'
         '<label>来源<select name="source">'
         + "".join(
             f'<option value="{value}">{label}</option>'
@@ -430,10 +428,13 @@ def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_tota
         + '<label>本次关注点（可选）<input type="text" name="focus" maxlength="500" '
         'placeholder="例如：本周想看评测方向的新基准"></label>'
         + f'<label>期望入队篇数<input type="number" name="target" value="{default_target}" '
-        'min="1" max="50"></label></details>'
+        'min="1" max="50"></label>'
+        # UXR-06：检索说明属于采集参数的语境，随面板折叠，不再常驻顶部。
+         + '<p class="muted">不填检索词时由 Agent 依据研究档案、已读历史和关注点生成检索式'
+        "（内容会发送给你配置的模型服务）。</p></details>"
     )
     disabled_sync = " disabled" if busy or problem else ""
-    body += (
+    toolbar = (
         '<div class="queue-toolbar">'
         '<form method="post" action="/ui/runs" class="toolbar-sync">'
         + hidden("run_id", uuid4().hex)
@@ -445,11 +446,16 @@ def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_tota
         + f'<button class="secondary"{" disabled" if busy else ""}>刷新排序</button></form>'
         + "</div>"
     )
-    body += (
-        '<p class="muted">不填检索词时，Agent 会综合你的研究档案、已读评分历史和本次关注点'
-        "自动生成检索式（相关内容会发送给你配置的模型服务），挖掘报告列出所用检索式；"
-        "「刷新排序」只在本地计算，不调用模型，同一天已保存的评分会复用。</p>"
-    )
+    body = run_body(running[0], card=True) if busy else ""
+    body += '<section class="dashboard">'
+    body += queue_stats_line(session, unread_total)
+    if problem:
+        body += f'<p class="notice">{escape(problem)} <a href="/ui/settings">连接模型</a></p>'
+    elif busy:
+        body += "<p>等待当前任务，完成后再开始新任务。</p>"
+    elif not unread_total:
+        body += "<p>点击「挖掘新论文」开始。采集、处理和评分完成后会直接加入队列。</p>"
+    body += '<p class="muted">「刷新排序」只在本地计算，不调用模型。</p>'
     recent = repository.latest("ui.sync")
     if recent is not None:
         run = recent
@@ -463,7 +469,7 @@ def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_tota
             f"已存在 {_number(collected, 'existing')} 篇 · 处理 {_number(stats, 'processed')} 篇 · "
             f"队列新增 {len(stats.get('added_ids', []))} 篇</p>"
         )
-    return body + "</section>"
+    return toolbar, body + "</section>"
 
 
 @router.post("/runs")

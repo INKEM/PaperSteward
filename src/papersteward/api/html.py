@@ -42,8 +42,13 @@ _NAV_LINKS = (
 )
 
 
-def page(title: str, body: str, *, nav: str | None = None) -> HTMLResponse:
-    """页面外壳。nav 为该页在主导航中的键；缺省用 title 匹配。"""
+def page(
+    title: str, body: str, *, nav: str | None = None, heading_actions: str = ""
+) -> HTMLResponse:
+    """页面外壳。nav 为该页在主导航中的键；缺省用 title 匹配。
+
+    heading_actions 渲染在 h1 同一行的右侧（UXR-06），供队列页放置任务工具条。
+    """
     config = {
         "allowEval": False,
         "allowScriptTags": False,
@@ -75,8 +80,9 @@ def page(title: str, body: str, *, nav: str | None = None) -> HTMLResponse:
         f'<nav class="desktop-nav" aria-label="主导航">{navigation}</nav>'
         '<details class="mobile-nav"><summary>导航菜单</summary>'
         f'<nav aria-label="移动导航">{navigation}</nav></details></header>'
-        f'<main id="main"><div class="page-heading"><p class="eyebrow">你的研究书桌</p>'
-        f"<h1>{escape(title)}</h1></div>{body}</main>"
+        f'<main id="main"><div class="page-heading"><div class="page-heading-text">'
+        f'<p class="eyebrow">你的研究书桌</p><h1>{escape(title)}</h1></div>'
+        f"{heading_actions}</div>{body}</main>"
         "<footer><span>PaperSteward · 本地阅读工作区</span>"
         '<span>阅读反馈保存在本地，备注不外发。 <a href="/ui/help">帮助与隐私</a></span>'
         "</footer></body></html>",
