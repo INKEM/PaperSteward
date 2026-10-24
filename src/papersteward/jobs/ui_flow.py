@@ -106,6 +106,20 @@ def processing_problem(session: Session, settings: Settings) -> str | None:
     return resolve_llm_config(session, settings).readiness_problem()
 
 
+def _stat_number(value: Any) -> int:
+    """运行统计里的计数防御性转 int（stats 来自 JSON，可能有 None/字符串）。"""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def ingest_run_id(ui_run_id: str, round_index: int) -> str:
+    """一轮扩查采集的来源运行 ID：同一（挖掘, 轮次）确定，跨轮唯一。"""
+    digest = hashlib.sha256(f"{ui_run_id}:{round_index}".encode()).hexdigest()[:40]
+    return "ui-ingest-" + digest
+
+
 def _collection_failure_message(request: FlowRequest, report: Run) -> str:
     """采集失败时把来源报告里的真实原因翻译成可操作的中文提示。
 
@@ -494,9 +508,14 @@ class UIFlowManager:
             else f"队列共 {report.queue_total} 篇",
         )
 
-    def collect(self, request: FlowRequest, plan: QueryPlan) -> None:
+    def collect(self, request: FlowRequest, plan: QueryPlan) -> Run | None:
+        """执行一轮采集；返回 ingest 报告（测试桩可能返回 None，调用方判空）。
+
+        每轮扩查用独立的来源运行 ID（同轮幂等、跨轮唯一），否则第二轮会撞上
+        ingest 的 run_id 唯一性保护（“运行ID已存在”）导致整批挖掘失败。
+        """
         clients: list[SourceHTTP] = []
-        ingest_id = "ui-ingest-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:40]
+        ingest_id = ingest_run_id(request.run_id, plan.round_index)
         # 规划完成后进入实际抓取：多条检索式逐条请求（间隔 3 秒），相位如实标注。
         self._update(request.run_id, collecting_phase="fetching")
         try:
@@ -508,9 +527,10 @@ class UIFlowManager:
                     run_id=ingest_id,
                     queries=[planned.spec for planned in plan.queries],
                 )
-            self._update(request.run_id, collected=dict(report.stats_json), ingest_run_id=ingest_id)
+            self._update(request.run_id, ingest_run_id=ingest_id)
             if report.status is RunStatus.FAILED:
                 raise InvalidRequestError(_collection_failure_message(request, report))
+            return report
         finally:
             for client in clients:
                 client.close()
@@ -827,6 +847,11 @@ class UIFlowManager:
             totals = {"enriched": 0, "auto_shelved": 0, "skipped_no_summary": 0}
             quality_flags: dict[str, list[str]] = {}
             plans: list[dict[str, Any]] = []
+            # 采集统计跨轮累计（各轮求和），报告链接逐轮记录；collected 若按轮
+            # 覆盖，扩查后终态摘要会从第 1 轮数字“跳变”成末轮数字。
+            collected_totals: dict[str, int] = {}
+            partial_any = False
+            ingest_ids: list[str] = []
             for round_index in range(1, MAX_PLAN_ROUNDS + 1):
                 if self.stopped.is_set():
                     raise InvalidRequestError("应用正在停止")
@@ -849,7 +874,32 @@ class UIFlowManager:
                 plans.append(plan.as_json())
                 self._update(request.run_id, plans=plans, round=round_index)
                 used_keywords = "、".join(filter(None, (used_keywords, plan.keyword_digest())))
-                self.collect(request, plan)
+                report = self.collect(request, plan)
+                if report is not None:
+                    round_stats = dict(report.stats_json)
+                    for key in (
+                        "candidates",
+                        "new",
+                        "existing",
+                        "deduplicated",
+                        "source_versions_added",
+                    ):
+                        collected_totals[key] = collected_totals.get(key, 0) + _stat_number(
+                            round_stats.get(key, 0)
+                        )
+                    filtered_round = round_stats.get("filtered")
+                    collected_totals["filtered"] = collected_totals.get("filtered", 0) + (
+                        len(filtered_round)
+                        if isinstance(filtered_round, list)
+                        else _stat_number(round_stats.get("filtered", 0))
+                    )
+                    partial_any = partial_any or bool(round_stats.get("partial"))
+                    ingest_ids.append(ingest_run_id(request.run_id, plan.round_index))
+                    self._update(
+                        request.run_id,
+                        collected={**collected_totals, "partial": partial_any},
+                        ingest_run_ids=list(ingest_ids),
+                    )
                 self._update(request.run_id, stage="processing", completed=["collecting"])
                 new_results, skipped = self._triage_candidates(
                     request, gateway, triage_cap, workers, ctx
@@ -873,6 +923,9 @@ class UIFlowManager:
                     self._update(
                         request.run_id,
                         processed=totals["enriched"],
+                        # 波内 total 是本波批量；波后回写累计值，终态不再出现
+                        # “已处理 24 / 4 篇”这类分子大于分母的矛盾显示。
+                        processing_total=totals["enriched"],
                         auto_classified=totals["enriched"],
                         auto_shelved=totals["auto_shelved"],
                         skipped_no_summary=totals["skipped_no_summary"],

@@ -337,9 +337,23 @@ def run_body(
                 + "".join(f"<li>{escape(line)}</li>" for line in source_failures)
                 + "</ul>"
             )
-    ingest_id = stats.get("ingest_run_id")
-    if not active and run.run_type == "ui.sync" and isinstance(ingest_id, str) and ingest_id:
-        body += f'<p><a href="/ui/runs/{quote(ingest_id, safe="")}">查看来源运行报告</a></p>'
+    if not active and run.run_type == "ui.sync":
+        # 扩查每轮一份来源运行报告；逐轮可达（旧运行记录只有单个 id）。
+        ingest_ids = stats.get("ingest_run_ids")
+        links: list[str] = []
+        if isinstance(ingest_ids, list) and ingest_ids:
+            for round_no, round_ingest_id in enumerate(ingest_ids, 1):
+                label = "查看来源运行报告" if len(ingest_ids) == 1 else f"第 {round_no} 轮报告"
+                links.append(
+                    f'<a href="/ui/runs/{quote(str(round_ingest_id), safe="")}">{label}</a>'
+                )
+        elif isinstance(stats.get("ingest_run_id"), str) and stats["ingest_run_id"]:
+            links.append(
+                f'<a href="/ui/runs/{quote(str(stats["ingest_run_id"]), safe="")}">'
+                "查看来源运行报告</a>"
+            )
+        if links:
+            body += f"<p>来源运行报告：{' · '.join(links)}</p>"
     if (
         run.run_type not in {"ui.digest", "ui.extract"}
         and run.status in (RunStatus.FAILED, RunStatus.CANCELLED)

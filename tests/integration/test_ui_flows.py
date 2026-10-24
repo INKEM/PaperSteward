@@ -246,6 +246,58 @@ def test_ui_sync_failed_step_preserves_data_and_shows_retry(client, monkeypatch)
     assert "model failure" in retry_page.text
 
 
+def test_expansion_rounds_use_unique_ingest_run_ids(client, monkeypatch):
+    """扩查第二轮不再撞「运行ID已存在」：逐轮唯一采集 ID、统计跨轮累计、逐轮报告链接。"""
+    from papersteward.core.errors import InvariantViolation
+    from papersteward.jobs.ui_flow import ingest_run_id
+
+    manager = ready(client)
+    seen_ingest_ids: list[str] = []
+
+    def _ingest(session, adapters, *, run_id, queries=None, dry_run=False):
+        # 复刻真实 ingest 的 run_id 唯一性保护（扩查第二轮曾因此整批失败）。
+        from papersteward.storage.repositories import RunRepository as RunRepo
+
+        if RunRepo(session).get(run_id) is not None:
+            raise InvariantViolation("ingest.run_id", "运行ID已存在；请使用新的运行ID查看幂等结果")
+        seen_ingest_ids.append(run_id)
+        return Run(
+            id=run_id,
+            run_type="ingest",
+            status=RunStatus.SUCCEEDED,
+            started_at=utc_now(),
+            finished_at=utc_now(),
+            stats_json={
+                "candidates": 3,
+                "new": 3,
+                "existing": 0,
+                "deduplicated": 0,
+                "source_versions_added": 3,
+                "filtered": [],
+                "partial": False,
+                "sources": [],
+            },
+        )
+
+    monkeypatch.setattr("papersteward.jobs.ui_flow.ingest", _ingest)
+    monkeypatch.setattr(manager, "_plan", canned_plan())
+    # 初筛永远无候选：每轮都不达标，必然走满扩查轮次。
+    monkeypatch.setattr(manager, "_triage_candidates", lambda *args, **kwargs: ([], 0))
+    assert post(client, "/ui/runs", request("expand", target="5")).status_code == 200
+    report = wait(manager, "expand")
+    assert report.status is RunStatus.SUCCEEDED
+    assert len(seen_ingest_ids) == 3  # 三轮扩查各自采集
+    assert len(set(seen_ingest_ids)) == 3  # 轮次间互不相同
+    assert seen_ingest_ids[0] == ingest_run_id("expand", 1)
+    stats = report.stats_json
+    assert stats["collected"]["candidates"] == 9  # 3 轮 × 3 篇跨轮累计
+    assert stats["collected"]["new"] == 9
+    assert stats["ingest_run_ids"] == seen_ingest_ids
+    page = client.get("/ui/runs/expand")
+    assert "第 1 轮报告" in page.text and "第 3 轮报告" in page.text
+    assert stats["queued_this_run"] == 0 and stats["shortfall"] == 5  # 如实报告缺口
+
+
 def test_collection_failure_names_reason_and_links_ingest_report(client, monkeypatch):
     """采集失败：错误消息给出具体来源与原因，运行报告页可从进度页直达。"""
     manager = ready(client)

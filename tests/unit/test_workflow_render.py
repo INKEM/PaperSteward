@@ -122,3 +122,13 @@ def test_collecting_phase_titles_are_honest() -> None:
     assert "正在采集论文" in fetching
     legacy = run_body(_run(status=RunStatus.RUNNING, stats={"stage": "collecting"}))
     assert "正在采集论文" in legacy  # 无相位的旧运行记录保持默认标题
+
+
+def test_ingest_run_id_is_deterministic_and_unique_per_round() -> None:
+    from papersteward.jobs.ui_flow import ingest_run_id
+
+    first = ingest_run_id("run-a", 1)
+    assert first.startswith("ui-ingest-") and len(first) == len("ui-ingest-") + 40
+    assert ingest_run_id("run-a", 1) == first  # 同轮确定
+    assert ingest_run_id("run-a", 2) != first  # 跨轮唯一
+    assert ingest_run_id("run-b", 1) != first  # 跨挖掘唯一
