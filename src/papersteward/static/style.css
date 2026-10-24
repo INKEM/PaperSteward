@@ -232,6 +232,7 @@ nav {
   display: flex;
   gap: 5px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 nav a {
@@ -259,6 +260,7 @@ nav a[aria-current] {
 }
 
 .desktop-nav .nav-group summary {
+  display: inline-block;
   list-style: none;
   cursor: pointer;
   text-decoration: none;
