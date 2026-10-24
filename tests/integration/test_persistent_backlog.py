@@ -84,7 +84,7 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     assert "综合评分" in page.text and str(DAY) in page.text
     assert "挖掘新论文" in page.text and "刷新排序" in page.text
     # UXR-04：挖掘表单如实说明检索规划会把研究档案与已读历史发给模型服务。
-    assert "这一步会把上述内容发送给你配置的模型服务" in page.text
+    assert "相关内容会发送给你配置的模型服务" in page.text
     for unwanted in ("生成今日日报", 'name="days"', 'value="skip"', 'value="snooze"'):
         assert unwanted not in page.text
     detail = client.get("/ui/papers/one").text

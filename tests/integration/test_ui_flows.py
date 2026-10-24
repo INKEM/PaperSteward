@@ -224,7 +224,7 @@ def test_ui_sync_idempotency_and_form_has_no_query_field(client, monkeypatch):
     assert 'name="query"' not in today.text
     assert 'name="focus"' in today.text
     assert 'name="target"' in today.text
-    assert "自动生成多条检索式" in today.text
+    assert "自动生成检索式" in today.text
 
 
 def test_ui_sync_failed_step_preserves_data_and_shows_retry(client, monkeypatch):
@@ -381,7 +381,7 @@ def test_running_task_blocks_new_submission_and_today_refreshes(client, monkeypa
         page = client.get("/ui/today").text
         assert 'id="current-run"' in page
         assert 'hx-trigger="every 2s"' in page
-        assert page.count("<button disabled>") == 2
+        assert "<button disabled>" in page and 'class="secondary" disabled' in page
         assert "未读" in page and "刷新排序" in page and "待审核" not in page
         with session_scope(manager.factory) as session:
             assert RunRepository(session).get("blocked") is None

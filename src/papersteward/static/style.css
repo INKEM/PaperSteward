@@ -470,13 +470,15 @@ button:disabled {
   cursor: wait;
 }
 
-.button.secondary {
+.button.secondary,
+button.secondary {
   background: var(--surface);
   color: var(--accent);
   border-color: var(--accent-line);
 }
 
-.button.secondary:hover {
+.button.secondary:hover,
+button.secondary:hover {
   background: var(--accent-soft);
 }
 
@@ -697,6 +699,63 @@ tr:last-child td {
 
 .queue-filters label {
   flex: 1 1 140px;
+}
+
+/* ---------- 队列顶部工具条（UXR-06） ---------- */
+
+.queue-stats {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.queue-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+}
+
+.queue-toolbar form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+}
+
+.collect-params {
+  margin: 0;
+}
+
+.collect-params summary {
+  display: inline-block;
+  border: 1px solid var(--accent-line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  min-height: 44px;
+  color: var(--accent);
+  background: var(--surface);
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.collect-params summary:hover {
+  background: var(--accent-soft);
+}
+
+.collect-params[open] {
+  flex-basis: 100%;
+}
+
+.collect-params[open] summary {
+  border-color: var(--accent);
+}
+
+.collect-params[open] label {
+  flex: 1 1 180px;
+  margin: 8px 0 0;
 }
 
 .metrics {
@@ -935,6 +994,23 @@ tr:last-child td {
   form > .button {
     flex-basis: 100%;
     width: 100%;
+  }
+
+  /* UXR-06：手机筛选字段双列排布，压缩首卡前的筛选区高度。 */
+  .queue-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: end;
+    padding: 10px 0;
+  }
+
+  .queue-filters label {
+    width: auto;
+  }
+
+  .queue-filters button {
+    grid-column: 1 / -1;
   }
 
   footer {

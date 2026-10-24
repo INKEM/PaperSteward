@@ -400,32 +400,42 @@ def dashboard(session: SessionDep, settings: Settings, day: date, *, unread_tota
         body += "<p>点击“挖掘新论文”开始。采集、处理和评分完成后会直接加入队列。</p>"
     scoring = read_scoring_config(session)
     default_target = int(scoring.gates.min_queue_yield) if scoring is not None else 5
-    controls = '<details><summary>采集参数</summary><label>来源<select name="source">'
-    controls += "".join(
-        f'<option value="{value}">{label}</option>'
-        for value, label in (
-            ("arxiv", "arXiv"),
-            ("openalex", "OpenAlex"),
-            ("semantic_scholar", "Semantic Scholar"),
+    # UXR-06：顶部压缩为一行工具条——挖掘主按钮、折叠的采集参数、次级的刷新排序。
+    collect = (
+        '<details class="collect-params"><summary>采集参数（来源 / 关注点 / 篇数）</summary>'
+        '<label>来源<select name="source">'
+        + "".join(
+            f'<option value="{value}">{label}</option>'
+            for value, label in (
+                ("arxiv", "arXiv"),
+                ("openalex", "OpenAlex"),
+                ("semantic_scholar", "Semantic Scholar"),
+            )
         )
-    )
-    controls += "</select></label>"
-    controls += (
-        '<label>本次关注点（可选）<input type="text" name="focus" maxlength="500" '
+        + "</select></label>"
+        + '<label>本次关注点（可选）<input type="text" name="focus" maxlength="500" '
         'placeholder="例如：本周想看评测方向的新基准"></label>'
-    )
-    controls += (
-        f'<label>期望入队篇数<input type="number" name="target" value="{default_target}" '
+        + f'<label>期望入队篇数<input type="number" name="target" value="{default_target}" '
         'min="1" max="50"></label></details>'
     )
-    controls += (
-        '<p class="muted">不填检索词：Agent 会综合你的研究档案、已读评分历史和'
-        "本次关注点自动生成多条检索式（这一步会把上述内容发送给你配置的模型服务），"
-        "挖掘报告会列出所用检索式及理由。</p>"
+    disabled_sync = " disabled" if busy or problem else ""
+    body += (
+        '<div class="queue-toolbar">'
+        '<form method="post" action="/ui/runs" class="toolbar-sync">'
+        + hidden("run_id", uuid4().hex)
+        + hidden("kind", "sync")
+        + f"<button{disabled_sync}>挖掘新论文</button>{collect}</form>"
+        '<form method="post" action="/ui/runs" class="toolbar-refresh">'
+        + hidden("run_id", uuid4().hex)
+        + hidden("kind", "refresh")
+        + f'<button class="secondary"{" disabled" if busy else ""}>刷新排序</button></form>'
+        + "</div>"
     )
-    body += _run_form("sync", controls, "挖掘新论文", disabled=busy or bool(problem))
-    body += _run_form("refresh", "", "刷新排序", disabled=busy)
-    body += '<p class="muted">刷新排序只在本地计算，不调用模型。同一天已保存的评分会复用。</p>'
+    body += (
+        '<p class="muted">不填检索词时，Agent 会综合你的研究档案、已读评分历史和本次关注点'
+        "自动生成检索式（相关内容会发送给你配置的模型服务），挖掘报告列出所用检索式；"
+        "「刷新排序」只在本地计算，不调用模型，同一天已保存的评分会复用。</p>"
+    )
     recent = repository.latest("ui.sync")
     if recent is not None:
         run = recent
