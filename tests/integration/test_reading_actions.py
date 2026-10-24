@@ -164,7 +164,7 @@ def test_prequeue_cannot_be_done_and_cli_can_read(client, migrated_engine, monke
 
 
 def test_reject_can_be_restored_from_ui(client, migrated_engine):
-    """不感兴趣支持一键撤销：队列卡片就地恢复，详情页也有恢复入口。"""
+    """不感兴趣支持移回待处理：队列卡片就地给出入口，详情页同样提供。"""
     factory = prepared(client, migrated_engine)
     headers = {"origin": "http://testserver"}
     rejected = client.post(
@@ -173,13 +173,24 @@ def test_reject_can_be_restored_from_ui(client, migrated_engine):
         headers=headers,
     )
     assert rejected.status_code == 200, rejected.text
-    assert "恢复推荐" in rejected.text
+    # UXR-10：按钮如实命名为「移回待处理」（实际迁移 REJECTED→SCREENED，不直接回队列）。
+    assert "移回待处理" in rejected.text
     detail = client.get("/ui/papers/p")
-    assert "已被标记为不感兴趣" in detail.text and "恢复推荐" in detail.text
-    restored = client.post("/papers/p/actions", json={"kind": "restore", "request_id": "rs-1"})
-    assert restored.status_code == 200 and restored.json()["status"] == "screened"
+    assert "已被标记为不感兴趣" in detail.text and "移回待处理" in detail.text
+    # UXR-10：详情上下文「移回待处理」完成 REJECTED→SCREENED 迁移，
+    # 返回完整正文与如实消息；SCREENED 详情页说明去向与下一步（UXR-09 内容保留）。
+    ui_restored = client.post(
+        "/ui/actions/p",
+        data={"kind": "restore", "context": "detail", "request_id": "rs-1"},
+        headers=headers,
+    )
+    assert ui_restored.status_code == 200
+    assert "移回待处理状态" in ui_restored.text and "重新评估" in ui_restored.text
+    assert "内容概括" in ui_restored.text
     with session_scope(factory) as session:
         assert PaperRepository(session).get("p").status is PaperStatus.SCREENED
+    detail_after = client.get("/ui/papers/p")
+    assert "移回待处理状态" in detail_after.text and "重新评估是否入队" in detail_after.text
     assert (
         client.post("/papers/p/actions", json={"kind": "restore", "request_id": "rs-2"}).status_code
         == 409

@@ -112,7 +112,7 @@ def apply_action(
             elif action.kind == "restore":
                 if paper.status is not PaperStatus.REJECTED:
                     raise InvariantViolation(
-                        "action.restore", "只有被标记为不感兴趣的文献才能恢复推荐"
+                        "action.restore", "只有被标记为不感兴趣的文献才能移回待处理"
                     )
                 transition(PaperStatus.SCREENED)
             else:

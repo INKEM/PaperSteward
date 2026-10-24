@@ -114,13 +114,25 @@ def _form(
     context: str = "queue",
 ) -> str:
     url = "/ui/actions/" + quote(paper_id, safe="")
+    # UXR-10：「恢复推荐」名不副实——实际是移回待处理状态，需重新挖掘才会再入队。
     labels = {
         "done": "完成并归档",
         "score": "修订评分",
         "note": "修订备注",
         "reject": "标记为不感兴趣",
-        "restore": "恢复推荐",
+        "restore": "移回待处理",
     }
+    # UXR-10：1–5 分附简短含义，避免个人评分尺度因人而异。
+    score_options = "".join(
+        f'<option value="{n}">{n} 分 · {label}</option>'
+        for n, label in (
+            (1, "不值得再读"),
+            (2, "一般"),
+            (3, "有帮助"),
+            (4, "很有价值"),
+            (5, "核心参考"),
+        )
+    )
     confirm = (
         ' data-confirm="标记后这篇论文不再出现在队列。确认标记为不感兴趣？"'
         if kind == "reject"
@@ -139,7 +151,7 @@ def _form(
     if kind in {"done", "score"}:
         fields += (
             '<label>主观评分<select name="score"><option value="">不评分</option>'
-            + "".join(f'<option value="{n}">{n} 分</option>' for n in range(1, 6))
+            + score_options
             + "</select></label>"
         )
     if kind in {"done", "note", "reject"}:
@@ -949,7 +961,7 @@ def _detail_article(
         body += _paper_links(session, paper_id)
         body += (
             '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
-            "恢复后会重新参与评分并排队。</p>"
+            "「移回待处理」后不会立即回队，下次「挖掘新论文」处理时会重新评估。</p>"
         )
         body += _form(paper_id, "restore", context="detail")
         return body + "</article>"
@@ -969,6 +981,12 @@ def _detail_article(
         else None
     )
     body = "<article>" + notice_html + '<p class="detail-badges">'
+    if paper.status is PaperStatus.SCREENED:
+        # UXR-10：移回待处理的论文不在队列，详情页如实说明去向与下一步。
+        body += (
+            '<p class="notice">这篇论文已从「不感兴趣」移回待处理状态，不在当前阅读队列；'
+            "下次「挖掘新论文」处理时会重新评估是否入队。</p>"
+        )
     if tag_label:
         body += f'<span class="tag">{escape(str(tag_label))}</span> '
     body += (
@@ -1128,7 +1146,11 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
         messages = {
             "done": f"已归档「{title}」：阅读记录已保存，之后可在「归档」页找到它。",
             "reject": f"已把「{title}」标记为不感兴趣，它不会再出现在队列里。",
-            "restore": "已恢复推荐，下次「挖掘新论文」处理时会重新进入队列。",
+            # UXR-10：恢复的实际语义是移回待处理（REJECTED→SCREENED），如实说明。
+            "restore": (
+                f"已把「{title}」移回待处理状态：不会被直接放回队列，"
+                "下次「挖掘新论文」处理时会重新评估是否入队。"
+            ),
             "score": f"已保存「{title}」的新评分，之前的评分保留在修订记录里。",
             "note": f"已保存「{title}」的新备注，之前的备注保留在修订记录里。",
         }
@@ -1141,7 +1163,7 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
             )
         fragment: str
         if body.kind == "reject":
-            # 不整页刷新：卡片原地替换为确认与「恢复推荐」入口，误点可一键撤销。
+            # 不整页刷新：卡片原地替换为确认与「移回待处理」入口（UXR-10），误点可撤销。
             fragment = (
                 f'<article><p class="success" tabindex="-1" autofocus>'
                 f"{escape(messages['reject'])}</p>"
