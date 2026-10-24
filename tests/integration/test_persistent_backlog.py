@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -109,7 +110,8 @@ def test_filters_ranks_and_score_rendering(client, migrated_engine, monkeypatch)
     # X-03：完成阅读原地替换卡片（成功片段），不再整页刷新。
     assert completed.status_code == 200
     assert "HX-Refresh" not in completed.headers
-    assert "已归档这篇论文" in completed.text
+    # UXR-09：队列成功片段带上论文标题，取代无上下文的通用提示。
+    assert "已归档「one」" in completed.text
     # UXR-05：完成动作经 htmx 带外片段同步顶部未读统计（2 → 1）。
     assert 'queue-stats" hx-swap-oob="true"' in completed.text
     assert "未读 <strong>1</strong> 篇" in completed.text
@@ -252,6 +254,68 @@ def test_detail_archived_branch_also_shows_summary_slots(client, migrated_engine
     assert "已完成归档" in detail and "内容概括" in detail
     assert "<dt>研究问题</dt><dd>what</dd>" in detail
     assert "我的阅读反馈" in detail
+
+
+def test_action_context_keeps_detail_content_and_queue_card(client, migrated_engine):
+    """UXR-09：详情上下文完成后内容保留；队列上下文失败保留卡片标题与概括。"""
+    activate(client)
+    with session_scope(create_session_factory(migrated_engine)) as session:
+        seed(session, "one", r=95)
+        seed(session, "two", r=80)
+        refresh_queue(session, now=NOW)
+
+    def form(**extra):
+        data = {"request_id": f"act-{uuid4().hex[:8]}", "mode": "skim"}
+        data.update(extra)
+        return data
+
+    # 详情上下文完成阅读：内容仍在，反馈区切换为已保存记录与修订入口
+    detail_done = client.post(
+        "/ui/actions/one",
+        headers={**HEADERS, "HX-Request": "true"},
+        data=form(kind="done", context="detail", score="4", note="很有帮助"),
+    )
+    assert detail_done.status_code == 200
+    assert "已归档「one」" in detail_done.text
+    assert "内容概括" in detail_done.text and "我的阅读反馈" in detail_done.text
+    assert "很有帮助" in detail_done.text and "评分：4" in detail_done.text
+
+    # 队列上下文（无 context 字段）仍是小型成功片段，不带详情正文
+    queue_done = client.post(
+        "/ui/actions/two",
+        headers={**HEADERS, "HX-Request": "true"},
+        data=form(kind="done"),
+    )
+    assert queue_done.status_code == 200
+    assert "已归档「two」" in queue_done.text and "内容概括" not in queue_done.text
+
+    # 详情上下文失败（对已归档论文重复完成）：内容保留 + 错误就近
+    failed_detail = client.post(
+        "/ui/actions/one",
+        headers={**HEADERS, "HX-Request": "true"},
+        data=form(kind="done", context="detail"),
+    )
+    assert failed_detail.status_code == 409
+    assert 'role="alert"' in failed_detail.text
+    assert "内容概括" in failed_detail.text
+
+    # 队列上下文失败（对不存在的论文）：卡片片段带错误提示
+    failed_queue = client.post(
+        "/ui/actions/ghost",
+        headers={**HEADERS, "HX-Request": "true"},
+        data=form(kind="done"),
+    )
+    assert failed_queue.status_code == 404
+    assert 'role="alert"' in failed_queue.text and "paper-card" in failed_queue.text
+
+    # 详情上下文备注失败（未完成阅读不能修订备注）：已填备注保留
+    rejected_note = client.post(
+        "/ui/actions/two",
+        headers={**HEADERS, "HX-Request": "true"},
+        data=form(kind="note", context="detail", note="未保存的备注内容"),
+    )
+    assert rejected_note.status_code in {409, 422}
+    assert "未保存的备注内容" in rejected_note.text and 'role="alert"' in rejected_note.text
 
 
 def test_three_mining_runs_refresh_queue_and_zero_candidates_succeed(

@@ -105,7 +105,14 @@ def _day(session: SessionDep, explicit: date | None = None) -> date:
     return explicit or utc_now().astimezone(ZoneInfo(ctx["runtime"].value_json["timezone"])).date()
 
 
-def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = None) -> str:
+def _form(
+    paper_id: str,
+    kind: str,
+    *,
+    mode: str = "skim",
+    note: str | None = None,
+    context: str = "queue",
+) -> str:
     url = "/ui/actions/" + quote(paper_id, safe="")
     labels = {
         "done": "完成并归档",
@@ -146,6 +153,7 @@ def _form(paper_id: str, kind: str, *, mode: str = "skim", note: str | None = No
         'hx-swap="outerHTML" hx-headers=\'{"X-PaperSteward-UI":"1"}\''
         f"{confirm}>"
         f'<input type="hidden" name="kind" value="{kind}">'
+        f'<input type="hidden" name="context" value="{context}">'
         f'<input type="hidden" name="request_id" value="{uuid4().hex}">'
         f'{fields}<button type="submit">{labels[kind]}</button></form>'
     )
@@ -854,123 +862,142 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
             raise NotFoundError("文献不存在")
-        if paper.status is PaperStatus.ARCHIVED:
-            record = read_archive(session, paper_id)
-            from papersteward.api.score_render import score_explanation
+        return _page(paper.title, _detail_article(session, paper_id, paper=paper))
+    except (DomainError, AppError) as exc:
+        rendered = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
+        if isinstance(exc, NotFoundError):
+            rendered.status_code = 404
+        return rendered
 
-            summary_data = record.content.get("summary", {})
-            body = '<p class="success">已完成归档</p>'
-            body += _paper_links(session, paper_id)
-            body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
-            body += _summary_slots(summary_data)
-            body += _source_material(summary_data, paper)
-            rating_label = record.score if record.score is not None else "未评分"
-            body += (
-                f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · "
-                f"完成于 {record.archived_at.date()}</p>"
-            )
-            body += "<p>" + escape(record.note or "暂无备注") + "</p>"
-            body += _form(paper_id, "score") + _form(paper_id, "note", note=record.note)
-            if record.revision_history:
-                body += "<details><summary>反馈修订记录</summary><ul>"
-                for revision in record.revision_history:
-                    body += (
-                        "<li>"
-                        + escape(str(revision.get("created_at", "")))
-                        + " · "
-                        + escape(
-                            str(
-                                revision.get("score")
-                                if revision.get("score") is not None
-                                else "未评分"
-                            )
-                        )
-                        + " · "
-                        + escape(str(revision.get("note") or ""))
-                        + "</li>"
-                    )
-                body += "</ul></details>"
-            score_data = record.content.get("score")
-            if isinstance(score_data, dict):
-                # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
-                body += (
-                    '<details class="score-details">'
-                    "<summary>推荐依据（六维评分与相关性依据）</summary>"
-                    + score_explanation(ScoreExplanation.model_validate(score_data))
-                    + "</details>"
-                )
-            return _page(
-                str(record.content.get("metadata", {}).get("title", paper_id)),
-                "<article>" + body + "</article>",
-            )
-        shelf_item = shelf_item_for_paper(session, paper_id)
-        if shelf_item is not None:
-            summary = SummaryRepository(session).get(paper_id)
-            body = "<article><blockquote>"
-            body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
-            body += _shelf_inner(shelf_item)
-            if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
-                body += _form(paper_id, "done")
-            return _page(paper.title, body + "</article>")
-        if paper.status is PaperStatus.REJECTED:
-            summary = SummaryRepository(session).get(paper_id)
-            body = "<article>"
-            body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
-            body += _paper_links(session, paper_id)
-            body += (
-                '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
-                "恢复后会重新参与评分并排队。</p>"
-            )
-            body += _form(paper_id, "restore")
-            return _page(paper.title, body + "</article>")
-        _day(session)
+
+def _detail_article(
+    session: SessionDep,
+    paper_id: str,
+    *,
+    paper: Paper | None = None,
+    notice: str = "",
+    notice_role: str = "status",
+    note_draft: str | None = None,
+) -> str:
+    """详情页正文（UXR-09）：详情路由与详情上下文的动作响应共用同一渲染，
+    反馈完成后内容保留、仅反馈区切换；notice 插在正文最前（成功或错误提示）。"""
+    if paper is None:
+        paper = PaperRepository(session).get(paper_id)
+    if paper is None:
+        raise NotFoundError("文献不存在")
+    notice_html = (
+        f'<p role="{notice_role}" tabindex="-1" autofocus>{escape(notice)}</p>' if notice else ""
+    )
+    if paper.status is PaperStatus.ARCHIVED:
+        record = read_archive(session, paper_id)
         from papersteward.api.score_render import score_explanation
 
-        score = explain_score(session, paper_id, now=utc_now())
-        summary = SummaryRepository(session).get(paper_id)
-        taxonomy = TaxonomyRepository(session).latest_confirmed()
-        tag_code = score.primary_tag if isinstance(score, ScoreExplanation) else None
-        tag_label = (
-            next(
-                (tag.name for tag in taxonomy.tags if tag.code == tag_code),
-                tag_code,
-            )
-            if taxonomy and tag_code
-            else None
-        )
-        body = '<article><p class="detail-badges">'
-        if tag_label:
-            body += f'<span class="tag">{escape(str(tag_label))}</span> '
-        body += (
-            '<span class="tag status-tag">'
-            + escape(STATUS_LABELS.get(paper.status.value, paper.status.value))
-            + "</span></p>"
-        )
+        summary_data = record.content.get("summary", {})
+        body = notice_html + '<p class="success">已完成归档</p>'
         body += _paper_links(session, paper_id)
-        body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
-        body += _summary_slots(summary)
-        body += _source_material(summary, paper)
-        if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
+        body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
+        body += _summary_slots(summary_data)
+        body += _source_material(summary_data, paper)
+        rating_label = record.score if record.score is not None else "未评分"
+        body += (
+            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 完成于 {record.archived_at.date()}</p>"
+        )
+        saved_note = note_draft if note_draft is not None else record.note
+        body += "<p>" + escape(saved_note or "暂无备注") + "</p>"
+        body += _form(paper_id, "score", context="detail")
+        body += _form(paper_id, "note", note=saved_note, context="detail")
+        if record.revision_history:
+            body += "<details><summary>反馈修订记录</summary><ul>"
+            for revision in record.revision_history:
+                body += (
+                    "<li>"
+                    + escape(str(revision.get("created_at", "")))
+                    + " · "
+                    + escape(
+                        str(
+                            revision.get("score") if revision.get("score") is not None else "未评分"
+                        )
+                    )
+                    + " · "
+                    + escape(str(revision.get("note") or ""))
+                    + "</li>"
+                )
+            body += "</ul></details>"
+        score_data = record.content.get("score")
+        if isinstance(score_data, dict):
+            # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
             body += (
-                '<details class="record-reading"><summary>记录阅读（方式 / 评分 / 备注）</summary>'
-                + _form(paper_id, "done")
+                '<details class="score-details">'
+                "<summary>推荐依据（六维评分与相关性依据）</summary>"
+                + score_explanation(ScoreExplanation.model_validate(score_data))
                 + "</details>"
             )
-            body += (
-                "<details><summary>不感兴趣</summary>" + _form(paper_id, "reject") + "</details>"
-            )
-        # UXR-08：推荐依据默认折叠——先理解论文，再解释机器评分。
+        return "<article>" + body + "</article>"
+    shelf_item = shelf_item_for_paper(session, paper_id)
+    if shelf_item is not None:
+        summary = SummaryRepository(session).get(paper_id)
+        body = "<article>" + notice_html + "<blockquote>"
+        body += escape(summary.summary_100 if summary else "概括未就绪") + "</blockquote>"
+        body += _shelf_inner(shelf_item)
+        if paper.status in {PaperStatus.PUSHED, PaperStatus.READING}:
+            body += _form(paper_id, "done", context="detail")
+        return body + "</article>"
+    if paper.status is PaperStatus.REJECTED:
+        summary = SummaryRepository(session).get(paper_id)
+        body = "<article>" + notice_html
+        body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
+        body += _paper_links(session, paper_id)
         body += (
-            '<details class="score-details"><summary>推荐依据（六维评分与相关性依据）</summary>'
-            + score_explanation(score)
+            '<p class="notice">这篇论文已被标记为不感兴趣，不在队列中。'
+            "恢复后会重新参与评分并排队。</p>"
+        )
+        body += _form(paper_id, "restore", context="detail")
+        return body + "</article>"
+    _day(session)
+    from papersteward.api.score_render import score_explanation
+
+    score = explain_score(session, paper_id, now=utc_now())
+    summary = SummaryRepository(session).get(paper_id)
+    taxonomy = TaxonomyRepository(session).latest_confirmed()
+    tag_code = score.primary_tag if isinstance(score, ScoreExplanation) else None
+    tag_label = (
+        next(
+            (tag.name for tag in taxonomy.tags if tag.code == tag_code),
+            tag_code,
+        )
+        if taxonomy and tag_code
+        else None
+    )
+    body = "<article>" + notice_html + '<p class="detail-badges">'
+    if tag_label:
+        body += f'<span class="tag">{escape(str(tag_label))}</span> '
+    body += (
+        '<span class="tag status-tag">'
+        + escape(STATUS_LABELS.get(paper.status.value, paper.status.value))
+        + "</span></p>"
+    )
+    body += _paper_links(session, paper_id)
+    body += _model_summary_figure(summary.summary_100 if summary else "概括未就绪")
+    body += _summary_slots(summary)
+    body += _source_material(summary, paper)
+    if paper.status in {PaperStatus.QUEUED, PaperStatus.PUSHED, PaperStatus.READING}:
+        body += (
+            '<details class="record-reading"><summary>记录阅读（方式 / 评分 / 备注）</summary>'
+            + _form(paper_id, "done", context="detail")
             + "</details>"
         )
-        return _page(paper.title, body + "</article>")
-    except (DomainError, AppError) as exc:
-        page = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
-        if isinstance(exc, NotFoundError):
-            page.status_code = 404
-        return page
+        body += (
+            "<details><summary>不感兴趣</summary>"
+            + _form(paper_id, "reject", context="detail")
+            + "</details>"
+        )
+    # UXR-08：推荐依据默认折叠——先理解论文，再解释机器评分。
+    body += (
+        '<details class="score-details"><summary>推荐依据（六维评分与相关性依据）</summary>'
+        + score_explanation(score)
+        + "</details>"
+    )
+    return body + "</article>"
 
 
 @router.get("/archive")
@@ -1050,11 +1077,45 @@ def archive(
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>')
 
 
+def _failed_action_card(
+    session: SessionDep, paper_id: str, message: str, *, kind: str, note: str | None
+) -> str:
+    """队列上下文动作失败（UXR-09）：保留卡片标题与概括，可重试的表单带原输入。"""
+    paper = PaperRepository(session).get(paper_id)
+    summary = SummaryRepository(session).get(paper_id)
+    title = paper.title if paper else paper_id
+    body = '<article class="paper-card">'
+    body += f'<p role="alert" tabindex="-1" autofocus>{escape(message)}</p>'
+    body += (
+        f'<h2 class="card-title"><a href="/ui/papers/{quote(paper_id, safe="")}">'
+        f"{escape(title)}</a></h2>"
+    )
+    if summary is not None:
+        body += f'<blockquote class="card-summary">{escape(summary.summary_100)}</blockquote>'
+    if kind in {"score", "note"}:
+        body += _form(paper_id, kind, note=note)
+        body += '<p class="muted">操作未完成：可修正后重试，或返回队列。</p>'
+    else:
+        body += (
+            '<p class="muted">操作未完成：可返回队列重试，或'
+            f'<a href="/ui/papers/{quote(paper_id, safe="")}">查看详情</a>。</p>'
+        )
+    return body + "</article>"
+
+
 @router.post("/actions/{paper_id}")
 async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLResponse:
+    context: str = "queue"
+    kind = ""
+    note: str | None = None
     try:
         form = await form_fields(request)
+        if form.get("context") in {"queue", "detail"}:
+            context = form["context"]
+        kind = form.get("kind", "")
+        note = form.get("note") or None
         payload: dict[str, Any] = dict(form)
+        payload.pop("context", None)
         if "score" in payload:
             payload["score"] = int(payload["score"]) if payload["score"] else None
         if "note" in payload and not payload["note"]:
@@ -1062,14 +1123,22 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
         body = Action.model_validate(payload)
         with session.begin():
             apply_action(session, paper_id, body, now=utc_now())
+        paper = PaperRepository(session).get(paper_id)
+        title = escape(paper.title) if paper else escape(paper_id)
         messages = {
-            "done": "已归档这篇论文：阅读记录已保存，之后可在「归档」页找到它。",
-            "reject": "已标记不感兴趣，这篇论文不会再出现在队列里。",
+            "done": f"已归档「{title}」：阅读记录已保存，之后可在「归档」页找到它。",
+            "reject": f"已把「{title}」标记为不感兴趣，它不会再出现在队列里。",
             "restore": "已恢复推荐，下次「挖掘新论文」处理时会重新进入队列。",
-            "score": "已保存新评分，之前的评分保留在修订记录里。",
-            "note": "已保存新备注，之前的备注保留在修订记录里。",
+            "score": f"已保存「{title}」的新评分，之前的评分保留在修订记录里。",
+            "note": f"已保存「{title}」的新备注，之前的备注保留在修订记录里。",
         }
         headers = {**HEADERS}
+        if context == "detail":
+            # UXR-09：详情上下文——论文内容保留，反馈区切换为已保存记录与修订入口。
+            return HTMLResponse(
+                _detail_article(session, paper_id, paper=paper, notice=messages[body.kind]),
+                headers=headers,
+            )
         fragment: str
         if body.kind == "reject":
             # 不整页刷新：卡片原地替换为确认与「恢复推荐」入口，误点可一键撤销。
@@ -1094,7 +1163,29 @@ async def action(paper_id: str, request: Request, session: SessionDep) -> HTMLRe
             )
         return HTMLResponse(fragment, headers=headers)
     except (DomainError, AppError, ValidationError) as exc:
-        return _error(exc)
+        message = (
+            exc.message
+            if isinstance(exc, DomainError | AppError)
+            else "输入无效，请检查评分、方式或备注。"
+        )
+        status = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            if context == "detail":
+                # UXR-09：详情上下文失败——论文内容与已填备注保留，错误显示在正文最前。
+                article = _detail_article(
+                    session, paper_id, notice=message, notice_role="alert", note_draft=note
+                )
+                return HTMLResponse(article, status_code=status, headers=HEADERS)
+            card = _failed_action_card(session, paper_id, message, kind=kind, note=note)
+            return HTMLResponse(card, status_code=status, headers=HEADERS)
+        except (DomainError, AppError, NotFoundError):
+            return _error(exc)
     except (ValueError, UnicodeError):
         return HTMLResponse(
             '<article><p role="alert">评分须为整数，表单须为UTF-8。</p></article>',
