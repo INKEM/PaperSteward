@@ -465,7 +465,7 @@ def setup_script() -> FileResponse:
 
 @router.get("/static/style.css")
 def style() -> FileResponse:
-    # URL 已带应用版本号（V-11）：内容随版本变化，可放心长缓存。
+    # 页面外壳引用的 URL 已带内容哈希（V-11）：内容变化则 URL 变化，可放心长缓存。
     return FileResponse(
         STATIC / "style.css",
         media_type="text/css",
@@ -475,6 +475,7 @@ def style() -> FileResponse:
 
 @router.get("/static/favicon.svg")
 def favicon() -> FileResponse:
+    # 同样式：URL 由内容哈希区分（见 html._ASSET_VERSION）。
     return FileResponse(
         STATIC / "favicon.svg",
         media_type="image/svg+xml",

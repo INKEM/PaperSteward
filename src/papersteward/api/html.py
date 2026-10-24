@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from html import escape
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -17,12 +19,27 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
-from papersteward import __version__ as _app_version
 from papersteward.core.errors import DomainError, InvariantViolation
 from papersteward.errors import AppError
 
-# 资产版本号：随应用版本变化，配合长缓存策略让样式更新立即生效（V-11）。
-_ASSET_VERSION = _app_version
+_STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+
+
+def _asset_digest(paths: Sequence[Path]) -> str:
+    """静态资产的内容哈希（前 12 位）；内容不变则哈希不变，长缓存依然安全。"""
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+# 资产版本号：按内容哈希计算——更新样式/脚本/图标后 URL 随之变化，
+# 老浏览器立即拉取新文件；此前用应用版本号，同版本内更新样式后
+# 老客户端会沿用最长一天的旧缓存（V-11 的本意是更新立即生效）。
+_ASSET_VERSION = _asset_digest(
+    [_STATIC_DIR / name for name in ("style.css", "setup.js", "favicon.svg")]
+)
 
 HTML_HEADERS = {
     "Cache-Control": "no-store",
