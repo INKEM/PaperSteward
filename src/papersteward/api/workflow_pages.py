@@ -486,6 +486,7 @@ def dashboard(
     # 挖掘主按钮、折叠的采集参数、次级的刷新排序，一行排布。
     collect = (
         '<details class="collect-params"><summary>采集参数与检索说明</summary>'
+        '<div class="collect-panel">'
         '<label>来源<select name="source">'
         + "".join(
             f'<option value="{value}">{label}</option>'
@@ -502,7 +503,7 @@ def dashboard(
         'min="1" max="50"></label>'
         # UXR-06：检索说明属于采集参数的语境，随面板折叠，不再常驻顶部。
          + '<p class="muted">不填检索词时由 Agent 依据研究档案、已读历史和关注点生成检索式'
-        "（内容会发送给你配置的模型服务）。</p></details>"
+        "（内容会发送给你配置的模型服务）。</p></div></details>"
     )
     disabled_sync = " disabled" if busy or problem else ""
     toolbar = (

@@ -1242,8 +1242,10 @@ tr:last-child td {
   font-size: 15px;
 }
 
-/* 工具条位于标题行右侧（heading_actions），占满剩余宽度并右对齐 */
+/* 工具条位于标题行右侧（heading_actions），占满剩余宽度并右对齐。
+   position:relative 作为采集参数浮层的定位基准（展开不挤动按钮）。 */
 .queue-toolbar {
+  position: relative;
   flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
@@ -1277,6 +1279,12 @@ tr:last-child td {
 
 .collect-params {
   margin: 0;
+  /* 覆盖全局 form > details 的 flex-basis:100%/width:100%——flex 布局中
+     显式 basis 优先于 width，会把 details 撑满表单宽度挤动按钮（用户反馈）。
+     钉在摘要自身宽度后，浮层完全不参与布局。 */
+  flex-basis: auto;
+  width: max-content;
+  max-width: 100%;
 }
 
 .collect-params > summary {
@@ -1306,17 +1314,38 @@ tr:last-child td {
   display: contents;
 }
 
-.collect-params[open] {
-  flex-basis: 100%;
+/* 展开为下拉浮层：details 留在流内保住按钮宽度，面板浮于工具条下方
+   （用户反馈：按钮行完全不动）；点面板外由 setup.js 收起。 */
+.collect-params .collect-panel {
+  display: none;
 }
 
 .collect-params[open] summary {
   border-color: var(--accent);
 }
 
+.collect-params[open] .collect-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: min(520px, calc(100vw - 48px));
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-card);
+}
+
 .collect-params[open] label {
-  flex: 1 1 180px;
-  margin: 8px 0 0;
+  margin: 0;
+}
+
+.collect-params[open] p.muted {
+  margin: 0;
+  font-size: 13px;
 }
 
 .metrics {

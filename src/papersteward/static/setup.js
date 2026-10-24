@@ -23,6 +23,20 @@ function showNetworkAlert(message) {
   alert.focus();
 }
 
+// 采集参数浮层：点击面板外收起（summary 内的点击交给原生 toggle）。
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  for (const details of document.querySelectorAll(".collect-params[open]")) {
+    if (!details.contains(event.target)) details.removeAttribute("open");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const details of document.querySelectorAll(".collect-params[open]")) {
+    details.removeAttribute("open");
+  }
+});
+
 // 模型连接表单：不提交表单，用表单当前值即时测试连通性。
 document.addEventListener("click", async (event) => {
   const button = event.target;
