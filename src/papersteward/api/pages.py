@@ -425,7 +425,16 @@ def _view_table(preview: ViewPreview) -> str:
     from papersteward.api.score_render import COMPONENT_LABELS
 
     component_keys = ("R", "A", "E", "F", "H", "U")
-    headers = "".join(f'<th scope="col">{key}</th>' for key in component_keys)
+    # UXR-16：表头用短中文列名；窄屏 data-label 仍是完整中文字段名。
+    short_labels = {
+        "R": "相关性",
+        "A": "可信度",
+        "E": "复用",
+        "F": "新鲜度",
+        "H": "平衡",
+        "U": "偏好",
+    }
+    headers = "".join(f'<th scope="col">{short_labels[key]}</th>' for key in component_keys)
     rows = ""
     for item in preview.items:
         moved = (
@@ -458,34 +467,45 @@ def _view_table(preview: ViewPreview) -> str:
 
 def _view_links(preview: ViewPreview, saved: list[ViewConfig], day: date | None) -> str:
     date_part = f"&date={day.isoformat()}" if day is not None else ""
-    links = "<p>预设："
-    parts = [
-        f'<a href="/ui/views?preset={quote(preset.name)}{date_part}">{escape(preset.label)}</a>'
-        for preset in list_presets()
-    ]
-    links += " · ".join(parts) + "</p>"
-    links += "<p>已保存："
+    # UXR-16：预设以卡片呈现并附适用情境，当前选中项标注「当前」。
+    cards = '<ul class="preset-list">'
+    for preset in list_presets():
+        active = preview.view.label == preset.label
+        mark = ' <span class="tag">当前</span>' if active else ""
+        cards += (
+            f'<li><a class="preset-card{" active" if active else ""}" '
+            f'href="/ui/views?preset={quote(preset.name)}{date_part}">'
+            f"<strong>{escape(preset.label)}</strong>{mark}"
+            f'<span class="muted">{escape(preset.description)}</span></a></li>'
+        )
+    cards += "</ul>"
+    saved_html = "<p>已保存："
     if saved:
         parts = []
         for config in saved:
+            active = preview.view.label == config.name
+            mark = ' <span class="tag">当前</span>' if active else ""
             parts.append(
                 f'<a href="/ui/views?name={quote(config.name)}{date_part}">'
-                f"{escape(config.name)}</a>"
+                f"{escape(config.name)}</a>{mark}"
             )
-        links += " · ".join(parts)
+        saved_html += " · ".join(parts)
     else:
-        links += (
+        saved_html += (
             '<span class="muted">还没有保存的排序视图；可在命令行用 '
             "papersteward view save 保存自定义公式。</span>"
         )
-    links += "</p>"
+    saved_html += "</p>"
     formula_text = preview.view.as_json()["formula"]
-    links += (
-        f'<p class="muted">当前视图：{escape(preview.view.label)} · '
-        f"公式：{escape(formula_text)} · 候选 {preview.candidate_total} 篇 · "
-        f"{preview.changed} 篇名次变化。视图只重排当前队列，不改变全局权重与快照。</p>"
+    advanced = (
+        '<details class="formula-details"><summary>公式与高级信息</summary>'
+        f"<p>公式：<code>{escape(formula_text)}</code></p>"
+        f"<p>候选 {preview.candidate_total} 篇 · {preview.changed} 篇名次变化。</p></details>"
     )
-    return links
+    return (
+        cards + saved_html + f'<p class="muted">当前视图：{escape(preview.view.label)} · '
+        "视图只重排当前队列，不改变全局权重与快照。</p>" + advanced
+    )
 
 
 @router.get("/views")

@@ -261,8 +261,11 @@ def test_page_views_previews_and_shows_saved_views(client, migrated_engine, monk
     assert "P_view" in html
     assert "不改变全局权重与快照" in html
     assert html.index("Paper high-e") < html.index("Paper high-r")
+    # UXR-16：预设卡片带说明并标注当前项；公式收进高级信息折叠区。
+    assert "日常阅读" in html and 'class="preset-card active"' in html and "当前" in html
+    assert "公式与高级信息" in html
     # UXR-03：桌面表头与单元格有列头关系；窄屏卡片化的数字都带中文字段标签。
-    assert '<th scope="col">视图分</th>' in html and '<th scope="col">R</th>' in html
+    assert '<th scope="col">视图分</th>' in html and '<th scope="col">相关性</th>' in html
     assert 'data-label="名次"' in html and 'data-label="名次变化"' in html
     assert 'data-label="视图分"' in html and 'data-label="研究相关性"' in html
 

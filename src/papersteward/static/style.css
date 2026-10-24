@@ -772,6 +772,40 @@ tr:last-child td {
   color: var(--ink-muted);
 }
 
+/* ---------- 排序视图预设卡片（UXR-16） ---------- */
+
+.preset-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+}
+
+.preset-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  text-decoration: none;
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.preset-card:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.preset-card.active {
+  border-color: var(--accent);
+}
+
+.formula-details {
+  margin: 10px 0;
+}
+
 /* ---------- 详情页内容区块（UXR-08：先理解论文，再解释评分） ---------- */
 
 .back-link {
