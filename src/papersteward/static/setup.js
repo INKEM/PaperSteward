@@ -32,26 +32,42 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+// 文件导入（UXR-01）：导入目标、状态栏与 from_file 标记都限定在当前表单内查找，
+// data-import-target 的值是同表单内的字段名（如 content），不是全局元素 id。
 document.addEventListener("change", async (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || !input.dataset.importTarget) return;
-  const target = document.getElementById(input.dataset.importTarget);
-  const status = document.getElementById("import-status");
+  const form = input.closest("form");
+  const target = form ? form.elements.namedItem(input.dataset.importTarget) : null;
+  const status = form ? form.querySelector("[data-import-status]") : null;
   const file = input.files && input.files[0];
-  if (!file || !target) return;
-  if (file.size > 512 * 1024) { input.setCustomValidity("文件不能超过 512 KiB"); input.reportValidity(); return; }
+  // 失败路径统一清空文件选择：既保住已有正文，也允许原样重选同一个文件。
+  const fail = (message) => {
+    input.value = "";
+    if (status) status.textContent = message;
+  };
+  if (!(target instanceof HTMLTextAreaElement) || !file) return;
+  if (file.size > 512 * 1024) {
+    fail(`文件 ${file.name} 超过 512 KiB 上限，请拆分后再导入；已有正文未受影响。`);
+    return;
+  }
+  if (target.value && !window.confirm("正文已有内容，导入文件将替换现有正文。是否继续？")) {
+    fail("已取消导入，原有正文保留。");
+    return;
+  }
   try {
-    target.value = await file.text();
+    const text = await file.text();
+    target.value = text;
     if (input.dataset.fileMarker) {
-      const marker = document.querySelector(`input[name="${input.dataset.fileMarker}"]`);
+      const marker = form.querySelector(`input[name="${input.dataset.fileMarker}"]`);
       if (marker instanceof HTMLInputElement) marker.value = "1";
     }
-    input.setCustomValidity("");
-    if (status) status.textContent = `已读取 ${file.name}（${target.value.length} 字），检查内容后点「添加材料」。`;
-  }
-  catch (_) {
-    input.setCustomValidity("无法读取文件，请重新选择"); input.reportValidity();
-    if (status) status.textContent = "";
+    input.value = "";
+    if (status) {
+      status.textContent = `已读取 ${file.name}（${text.length} 字），尚未添加——检查内容后点「添加材料」。`;
+    }
+  } catch (_) {
+    fail(`无法读取文件 ${file.name}，请重新选择；已有正文未受影响。`);
   }
 });
 

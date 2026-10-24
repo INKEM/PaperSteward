@@ -79,6 +79,60 @@ def test_setup_starts_at_model_connection_and_renders_form(client):
     assert "校准" not in page.text and "试运行" not in page.text
 
 
+def test_material_import_form_targets_are_form_scoped(client):
+    """UXR-01：文件导入的目标/标记按「同表单字段名」解析，状态栏限定当前表单。
+
+    setup.js 在 input.closest("form") 内按字段名查找导入目标与 from_file 标记，
+    因此 data-import-target / data-file-marker 的值必须是同表单内真实存在的字段名，
+    且状态栏以 data-import-status 标记、每份表单恰好一个。
+    """
+    from html.parser import HTMLParser
+
+    page = client.get("/ui/setup")
+
+    class Forms(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parsed: list[dict] = []
+            self.current = None
+
+        def handle_starttag(self, tag, attrs):
+            items = dict(attrs)
+            if tag == "form":
+                self.current = {
+                    "action": items.get("action", ""),
+                    "names": set(),
+                    "import_target": None,
+                    "file_marker": None,
+                    "status_count": 0,
+                }
+                return
+            if self.current is None:
+                return
+            if items.get("name"):
+                self.current["names"].add(items["name"])
+            if "data-import-target" in items:
+                self.current["import_target"] = items["data-import-target"]
+            if "data-file-marker" in items:
+                self.current["file_marker"] = items["data-file-marker"]
+            if "data-import-status" in items:
+                self.current["status_count"] += 1
+
+        def handle_endtag(self, tag):
+            if tag == "form" and self.current is not None:
+                self.parsed.append(self.current)
+                self.current = None
+
+    scanner = Forms()
+    scanner.feed(page.text)
+    forms = [f for f in scanner.parsed if f["action"] == "/ui/setup/materials"]
+    assert len(forms) == 1, "添加材料表单应在首次设置页出现一次"
+    form = forms[0]
+    assert form["import_target"] in form["names"], "data-import-target 必须指向同表单内的字段名"
+    assert form["file_marker"] in form["names"], "data-file-marker 必须指向同表单内的字段名"
+    assert form["status_count"] == 1, "导入状态栏应存在且限定在当前表单内"
+
+
 def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine, monkeypatch):
     calls = extraction_provider(monkeypatch)
     assert (

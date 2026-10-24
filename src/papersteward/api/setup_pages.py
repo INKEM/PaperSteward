@@ -114,7 +114,7 @@ def _material_add_form(*, prefill_name: str = "", prefill_content: str = "") -> 
         + '<label class="check">从文件导入（.md/.txt，可重复添加）：'
         '<input type="file" accept=".md,.markdown,.txt" data-import-target="content" '
         'data-file-marker="from_file"></label>'
-        + '<span id="import-status" role="status" class="muted"></span>'
+        + '<span data-import-status role="status" class="muted"></span>'
         + f'<p class="muted">最多 {MAX_MATERIALS} 份；单份表单上限 512 KiB，'
         "超长材料会提示拆分。</p>" + "<button>添加材料</button></form>"
     )
