@@ -330,7 +330,10 @@ def _shelf_section(summary: ShelfSummary, page: ShelfPage, *, next_url: str | No
 
 
 def _view_table(preview: ViewPreview) -> str:
-    headers = "".join(f"<th>{key}</th>" for key in ("R", "A", "E", "F", "H", "U"))
+    from papersteward.api.score_render import COMPONENT_LABELS
+
+    component_keys = ("R", "A", "E", "F", "H", "U")
+    headers = "".join(f'<th scope="col">{key}</th>' for key in component_keys)
     rows = ""
     for item in preview.items:
         moved = (
@@ -338,19 +341,26 @@ def _view_table(preview: ViewPreview) -> str:
             if item.delta_rank == 0
             else (f"↑{item.delta_rank}" if item.delta_rank > 0 else f"↓{-item.delta_rank}")
         )
+        # UXR-03：窄屏表格卡片化只认 data-label；每个数字单元格都带中文字段名，
+        # 标题列自明不带标签，避免长标题前再垫一层前缀。
         cells = "".join(
-            f"<td>{item.components[key].score:.0f}</td>" for key in ("R", "A", "E", "F", "H", "U")
+            f'<td data-label="{COMPONENT_LABELS[key][0]}">{item.components[key].score:.0f}</td>'
+            for key in component_keys
         )
         rows += (
-            f"<tr><td>{item.rank}</td><td>{item.default_rank}</td><td>{moved}</td>"
+            f'<tr><td data-label="名次">{item.rank}</td>'
+            f'<td data-label="默认名次">{item.default_rank}</td>'
+            f'<td data-label="名次变化">{moved}</td>'
             f'<td><a href="/ui/papers/{quote(item.paper_id, safe="")}">'
-            f"{escape(item.title)}</a></td><td>{item.view_score:.1f}</td>{cells}</tr>"
+            f"{escape(item.title)}</a></td>"
+            f'<td data-label="视图分">{item.view_score:.1f}</td>{cells}</tr>'
         )
     if not rows:
         return '<p class="muted">当前队列为空；先挖掘论文或刷新排序。</p>'
     return (
-        "<table><thead><tr><th>#</th><th>默认</th><th>变化</th><th>标题</th>"
-        f"<th>视图分</th>{headers}</tr></thead><tbody>{rows}</tbody></table>"
+        '<table><thead><tr><th scope="col">#</th><th scope="col">默认</th>'
+        '<th scope="col">变化</th><th scope="col">标题</th><th scope="col">视图分</th>'
+        f"{headers}</tr></thead><tbody>{rows}</tbody></table>"
     )
 
 

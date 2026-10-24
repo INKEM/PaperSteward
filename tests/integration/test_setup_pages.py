@@ -133,6 +133,18 @@ def test_material_import_form_targets_are_form_scoped(client):
     assert form["status_count"] == 1, "导入状态栏应存在且限定在当前表单内"
 
 
+def test_profile_preview_subdirection_cells_carry_field_labels():
+    """UXR-03：研究档案子方向表在窄屏卡片化时每个字段都有可见中文名。"""
+    from papersteward.api.profile_view import profile_preview
+
+    review = {"id": "doc-1", "content_md": (FIXTURES / "profiles/basic.md").read_text()}
+    html = profile_preview(review)
+    assert '<th scope="col">子方向</th>' in html
+    assert 'data-label="优先级"' in html
+    assert 'data-label="目标占比"' in html
+    assert 'data-label="检索关键词"' in html
+
+
 def test_full_wizard_generate_feedback_confirm_and_today(client, migrated_engine, monkeypatch):
     calls = extraction_provider(monkeypatch)
     assert (

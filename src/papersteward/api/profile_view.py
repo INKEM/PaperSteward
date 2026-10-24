@@ -26,14 +26,16 @@ def profile_preview(review: dict[str, Any]) -> str:
         body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
     body += "<h3>核心问题</h3><ol>"
     body += "".join(f"<li>{escape(str(item['text']))}</li>" for item in data["core_questions"])
-    body += "</ol><h3>子方向</h3><table><thead><tr><th>子方向</th><th>优先级</th>"
-    body += "<th>目标占比</th><th>检索关键词</th></tr></thead><tbody>"
+    body += "</ol><h3>子方向</h3><table><thead><tr>"
+    # UXR-03：窄屏表格卡片化只认 data-label，每个非自明单元格都带中文字段名。
+    body += '<th scope="col">子方向</th><th scope="col">优先级</th>'
+    body += '<th scope="col">目标占比</th><th scope="col">检索关键词</th></tr></thead><tbody>'
     for item in data["subdirections"]:
         body += (
             f"<tr><td>{escape(str(item['name']))}</td>"
-            f"<td>{escape(str(item.get('priority', 'medium')))}</td>"
-            f"<td>{float(item['target_share']):.0%}</td>"
-            f"<td>{_tags(item.get('keywords', []))}</td></tr>"
+            f'<td data-label="优先级">{escape(str(item.get("priority", "medium")))}</td>'
+            f'<td data-label="目标占比">{float(item["target_share"]):.0%}</td>'
+            f'<td data-label="检索关键词">{_tags(item.get("keywords", []))}</td></tr>'
         )
     body += "</tbody></table>"
     for label, key in (("纳入标准", "include"), ("排除标准", "exclude")):
