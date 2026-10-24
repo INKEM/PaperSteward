@@ -123,7 +123,7 @@ def test_database_cache_hit_keeps_provenance_valid() -> None:
     factory = create_session_factory(engine)
     provider = FakeLLM([_payload()], model_id="fake-llm")
     gateway = LLMGateway(provider, cache=DatabaseLLMCache(factory), clock=lambda: NOW)
-    first = gateway.complete_json("relevance", VARIABLES)
+    gateway.complete_json("relevance", VARIABLES)
     assert provider.call_count == 1
     second = gateway.complete_json("relevance", VARIABLES)  # 命中数据库缓存
     assert provider.call_count == 1 and second.attempts == 0
