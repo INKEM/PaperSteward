@@ -152,6 +152,18 @@ class OpenAlexAdapter:
                 return None
         raise SourceError(self.source, "unsupported_query")
 
+    def get_by_doi(self, doi: str) -> PaperCandidate | None:
+        """按 DOI 精确直查（filter 形式，复用 _json 的 results 结构校验）。
+
+        未知 DOI 返回 None；响应畸形抛 SourceError。``doi`` 须为规范化的
+        裸 DOI（``normalize_doi`` 产物）。
+        """
+        data = self._json("/works", {"filter": f"doi:{doi}", "per_page": 1})
+        results = data["results"]
+        if not results:
+            return None
+        return parse_work(results[0], self.now())
+
     def search(self, query: QuerySpec) -> list[PaperCandidate]:
         operation = " OR " if query.operator == "any" else " AND "
         expression = "(" + operation.join(_literal(term) for term in query.keywords) + ")"

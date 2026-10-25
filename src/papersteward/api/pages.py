@@ -20,7 +20,7 @@ from papersteward.api.html import page as _page
 from papersteward.api.html import pagination as _pagination
 from papersteward.api.workflow_pages import dashboard, queue_stats_line
 from papersteward.core.entities import Enrichment, Paper, Summary, Taxonomy, ViewConfig, utc_now
-from papersteward.core.enums import PaperStatus, RunStatus
+from papersteward.core.enums import STATUS_LABELS, PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
@@ -336,23 +336,6 @@ def _card(
         )
     return body + "</article>"
 
-
-STATUS_LABELS = {
-    "discovered": "已发现",
-    "deduped": "已去重",
-    "screened": "已筛选",
-    "enriched": "已归纳",
-    "summarized": "已概括",
-    "classified": "已归类",
-    "scored": "已评分",
-    "queued": "队列中",
-    "reading": "阅读中",
-    "done": "已完成",
-    "archived": "已归档",
-    "rejected": "不感兴趣",
-    "shelved": "特殊桶",
-    "pushed": "已推送",
-}
 
 TIER_LABELS = {"high": "高", "medium": "中", "low": "低"}
 

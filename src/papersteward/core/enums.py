@@ -248,6 +248,27 @@ class RecalculationTrigger(StrEnum):
     METADATA_CORRECTED = "metadata_corrected"
 
 
+# 论文状态的中文展示名；UI 与用户可见文案共用，未知值回退原文。
+STATUS_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "discovered": "已发现",
+        "deduped": "已去重",
+        "screened": "已筛选",
+        "enriched": "已归纳",
+        "summarized": "已概括",
+        "classified": "已归类",
+        "scored": "已评分",
+        "queued": "队列中",
+        "reading": "阅读中",
+        "done": "已完成",
+        "archived": "已归档",
+        "rejected": "不感兴趣",
+        "shelved": "特殊桶",
+        "pushed": "已推送",
+    }
+)
+
+
 __all__ = [
     "AssignedBy",
     "BucketRole",
@@ -263,6 +284,7 @@ __all__ = [
     "ReviewStatus",
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
+    "STATUS_LABELS",
     "ScoreTier",
     "ScoringChangeStatus",
     "SpecialBucketKind",

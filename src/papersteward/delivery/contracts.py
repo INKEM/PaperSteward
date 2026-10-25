@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from papersteward.core.enums import ReadMode
 from papersteward.scoring.contracts import QueueItem
@@ -63,6 +63,24 @@ class Action(InputModel):
         if self.kind == "reject" and not self.note:
             raise ValueError("不相关操作须填写原因")
         return self
+
+
+class ImportReadPaperInput(InputModel):
+    """导入外部已读论文的请求；元数据为用户确认后的内容，服务端再规范化。"""
+
+    title: str = Field(min_length=1, max_length=512)
+    score: int = Field(ge=1, le=5, strict=True)
+    note: str | None = Field(default=None, max_length=10000)
+    authors: list[str] = Field(default_factory=list, max_length=100)
+    venue: str | None = Field(default=None, max_length=512)
+    published_at: AwareDatetime | None = None
+    url: str | None = Field(default=None, max_length=2048)
+    abstract: str | None = Field(default=None, max_length=20000)
+    doi: str | None = Field(default=None, max_length=256)
+    arxiv_id: str | None = Field(default=None, max_length=64)
+    identifier_input: str | None = Field(default=None, max_length=2048)
+    resolve: dict[str, Any] | None = None
+    primary_tag: str | None = Field(default=None, max_length=64)
 
 
 class ArchiveRecord(InputModel):

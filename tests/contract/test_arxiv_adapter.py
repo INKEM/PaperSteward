@@ -109,3 +109,25 @@ def test_multiple_pages_or_repeated_page_fails(repeat):
         assert http.request_count == 2
     finally:
         http.close()
+
+
+def test_get_by_id_returns_entry_and_none_on_empty_feed():
+    requests: list[dict[str, str]] = []
+    empty_feed = (
+        b'<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        requests.append(params)
+        return httpx.Response(200, content=BODY if len(requests) == 1 else empty_feed)
+
+    http = SourceHTTP("arxiv", transport=httpx.MockTransport(handle), sleep=lambda _: None)
+    try:
+        adapter = ArxivAdapter(http, now=lambda: NOW)
+        found = adapter.get_by_id("2610.00001")
+        assert found is not None and found.arxiv_id == "2610.00001v2"
+        assert requests[0]["id_list"] == "2610.00001"
+        assert adapter.get_by_id("2610.99999") is None
+    finally:
+        http.close()
