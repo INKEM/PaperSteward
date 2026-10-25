@@ -19,6 +19,7 @@ from papersteward.reading.insights.contracts import (
     InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
+    InsightsModel,
     PeriodKind,
     ReadTimeInput,
     ReadTimeView,
@@ -175,3 +176,88 @@ def _parse_date_param(name: str, value: str | None) -> date | None:
         raise InvalidRequestError(
             f"{name} 格式无效，请用 YYYY-MM-DD", details={"field": name}
         ) from None
+
+
+# —— 报告快照 JSON 接口 ————————————————————————————————————————
+
+from uuid import uuid4  # noqa: E402
+
+from fastapi import Request, Response  # noqa: E402
+from fastapi.responses import PlainTextResponse  # noqa: E402
+from pydantic import Field  # noqa: E402
+
+from papersteward.api.workspace_runtime import resolve_workspace  # noqa: E402
+from papersteward.jobs.ui_flow import FlowRequest, ReviewParams  # noqa: E402
+from papersteward.reading.insights.contracts import (  # noqa: E402
+    ReportDetail,
+)
+from papersteward.reading.insights.export import ReportExportFormat, export_report  # noqa: E402
+from papersteward.reading.insights.reports import (  # noqa: E402
+    delete_report,
+    list_reports,
+    read_report,
+)
+
+
+class ReportSubmitInput(InsightsModel):
+    """提交回顾报告任务；周期与模式校验由 ReviewParams 承担。"""
+
+    review: ReviewParams
+    run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def submit_review(request: Request, body: ReportSubmitInput) -> dict[str, str]:
+    """构建 ui.review 任务并提交到当前工作区的单 worker 队列。"""
+    run_id = body.run_id or uuid4().hex
+    spec = FlowRequest(run_id=run_id, kind="review", review=body.review)
+    resolve_workspace(request).ui_flows.submit(spec)
+    return {"run_id": run_id, "run_url": f"/ui/runs/{run_id}"}
+
+
+@router.post(
+    "/reports",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="提交阅读回顾报告任务",
+)
+def post_report(body: ReportSubmitInput, request: Request, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        return submit_review(request, body)
+
+
+@router.get("/reports", summary="报告列表")
+def get_reports(session: SessionDep, limit: int = 20, offset: int = 0) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        if not 1 <= limit <= 200 or offset < 0:
+            raise InvalidRequestError("分页参数非法", details={"field": "limit"})
+        return list_reports(session, limit=limit, offset=offset)
+
+
+@router.get("/reports/{report_id}", response_model=ReportDetail, summary="报告详情")
+def get_report_detail(report_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        return read_report(session, report_id)
+
+
+@router.get(
+    "/reports/{report_id}/export",
+    response_class=PlainTextResponse,
+    summary="从保存快照导出报告",
+)
+def get_report_export(
+    report_id: str, session: SessionDep, format: ReportExportFormat = "markdown"
+) -> Response:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        detail = read_report(session, report_id)
+        return PlainTextResponse(export_report(detail, format))
+
+
+@router.delete("/reports/{report_id}", summary="删除报告快照")
+def delete_report_route(report_id: str, session: SessionDep) -> Any:
+    with domain_errors(), session.begin():
+        ensure_active(session, action="reading_insights.report")
+        delete_report(session, report_id)
+        return {"deleted": True}

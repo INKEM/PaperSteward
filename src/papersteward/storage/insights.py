@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from papersteward.core.entities import ReadingTimeRevision
 from papersteward.storage.mappers import (
     reading_time_revision_from_row,
     reading_time_revision_to_row,
 )
-from papersteward.storage.models import ReadingTimeRevisionRow
+from papersteward.storage.models import ReadingReportRow, ReadingTimeRevisionRow
 from papersteward.storage.repositories import _Repository
 
 
@@ -55,4 +55,45 @@ class ReadingTimeRevisionRepository(_Repository):
         return None if row is None else reading_time_revision_from_row(row)
 
 
-__all__ = ["ReadingTimeRevisionRepository"]
+class ReadingReportRepository(_Repository):
+    """已保存的报告快照；行即存储形态，正文契约解析在服务层完成。"""
+
+    def add(self, row: ReadingReportRow) -> ReadingReportRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, report_id: str) -> ReadingReportRow | None:
+        return self._session.get(ReadingReportRow, report_id)
+
+    def get_by_run(self, run_id: str) -> ReadingReportRow | None:
+        return self._session.scalars(
+            select(ReadingReportRow).where(ReadingReportRow.run_id == run_id)
+        ).first()
+
+    def get_by_fingerprint(self, fingerprint: str) -> ReadingReportRow | None:
+        return self._session.scalars(
+            select(ReadingReportRow).where(ReadingReportRow.input_fingerprint == fingerprint)
+        ).first()
+
+    def list(self, *, limit: int, offset: int) -> tuple[list[ReadingReportRow], int]:
+        """按生成时间倒序分页；返回 (行, 总数)。"""
+        total = self._session.scalar(select(func.count()).select_from(ReadingReportRow)) or 0
+        rows = self._session.scalars(
+            select(ReadingReportRow)
+            .order_by(ReadingReportRow.generated_at.desc(), ReadingReportRow.id)
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return list(rows), int(total)
+
+    def delete(self, report_id: str) -> bool:
+        row = self._session.get(ReadingReportRow, report_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
+
+
+__all__ = ["ReadingReportRepository", "ReadingTimeRevisionRepository"]

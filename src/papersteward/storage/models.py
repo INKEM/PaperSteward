@@ -683,6 +683,42 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class ReadingReportRow(Base):
+    """已保存的阅读回顾报告快照；正文冻结，读取时校验哈希。
+
+    运行 ID 与输入指纹均唯一：前者保证同 run 重试不重复建报告，
+    后者让相同规范化请求与数据去重到既有快照（保留其原截止时间）。
+    """
+
+    __tablename__ = "reading_report"
+    __table_args__ = (
+        CheckConstraint(
+            "report_kind IN ('week', 'month', 'all', 'custom')", name="report_kind_allowed"
+        ),
+        CheckConstraint(
+            "review_mode IN ('as_recorded', 'revised_now')", name="review_mode_allowed"
+        ),
+        Index("uq_reading_report_run", "run_id", unique=True),
+        Index("uq_reading_report_fingerprint", "input_fingerprint", unique=True),
+        Index("ix_reading_report_generated", "generated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    period_label: Mapped[str] = mapped_column(String(32), nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    knowledge_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    contract: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class ReadingTimeRevisionRow(Base):
     """阅读时间声明版本；只追加，不改归档快照/评分/事件。
 

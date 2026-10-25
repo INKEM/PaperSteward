@@ -398,3 +398,79 @@ def test_minimal_overview_json_is_frozen():
         "changes": [],
         "unassigned": [],
     }
+
+
+# —— 报告任务契约：ReviewParams/FlowRequest 严格性 ———————————————————
+
+
+def test_review_params_period_coherence():
+    from papersteward.jobs.ui_flow import ReviewParams
+
+    good = ReviewParams.model_validate({"period": "week", "anchor_date": "2026-10-22"})
+    assert good.mode == "as_recorded"
+    for payload in [
+        {"period": "week"},
+        {"period": "week", "anchor_date": "2026-10-22", "start_date": "2026-10-19"},
+        {"period": "custom", "start_date": "2026-03-05"},
+        {"period": "custom", "start_date": "2026-03-05", "end_date": "2026-03-01"},
+        {"period": "all", "anchor_date": "2026-10-22"},
+        {"period": "bogus"},
+    ]:
+        with pytest.raises(ValidationError):
+            ReviewParams.model_validate(payload)
+    with pytest.raises(ValidationError):
+        ReviewParams.model_validate({"period": "week", "anchor_date": "2026-10-22", "x": 1})
+
+
+def test_flow_request_review_kind_coherence():
+    from papersteward.jobs.ui_flow import FlowRequest
+
+    ok = FlowRequest.model_validate(
+        {
+            "run_id": "run-1",
+            "kind": "review",
+            "review": {"period": "month", "anchor_date": "2026-10-15"},
+        }
+    )
+    assert ok.review is not None and ok.review.period == "month"
+    for payload in [
+        {"run_id": "run-1", "kind": "review"},
+        {
+            "run_id": "run-1",
+            "kind": "review",
+            "review": {"period": "all"},
+            "focus": "周期不能塞进关注点",
+        },
+        {
+            "run_id": "run-1",
+            "kind": "review",
+            "review": {"period": "all"},
+            "target": 3,
+        },
+        {"run_id": "run-1", "kind": "sync", "review": {"period": "all"}},
+        {
+            "run_id": "run-1",
+            "kind": "review",
+            "review": {"period": "all"},
+            "surprise": 1,
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            FlowRequest.model_validate(payload)
+
+
+def test_report_content_models_reject_extra_fields():
+    from papersteward.reading.insights.contracts import (
+        InsightReportContent,
+        ReportFeedbackVersion,
+    )
+
+    with pytest.raises(ValidationError):
+        ReportFeedbackVersion(recorded_at=datetime(2026, 1, 1, tzinfo=UTC), has_note=True, note="x")
+    payload = {
+        "contract": "reading-insights.report/1",
+        "metrics": build_overview(_minimal_projection()).metrics.model_dump(),
+    }
+    InsightReportContent.model_validate(payload)
+    with pytest.raises(ValidationError):
+        InsightReportContent.model_validate({**payload, "surprise": 1})

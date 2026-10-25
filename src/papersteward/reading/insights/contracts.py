@@ -287,3 +287,79 @@ class InsightOverview(InsightsModel):
     backfills: list[PaperProjection] = Field(default_factory=list)
     changes: list[FeedbackChange] = Field(default_factory=list)
     unassigned: list[PaperProjection] = Field(default_factory=list)
+
+
+# —— 报告快照契约：冻结正文剥离私人备注原文 ————————————————————————
+
+REPORT_CONTRACT = "reading-insights.report/1"
+
+
+class ReportFeedbackVersion(InsightsModel):
+    """报告内的反馈版本：只保存评分事实与备注有无，不保存备注原文。"""
+
+    recorded_at: AwareDatetime
+    score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    has_note: bool
+    is_initial: bool = False
+
+
+class ReportChange(InsightsModel):
+    """报告内的变化事件：评分保留前后值；备注只留变更标记。"""
+
+    kind: Literal["score", "note"]
+    paper_id: str
+    recorded_at: AwareDatetime
+    old_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    new_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+
+
+class ReportPaper(InsightsModel):
+    """报告内单篇归档的冻结事实；feedback 为去隐私版本。"""
+
+    paper_id: str
+    archived_at: AwareDatetime
+    source: ReadingSourceKind
+    content_available: bool
+    reading: ReadingTime
+    membership: PeriodMembership
+    recorded_in_period: bool
+    title: str | None = None
+    reading_mode: str | None = None
+    published_on: date | None = None
+    primary_tag: str | None = None
+    secondary_tags: list[str] = Field(default_factory=list)
+    taxonomy_version: str | None = None
+    feedback: list[ReportFeedbackVersion] = Field(default_factory=list)
+
+
+class InsightReportContent(InsightsModel):
+    """报告快照的冻结正文；读取时的唯一内容来源。"""
+
+    contract: Literal["reading-insights.report/1"]
+    metrics: InsightMetrics
+    readings: list[ReportPaper] = Field(default_factory=list)
+    backfills: list[ReportPaper] = Field(default_factory=list)
+    changes: list[ReportChange] = Field(default_factory=list)
+    unassigned: list[ReportPaper] = Field(default_factory=list)
+
+
+class ReportSummary(InsightsModel):
+    """报告列表条目与详情的元信息。"""
+
+    report_id: str
+    report_kind: str
+    period_label: str
+    period_start: date | None = None
+    period_end: date | None = None
+    timezone: str
+    mode: ReviewMode
+    knowledge_cutoff: AwareDatetime
+    generated_at: AwareDatetime
+    contract: str
+    run_id: str
+
+
+class ReportDetail(ReportSummary):
+    """报告详情：元信息 + 冻结正文。"""
+
+    content: InsightReportContent

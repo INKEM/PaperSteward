@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from papersteward.api.deps import SessionDep
+from papersteward.api.form_utils import failure, hidden, json_details
 from papersteward.api.form_utils import fields as form_fields
 from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import page as _page
@@ -23,16 +24,17 @@ from papersteward.api.html import select_options
 from papersteward.core.entities import utc_now
 from papersteward.core.enums import ReadingTimeBasis, TimePrecision
 from papersteward.core.errors import DomainError
-from papersteward.errors import AppError
+from papersteward.errors import AppError, InvalidRequestError
 from papersteward.reading.insights.contracts import (
     CountEntry,
     InsightMetrics,
     InsightOverview,
-    PaperProjection,
     ReadingTime,
     ReadTimeInput,
     ReadTimeRevision,
     ReadTimeView,
+    ReportChange,
+    ReportDetail,
     ReviewMode,
 )
 from papersteward.reading.insights.timeline import record_reading_time
@@ -301,6 +303,7 @@ def _overview_body(
             offset=offset,
             page_params=page_params,
         )
+    body += _report_section(session, filter_params)
     if metrics.all_history_total == 0:
         prefix = "当前筛选范围内没有归档记录。" if filter_params.get("tag") else ""
         body += (
@@ -309,6 +312,44 @@ def _overview_body(
             '<p><a class="button secondary" href="/ui/archive">返回归档</a></p></article>'
         )
     return body
+
+
+def _report_section(session: SessionDep, filter_params: dict[str, str]) -> str:
+    """概览页的报告入口：按当前筛选生成报告 + 最近保存的报告。"""
+    from papersteward.reading.insights.reports import list_reports
+
+    kind = filter_params.get("kind", "week")
+    form_values = {
+        "kind": kind,
+        "anchor_date": filter_params.get("anchor_date", ""),
+        "start_date": filter_params.get("start_date", ""),
+        "end_date": filter_params.get("end_date", ""),
+        "mode": filter_params.get("mode", "as_recorded"),
+    }
+    form = (
+        '<form method="post" action="/ui/reading-insights/reports" class="stacked-form">'
+        + hidden("run_id", uuid4().hex)
+        + hidden("period", kind)
+        + hidden("anchor_date", form_values["anchor_date"])
+        + hidden("start_date", form_values["start_date"])
+        + hidden("end_date", form_values["end_date"])
+        + hidden("mode", form_values["mode"])
+        + "<button>把当前筛选保存为回顾报告</button></form>"
+        '<p class="muted">报告冻结当前事实：之后修改评分或日期不会改动已保存的报告。</p>'
+    )
+    listing = list_reports(session, limit=5, offset=0)
+    items = listing["items"]
+    recent = ""
+    if items:
+        recent = "<h3>最近保存的报告</h3><ul>"
+        for item in items:
+            recent += (
+                f'<li><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
+                f"{escape(item.period_label)}</a> · {_MODE_LABELS.get(item.mode, item.mode.value)}"
+                f" · {escape(item.generated_at.isoformat())}</li>"
+            )
+        recent += '</ul><p><a href="/ui/reading-insights/reports">全部报告</a></p>'
+    return f"<h2>保存为报告</h2>{form}{recent}"
 
 
 def _filter_form(session: SessionDep, current: dict[str, str]) -> str:
@@ -497,7 +538,7 @@ def _section_block(
     return body
 
 
-def _papers_table(papers: list[PaperProjection], tz: ZoneInfo) -> str:
+def _papers_table(papers: list[Any], tz: ZoneInfo) -> str:
     body = (
         '<table><thead><tr><th scope="col">文献</th><th scope="col">来源</th>'
         '<th scope="col">阅读时间</th><th scope="col">归档日</th>'
@@ -543,3 +584,281 @@ def _changes_table(changes: list[Any]) -> str:
             "</tr>"
         )
     return body + "</tbody></table>"
+
+
+# —— 报告页面：列表 / 冻结详情 / 版本比较 / 删除 ——————————————————————
+
+
+@router.post("/reports")
+async def submit_report_page(request: Request) -> Response:
+    """提交 ui.review 任务并跳运行进度页；冲突时引导到占用中的任务。"""
+    from papersteward.api.form_utils import conflict_redirect
+    from papersteward.api.insights import ReportSubmitInput, submit_review
+    from papersteward.core.errors import DomainError
+    from papersteward.errors import AppError
+
+    try:
+        form = await form_fields(request)
+        body = ReportSubmitInput.model_validate(
+            {
+                "review": {
+                    "period": form.get("period", ""),
+                    "mode": form.get("mode", "as_recorded"),
+                    "anchor_date": form.get("anchor_date") or None,
+                    "start_date": form.get("start_date") or None,
+                    "end_date": form.get("end_date") or None,
+                },
+                "run_id": form.get("run_id") or None,
+            }
+        )
+        outcome = submit_review(request, body)
+        return RedirectResponse(outcome["run_url"], status_code=303)
+    except ValidationError as exc:
+        return failure(
+            InvalidRequestError(f"报告参数无效：{json_details(exc)}"),
+            back="/ui/reading-insights",
+        )
+    except (DomainError, AppError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        return failure(exc, back="/ui/reading-insights")
+
+
+@router.get("/reports")
+def reports_page(session: SessionDep, offset: int = 0) -> Response:
+    from papersteward.reading.insights.reports import list_reports
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        listing = list_reports(session, limit=_PAGE_SIZE, offset=max(0, offset))
+    except (DomainError, AppError) as exc:
+        return _page("已保存的阅读回顾", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+    items = listing["items"]
+    total = int(listing["total"])
+    body = f"<h2>已保存的阅读回顾（{total}）</h2>"
+    if not items:
+        body += (
+            '<article class="empty"><h2>还没有保存过报告</h2>'
+            "<p>从「归档 → 阅读回顾」选择周期后，可以把当前事实保存为报告。</p>"
+            '<p><a class="button secondary" href="/ui/reading-insights">'
+            "打开阅读回顾</a></p></article>"
+        )
+        return _page("已保存的阅读回顾", body, nav="归档")
+    body += (
+        '<table><thead><tr><th scope="col">周期</th><th scope="col">模式</th>'
+        '<th scope="col">知识截止</th><th scope="col">生成时间</th>'
+        '<th scope="col">操作</th></tr></thead><tbody>'
+    )
+    for item in items:
+        mode_label = _MODE_LABELS.get(item.mode, item.mode.value)
+        body += (
+            "<tr>"
+            f'<th scope="row"><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
+            f"{escape(item.period_label)}</a></th>"
+            f'<td data-label="模式">{escape(mode_label)}</td>'
+            f'<td data-label="知识截止">{escape(item.knowledge_cutoff.isoformat())}</td>'
+            f'<td data-label="生成时间">{escape(item.generated_at.isoformat())}</td>'
+            '<td data-label="操作">'
+            f'<a href="/ui/reading-insights/reports/{escape(item.report_id)}?format=markdown">'
+            "Markdown</a> · "
+            f'<a href="/ui/reading-insights/reports/{escape(item.report_id)}?format=json">JSON</a>'
+            "</td></tr>"
+        )
+    body += "</tbody></table>"
+    if total > _PAGE_SIZE:
+        body += _pagination(
+            "/ui/reading-insights/reports", {}, offset=offset, total=total, page_size=_PAGE_SIZE
+        )
+    return _page("已保存的阅读回顾", body, nav="归档")
+
+
+@router.get("/reports/{report_id}")
+def report_detail_page(
+    session: SessionDep, report_id: str, compare: str = "", format: str = ""
+) -> Response:
+    from papersteward.reading.insights.export import export_report
+    from papersteward.reading.insights.reports import read_report
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        detail = read_report(session, report_id)
+    except (DomainError, AppError) as exc:
+        rendered = _page("阅读回顾报告", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+        rendered.status_code = exc.status_code if isinstance(exc, AppError) else 404
+        return rendered
+    if format in {"markdown", "json"}:
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(export_report(detail, format))  # type: ignore[arg-type]
+    body = _report_detail_body(session, detail)
+    if compare and compare != report_id:
+        try:
+            other = read_report(session, compare)
+        except (DomainError, AppError):
+            other = None
+        if other is not None:
+            body += _compare_html(detail, other)
+    return _page(f"阅读回顾报告 · {escape(detail.period_label)}", body, nav="归档")
+
+
+@router.post("/reports/{report_id}/delete")
+async def delete_report_page(request: Request, report_id: str, session: SessionDep) -> Response:
+    """删除报告快照；需输入确认短语「删除报告」。归档与评分不受影响。"""
+    from papersteward.reading.insights.reports import delete_report
+
+    try:
+        form = await form_fields(request)
+        if form.get("confirmation") != "删除报告":
+            raise InvalidRequestError("请输入「删除报告」以确认删除")
+        with session.begin():
+            delete_report(session, report_id)
+    except (DomainError, AppError) as exc:
+        return failure(exc, back=f"/ui/reading-insights/reports/{report_id}")
+    return RedirectResponse("/ui/reading-insights/reports", status_code=303)
+
+
+def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
+    """报告详情：全部内容来自保存快照，不重算。"""
+    from papersteward.reading.insights.reports import list_series_reports
+
+    metrics = detail.content.metrics
+    tz = ZoneInfo(detail.timezone)
+    mode_label = _MODE_LABELS.get(detail.mode, detail.mode.value)
+    body = (
+        '<p class="notice">这是已保存的报告快照：内容不会随后续评分或日期修改变化。</p>'
+        '<p class="muted">'
+        f"模式 {escape(mode_label)} · 时区 {escape(detail.timezone)} · "
+        f"知识截止 {escape(detail.knowledge_cutoff.isoformat())} · "
+        f"生成时间 {escape(detail.generated_at.isoformat())} · "
+        f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a></p>'
+    )
+    body += (
+        "<p>导出："
+        f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}'
+        '?format=markdown">Markdown</a> · '
+        f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}?format=json">JSON</a>　'
+        '<a href="/ui/reading-insights/reports">全部报告</a></p>'
+    )
+    body += "<h2>指标</h2>" + _metrics_table(metrics)
+    body += "<h2>分布</h2>" + _distributions_html(metrics)
+    body += f"<h2>阅读明细（{len(detail.content.readings)}）</h2>"
+    body += (
+        _papers_table(list(detail.content.readings), tz)
+        if detail.content.readings
+        else '<p class="muted">无</p>'
+    )
+    body += f"<h2>补录明细（{len(detail.content.backfills)}）</h2>"
+    body += (
+        _papers_table(list(detail.content.backfills), tz)
+        if detail.content.backfills
+        else '<p class="muted">无</p>'
+    )
+    body += f"<h2>反馈修订（{len(detail.content.changes)}）</h2>"
+    body += _report_changes_table(list(detail.content.changes))
+    body += f"<h2>未定阅读日期（{len(detail.content.unassigned)}）</h2>"
+    body += (
+        _papers_table(list(detail.content.unassigned), tz)
+        if detail.content.unassigned
+        else '<p class="muted">无</p>'
+    )
+    body += '<p class="muted">查看依据：明细中的文献可点回原归档页核对；报告不含备注原文。</p>'
+    series = [
+        item for item in list_series_reports(session, detail) if item.report_id != detail.report_id
+    ]
+    if series:
+        body += "<h2>同系列版本</h2><ul>"
+        for item in series:
+            body += (
+                f'<li><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
+                f"{escape(item.period_label)}</a> · {escape(item.generated_at.isoformat())} · "
+                f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}'
+                f'?compare={escape(item.report_id)}">比较事实差异</a></li>'
+            )
+        body += "</ul>"
+    body += (
+        "<details><summary>删除此报告</summary>"
+        "<p>只删除这份报告快照；归档、评分与阅读时间声明不受影响，已读数不变。</p>"
+        '<form method="post" action="/ui/reading-insights/reports/'
+        + escape(detail.report_id)
+        + '/delete" class="stacked-form">'
+        '<label>输入「删除报告」确认<input name="confirmation" autocomplete="off"></label>'
+        "<button>删除报告</button></form></details>"
+    )
+    return body
+
+
+def _report_changes_table(changes: list[ReportChange]) -> str:
+    if not changes:
+        return '<p class="muted">无</p>'
+    body = (
+        '<table><thead><tr><th scope="col">时间</th><th scope="col">类型</th>'
+        '<th scope="col">变化</th><th scope="col">文献</th></tr></thead><tbody>'
+    )
+    for change in changes:
+        if change.kind == "score":
+            old = "未评分" if change.old_score is None else str(change.old_score)
+            new = "未评分" if change.new_score is None else str(change.new_score)
+            text = f"评分 {escape(old)} → {escape(new)}"
+        else:
+            text = "备注变更"
+        body += (
+            "<tr>"
+            f'<th scope="row">{escape(change.recorded_at.isoformat())}</th>'
+            f'<td data-label="类型">{"评分" if change.kind == "score" else "备注"}</td>'
+            f'<td data-label="变化">{text}</td>'
+            '<td data-label="文献"><a href="/ui/papers/'
+            f'{escape(change.paper_id)}">{escape(change.paper_id)}</a></td>'
+            "</tr>"
+        )
+    return body + "</tbody></table>"
+
+
+_REPORT_COMPARE_ROWS = (
+    ("本期阅读（独立文献）", "readings_total"),
+    ("系统来源阅读", "readings_system"),
+    ("导入来源阅读", "readings_imported"),
+    ("本期系统内完成数", "system_completions"),
+    ("本期补录", "backfills_total"),
+    ("阅读时间未知", "unassigned_total"),
+    ("月精度未计入", "partial_month_total"),
+    ("全部历史（当前范围）", "all_history_total"),
+)
+
+
+def _compare_html(base: ReportDetail, other: ReportDetail) -> str:
+    """同系列两个版本的事实差异：只比较数值口径，并排 + 差值。"""
+    older, newer = sorted((base, other), key=lambda item: item.generated_at)
+    a, b = older.content.metrics, newer.content.metrics
+    body = "<h2>事实差异（按生成时间：旧 → 新）</h2>"
+    body += (
+        f'<p class="muted">旧：{escape(older.generated_at.isoformat())} · '
+        f"新：{escape(newer.generated_at.isoformat())}"
+        f'（<a href="/ui/reading-insights/reports/{escape(newer.report_id)}">打开新报告</a>）</p>'
+    )
+    body += (
+        '<table><thead><tr><th scope="col">指标</th>'
+        '<th scope="col">旧</th><th scope="col">新</th>'
+        '<th scope="col">差值</th></tr></thead><tbody>'
+    )
+    for label, field in _REPORT_COMPARE_ROWS:
+        old_value = getattr(a, field)
+        new_value = getattr(b, field)
+        delta = new_value - old_value
+        delta_text = f"+{delta}" if delta > 0 else str(delta)
+        body += (
+            "<tr>"
+            f'<th scope="row">{escape(label)}</th>'
+            f"<td>{old_value}</td><td>{new_value}</td>"
+            f'<td data-label="差值">{delta_text}</td>'
+            "</tr>"
+        )
+    body += (
+        '<tr><th scope="row">已评分覆盖</th>'
+        f"<td>{a.coverage.scored}/{a.coverage.total}</td>"
+        f"<td>{b.coverage.scored}/{b.coverage.total}</td><td>—</td></tr>"
+    )
+    body += "</tbody></table>"
+    return body
