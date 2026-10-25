@@ -792,8 +792,9 @@ class ArchiveSnapshotRow(Base):
         String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
     )
     archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    primary_tag: Mapped[str] = mapped_column(String(64), nullable=False)
-    filing_bucket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 导入归档允许无主标签/归属桶（用户未选标签时），列可空；既有 done 归档仍必有值。
+    primary_tag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filing_bucket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_version: Mapped[str] = mapped_column(String(32), nullable=False)

@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 import pytest
 
 from papersteward.core.entities import (
+    ArchiveImportInput,
     ArchiveSnapshot,
     Bucket,
     Config,
@@ -501,3 +502,27 @@ def test_archive_datetime_score_date_is_normalized_to_date() -> None:
         **_archive_values(), score_date=datetime(2026, 10, 21, 7, 0, tzinfo=UTC)
     )
     assert archive.score_date == date(2026, 10, 21)
+
+
+def test_archive_snapshot_allows_missing_tag_and_bucket() -> None:
+    archive = ArchiveSnapshot(
+        **{**_archive_values(), "primary_tag": None, "filing_bucket_id": None}
+    )
+
+    assert archive.primary_tag is None
+    assert archive.filing_bucket_id is None
+
+
+def test_archive_snapshot_tag_must_be_text_or_null() -> None:
+    with pytest.raises(DomainValidationError, match="archive.primary_tag"):
+        ArchiveSnapshot(**{**_archive_values(), "primary_tag": 1})
+
+
+def test_archive_import_input_normalizes_and_requires_types() -> None:
+    import_input = ArchiveImportInput(identifier_input=" ", primary_tag=" T01 ")
+
+    assert import_input.identifier_input is None
+    assert import_input.primary_tag == "T01"
+
+    with pytest.raises(DomainValidationError, match="archive_import.resolve"):
+        ArchiveImportInput(resolve="10.5555/not-an-object")

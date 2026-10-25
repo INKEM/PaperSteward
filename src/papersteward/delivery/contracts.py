@@ -68,9 +68,10 @@ class Action(InputModel):
 class ArchiveRecord(InputModel):
     paper_id: str
     archived_at: datetime
-    primary_tag: str
+    # 导入归档可能无主标签/归属桶；既有 done 归档仍必有值。
+    primary_tag: str | None
     secondary_tags: list[str]
-    filing_bucket_id: str
+    filing_bucket_id: str | None
     content_hash: str
     content: dict[str, Any]
     initial_score: int | None

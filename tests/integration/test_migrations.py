@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from papersteward.storage import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+NOW_MIGRATIONS = datetime(2026, 10, 21, 8, tzinfo=UTC)
 DOMAIN_TABLES = {
     "archive_snapshot",
     "bucket",
@@ -208,7 +210,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "score_date",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0019"
+        assert current == "0020"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -230,6 +232,43 @@ def test_upgrade_is_idempotent_and_can_repeat_after_downgrade(sqlite_engine: Eng
 
     with sqlite_engine.connect() as connection:
         assert "paper" in set(inspect(connection).get_table_names())
+
+
+def test_downgrade_0020_guarded_by_null_import_snapshots(sqlite_engine: Engine) -> None:
+    _upgrade(sqlite_engine)
+    # 直接写行绕过领域仓储（仓储自带激活门）；此处只验证迁移守卫本身。
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO paper (id, title, status, authors_json, first_seen_at, oa_status) "
+                "VALUES ('p-imp', '导入论文', 'done', '[]', "
+                "'2026-10-21 08:00:00.000000', 'unknown')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-imp', '2026-10-21 08:00:00.000000', NULL, NULL, "
+                "'1.0', '1.0', '1.0.0', :content_hash, '{}', '[]')"
+            ),
+            {"content_hash": "a" * 64},
+        )
+
+    with pytest.raises(RuntimeError, match="无法回退迁移 0020"):
+        _downgrade(sqlite_engine, "0019")
+
+    with sqlite_engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+        assert current == "0020"
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM archive_snapshot"))
+        connection.execute(text("DELETE FROM paper"))
+
+    _downgrade(sqlite_engine, "0019")
+    _upgrade(sqlite_engine)
 
 
 def test_migration_matches_models(sqlite_engine: Engine) -> None:

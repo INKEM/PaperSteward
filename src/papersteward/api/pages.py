@@ -1162,9 +1162,15 @@ def archive(
             mode_label = {"deep": "精读", "skim": "粗读"}.get(str(reading.get("actual_mode")))
             machine_score = (record.content.get("score") or {}).get("scores", {}).get("P")
             # UXR-18：标签用名称；个人评分与机器推荐参考分明确区分。
-            tag_name = tag_names.get(record.primary_tag, record.primary_tag)
+            # 导入归档可能无主标签，此时不渲染标签项。
+            tag_name = (
+                tag_names.get(record.primary_tag, record.primary_tag)
+                if record.primary_tag
+                else None
+            )
             personal = f"我的评分 {record.score}/5" if record.score is not None else "未评分"
-            meta = [escape(str(tag_name)), personal]
+            meta = [] if tag_name is None else [escape(str(tag_name))]
+            meta.append(personal)
             if mode_label:
                 meta.append(mode_label)
             meta.append(f"完成于 {record.archived_at.date()}")

@@ -10,11 +10,12 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from papersteward.core.entities import ArchiveSnapshot, Event
-from papersteward.core.enums import BucketRole, EventType, PaperStatus, TagRole
+from papersteward.core.entities import ArchiveImportInput, ArchiveSnapshot, Event, PaperTag
+from papersteward.core.enums import AssignedBy, BucketRole, EventType, PaperStatus, TagRole
 from papersteward.core.errors import InvariantViolation
 from papersteward.delivery.contracts import ArchiveRecord
 from papersteward.errors import NotFoundError
+from papersteward.pipeline.context import bound_context
 from papersteward.scoring.contracts import ScoreExplanation
 from papersteward.scoring.queue import explain_score
 from papersteward.storage.delivery import content_hash, read_digest
@@ -145,6 +146,89 @@ def archive_done(session: Session, paper_id: str, *, now: datetime) -> None:
         event_id=uuid4().hex,
         occurred_at=now,
         payload={"content_hash": content_hash(content)},
+    )
+
+
+def archive_imported(
+    session: Session, paper_id: str, *, now: datetime, import_input: ArchiveImportInput
+) -> None:
+    """导入外部已读论文的归档；与 ``archive_done`` 并列，不放宽其任何不变量。
+
+    前置：论文已存在且为 DONE、评分已先写入且必含 1–5 分、标题非空、无既有快照。
+    三个版本列取自 ``bound_context``（与 ScoreExplanation.binding 同源）；
+    未选主标签时不写标签行，快照 primary_tag 为空。
+    """
+    paper = PaperRepository(session).get(paper_id)
+    if paper is None or paper.status is not PaperStatus.DONE:
+        raise InvariantViolation("archive.status", "导入归档仅接受已读完的论文")
+    if ArchiveSnapshotRepository(session).get(paper_id) is not None:
+        raise InvariantViolation("archive", "归档已存在且不可覆盖")
+    if not paper.title.strip():
+        raise InvariantViolation("archive.title", "导入论文标题不能为空")
+    ratings = RatingRepository(session).list_for_paper(paper_id)
+    if not ratings or ratings[0].score is None:
+        raise InvariantViolation("archive.rating", "导入必须附 1–5 的阅读评分")
+    rating = ratings[0]
+    _, binding = bound_context(session, now, action="archive")
+    tags = PaperTagRepository(session).list_for_paper(paper_id)
+    if import_input.primary_tag is not None:
+        PaperTagRepository(session).add(
+            PaperTag(
+                paper_id,
+                import_input.primary_tag,
+                TagRole.PRIMARY,
+                binding["taxonomy_version"],
+                assigned_by=AssignedBy.USER,
+            )
+        )
+        tags = PaperTagRepository(session).list_for_paper(paper_id)
+    content: dict[str, Any] = jsonable_encoder(
+        {
+            "origin": "import",
+            "identifier_input": import_input.identifier_input,
+            "resolve": dict(import_input.resolve) if import_input.resolve else None,
+            "metadata": {
+                "paper_id": paper_id,
+                "title": paper.title,
+                "authors": list(paper.authors),
+                "venue": paper.venue,
+                "published_at": paper.published_at,
+                "abstract": paper.abstract,
+                "doi": paper.doi,
+                "arxiv_id": paper.arxiv_id,
+                "url": paper.url,
+                "pdf_url": paper.pdf_url,
+            },
+            "tags": [asdict(t) for t in tags],
+            "initial_feedback": {"score": rating.score, "note": rating.note},
+        }
+    )
+    ArchiveSnapshotRepository(session).add(
+        ArchiveSnapshot(
+            paper_id=paper_id,
+            archived_at=now,
+            primary_tag=import_input.primary_tag,
+            secondary_tags=(),
+            filing_bucket_id=None,
+            profile_version=binding["profile_version"],
+            taxonomy_version=binding["taxonomy_version"],
+            config_version=binding["scoring_version"],
+            content_hash=content_hash(content),
+            content_json=content,
+            rating=rating.score,
+            note=rating.note,
+        )
+    )
+    PaperRepository(session).transition(
+        paper_id,
+        PaperStatus.ARCHIVED,
+        event_id=uuid4().hex,
+        occurred_at=now,
+        payload={"content_hash": content_hash(content), "origin": "import"},
+    )
+    # 补发完成事件供标签补给饥饿度计入；归档事件由上面的迁移自动发出。
+    EventRepository(session).append(
+        Event(uuid4().hex, EventType.PAPER_DONE, now, paper_id, {"origin": "import"})
     )
 
 

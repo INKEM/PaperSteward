@@ -90,7 +90,8 @@ def export_archives(records: Sequence[ArchiveRecord], format: ExportFormat) -> s
     parts = []
     for r in records:
         m = r.content.get("metadata", {})
-        tags = [r.primary_tag, *r.secondary_tags]
+        # 导入归档可能无主标签；bibtex/markdown 的标签列表只在有值时输出。
+        tags = [t for t in (r.primary_tag, *r.secondary_tags) if t is not None]
         initial_score = r.initial_score if r.initial_score is not None else "未评分"
         score = r.score if r.score is not None else "未评分"
         if format == "bibtex":

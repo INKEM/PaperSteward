@@ -1220,8 +1220,9 @@ class ArchiveSnapshot:
 
     paper_id: str
     archived_at: datetime
-    primary_tag: str
-    filing_bucket_id: str
+    # 导入归档允许无主标签/归属桶；既有 done 归档仍必有值。
+    primary_tag: str | None
+    filing_bucket_id: str | None
     profile_version: str
     taxonomy_version: str
     config_version: str
@@ -1244,12 +1245,12 @@ class ArchiveSnapshot:
             _require_aware(self.archived_at, "archive.archived_at"),
         )
         object.__setattr__(
-            self, "primary_tag", _require_text(self.primary_tag, "archive.primary_tag")
+            self, "primary_tag", _optional_text(self.primary_tag, "archive.primary_tag")
         )
         object.__setattr__(
             self,
             "filing_bucket_id",
-            _require_text(self.filing_bucket_id, "archive.filing_bucket_id"),
+            _optional_text(self.filing_bucket_id, "archive.filing_bucket_id"),
         )
         object.__setattr__(
             self,
@@ -1278,7 +1279,31 @@ class ArchiveSnapshot:
             object.__setattr__(self, "priority", _require_score(self.priority, "archive.priority"))
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveImportInput:
+    """导入已读论文的归档输入；纯手填时 identifier_input 与 resolve 为空。"""
+
+    identifier_input: str | None = None
+    resolve: Mapping[str, Any] | None = None
+    primary_tag: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "identifier_input",
+            _optional_text(self.identifier_input, "archive_import.identifier_input"),
+        )
+        if self.resolve is not None:
+            object.__setattr__(
+                self, "resolve", _require_mapping(self.resolve, "archive_import.resolve")
+            )
+        object.__setattr__(
+            self, "primary_tag", _optional_text(self.primary_tag, "archive_import.primary_tag")
+        )
+
+
 __all__ = [
+    "ArchiveImportInput",
     "ArchiveSnapshot",
     "Bucket",
     "Config",
