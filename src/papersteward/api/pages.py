@@ -897,7 +897,7 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
 
 
 @router.get("/papers/{paper_id}")
-def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
+def detail(paper_id: str, session: SessionDep, imported: str = "") -> HTMLResponse:
     try:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
@@ -909,7 +909,12 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             nav_key = "探索收藏"
         else:
             nav_key = "阅读队列"
-        return _page(paper.title, _detail_article(session, paper_id, paper=paper), nav=nav_key)
+        notice = "已导入这篇已读论文并完成归档；评分与备注可在下方修订。" if imported else ""
+        return _page(
+            paper.title,
+            _detail_article(session, paper_id, paper=paper, notice=notice),
+            nav=nav_key,
+        )
     except (DomainError, AppError) as exc:
         rendered = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
         if isinstance(exc, NotFoundError):
@@ -940,10 +945,14 @@ def _detail_article(
         from papersteward.api.score_render import score_explanation
 
         summary_data = record.content.get("summary", {})
+        # 导入归档带「导入」徽标；判定来自 content_json.origin（§3.7）。
+        origin_badge = (
+            ' <span class="tag">导入</span>' if record.content.get("origin") == "import" else ""
+        )
         body = (
             notice_html
             + '<p class="back-link"><a href="/ui/archive">← 返回归档</a></p>'
-            + '<p class="success">已完成归档</p>'
+            + f'<p class="success">已完成归档{origin_badge}</p>'
         )
         body += _paper_links(session, paper_id)
         body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
@@ -1136,7 +1145,7 @@ def archive(
             else:
                 body += (
                     '<p class="muted">归档还没有内容。在队列中读完论文并点「完成并归档」后，'
-                    "会出现在这里。</p>"
+                    '会出现在这里；系统外已读的论文也可以<a href="/ui/import">直接导入</a>。</p>'
                 )
         for record in page["items"]:
             metadata = record.content.get("metadata", {})
@@ -1159,6 +1168,8 @@ def archive(
             meta.append(f"完成于 {record.archived_at.date()}")
             if machine_score is not None:
                 meta.append(f"推荐参考分 {float(machine_score):.1f}")
+            if record.content.get("origin") == "import":
+                meta.insert(0, '<span class="tag">导入</span>')
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
             body += f"{escape(title)}</a></h2><p>{' · '.join(meta)}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
@@ -1168,7 +1179,12 @@ def archive(
             if value not in (None, "")
         }
         body += _pagination("/ui/archive", page_params, offset=offset, total=total, page_size=50)
-        return _page(f"阅读归档 · {total} 篇", body, nav="归档")
+        return _page(
+            f"阅读归档 · {total} 篇",
+            body,
+            nav="归档",
+            heading_actions='<a class="button secondary" href="/ui/import">导入已读论文</a>',
+        )
     except (DomainError, AppError) as exc:
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
 

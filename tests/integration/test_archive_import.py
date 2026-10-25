@@ -183,3 +183,6 @@ def test_list_archives_handles_imported_without_tag(
         # 无主标签/无归属桶的导入论文不误命中标签与桶筛选。
         assert list_archives(session, tag="T01")["total"] == 0
         assert list_archives(session, bucket="b-missing")["total"] == 0
+        # 评分筛选可命中导入论文（IMP-06）。
+        assert list_archives(session, min_score=4)["total"] == 1
+        assert list_archives(session, min_score=5)["total"] == 0

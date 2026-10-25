@@ -41,6 +41,50 @@ def test_archive_export_golden(format):
         assert export_archives([record()], format) == stream.read()
 
 
+def imported_record():
+    """导入论文的归档记录：无主标签/归属桶，content 为 import 变体。"""
+    return ArchiveRecord(
+        paper_id="imp1",
+        archived_at=datetime(2026, 10, 24, tzinfo=UTC),
+        primary_tag=None,
+        secondary_tags=[],
+        filing_bucket_id=None,
+        content_hash="0" * 64,
+        content={
+            "origin": "import",
+            "identifier_input": "10.0000/imported",
+            "resolve": None,
+            "metadata": {
+                "paper_id": "imp1",
+                "title": "Imported {Paper}: 系统外已读",
+                "authors": ["C Author"],
+                "venue": None,
+                "published_at": "2025-06-01",
+                "abstract": None,
+                "doi": "10.0000/imported",
+                "arxiv_id": None,
+                "url": "https://example.org/imported",
+                "pdf_url": None,
+            },
+            "tags": [],
+            "initial_feedback": {"score": 3, "note": "读过了"},
+        },
+        content_available=True,
+        initial_score=3,
+        initial_note="读过了",
+        score=4,
+        note="修订后的备注",
+        revision_history=[{"score": 3, "note": "读过了"}, {"score": 4, "note": "修订后的备注"}],
+    )
+
+
+@pytest.mark.parametrize("format", ["bibtex", "csv", "markdown", "json"])
+def test_archive_export_imported_golden(format):
+    """IMP-06：四格式导出含导入论文，字段完整不炸（空标签/空桶如实为空）。"""
+    with Path(f"tests/fixtures/archive/imported.{format}").open(newline="") as stream:
+        assert export_archives([imported_record()], format) == stream.read()
+
+
 def test_csv_formula_and_bibtex_markdown_escaping():
     r = record()
     r.content["metadata"]["title"] = "=cmd()"

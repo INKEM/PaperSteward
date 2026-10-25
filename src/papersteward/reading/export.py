@@ -124,7 +124,8 @@ def export_archives(records: Sequence[ArchiveRecord], format: ExportFormat) -> s
             lines = [
                 f"## {markdown(m.get('title', '历史元数据不可用'))}",
                 "",
-                f"标签：{markdown(' / '.join(tags))}",
+                # 导入归档可能无任何标签；空标签如实显示「—」，不输出空行文案。
+                f"标签：{markdown(' / '.join(tags) or '—')}",
                 f"评分：{score}；初始评分：{initial_score}",
                 f"备注：{markdown(r.note or '')}",
                 f"初始备注：{markdown(r.initial_note or '')}",

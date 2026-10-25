@@ -57,6 +57,16 @@
 | `_shelf_section()` / `_shelf_inner()` | `api/pages.py` | 探索收藏：说明段、提示性周上限文案、空收藏引导、档位与证据 |
 | `_view_table()` | `api/pages.py` | 排序表：短中文表头 + 单元格 `data-label`（窄屏卡片化字段名） |
 
+## 导入已读论文
+
+| 组件 | 生成位置 | 用途 |
+|---|---|---|
+| 归档页头部入口「导入已读论文」 | `pages.archive()`（`heading_actions=`） | 低频动作不进主导航；归档空态文案带同一入口链接 |
+| `/ui/import` 两步表单 | `api/import_pages.py` | 第一步标识可选（留空直接手填）→ 第二步确认元数据+评分（`.stacked-form`）；解析失败/未命中降级手填并给 `.notice` 说明；解析溯源经 `hidden()` 字段带入确认步；校验错误 X-01 原地重渲染（400） |
+| `<span class="tag">导入</span>` 徽标 | `pages.archive()` 列表 / `_detail_article()` 详情 | 判定 `content_json.origin == "import"`；导入论文无主标签时不渲染标签项 |
+| 导入冲突页 `_conflict_page()` | `api/import_pages.py` | 重复导入 409：守卫文案 + 「打开论文详情页」链接 + 返回导入/归档 |
+| 导入成功通知 | `pages.detail(imported=1)` | 303 到详情页带 `?imported=1`，`_detail_article` 顶部渲染成功提示 |
+
 ## 保留的全局基础层（有意为之）
 
 `article`/`form`/`table`/`details` 的基础样式仍是全局规则——它们是「基线层」，让未
