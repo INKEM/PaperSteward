@@ -25,6 +25,7 @@ from papersteward.pipeline.dedupe import (
     normalized_text,
 )
 from papersteward.reading.archive import archive_imported
+from papersteward.reading.insights.timeline import record_reading_time
 from papersteward.sources.arxiv import ArxivAdapter
 from papersteward.sources.contracts import PaperCandidate, SourceProvenance
 from papersteward.sources.http import SourceHTTP
@@ -158,8 +159,8 @@ def import_read_paper(session: Session, request: ImportReadPaperInput, *, now: d
     """导入一篇系统外已读完的论文并归档；返回新论文 ID。
 
     单事务（atomic）：守卫 → 建档(DONE) → 来源行(manual_import) → 首条评分
-    → ``archive_imported``（快照 + ARCHIVED 迁移 + 补发 PAPER_DONE）。
-    中途任何失败整体回滚，不留残留行。
+    → ``archive_imported``（快照 + ARCHIVED 迁移 + 补发 PAPER_DONE）
+    → 可选阅读时间声明。中途任何失败整体回滚，不留残留行。
     """
     with atomic(session):
         doi_key = normalize_doi(request.doi)
@@ -209,6 +210,15 @@ def import_read_paper(session: Session, request: ImportReadPaperInput, *, now: d
                 primary_tag=request.primary_tag,
             ),
         )
+        if request.read_time is not None:
+            # 与导入同一事务：日期非法时整包回滚，不留半份导入。
+            record_reading_time(
+                session,
+                paper_id,
+                request.read_time,
+                now=now,
+                expected_revision=None,
+            )
         return paper_id
 
 

@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, load_only
 
+from papersteward.core.entities import ReadingTimeRevision
 from papersteward.core.enums import EventType
 from papersteward.core.errors import InvariantViolation
 from papersteward.reading.archive import verified_archive_content
@@ -34,6 +35,7 @@ from papersteward.reading.insights.periods import (
     recorded_in_period,
     resolve_period,
 )
+from papersteward.storage.insights import ReadingTimeRevisionRepository
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import ArchiveSnapshotRow, EventRow, RatingRow
 
@@ -105,7 +107,7 @@ def _project_batch(
     period: ResolvedPeriod,
     cutoff: datetime,
 ) -> list[PaperProjection]:
-    """每批恰好 3 条 IN 查询：快照已由调用方取出，这里补评分与归档事件。"""
+    """每批恰好 4 条 IN 查询：快照已由调用方取出，这里补评分、归档事件与日期声明。"""
     ids = [row.paper_id for row in rows]
     ratings_by_paper: dict[str, list[RatingRow]] = {}
     for rating in session.scalars(
@@ -133,6 +135,12 @@ def _project_batch(
             and payload.get("origin") == "import"
         ):
             import_evidence.add(paper_id)
+    # 日期声明先受知识截止限制；每篇取截止前最大版本。
+    declarations: dict[str, ReadingTimeRevision] = {}
+    for paper_id, items in ReadingTimeRevisionRepository(session).list_for_papers(ids).items():
+        visible = [item for item in items if as_utc(item.recorded_at) <= cutoff]
+        if visible:
+            declarations[paper_id] = visible[-1]
 
     projections = []
     for row in rows:
@@ -142,17 +150,26 @@ def _project_batch(
         metadata = _dict_field(content, "metadata")
         completed_at = _parse_utc(reading_content.get("completed_at"))
         source = _source_kind(row.paper_id, content, available, completed_at, import_evidence)
-        reading = (
-            ReadingTime(
-                precision=TimePrecision.DAY,
-                basis=ReadingTimeBasis.SYSTEM_RECORDED,
-                day=local_date(completed_at, period.timezone),
-                recorded_at_utc=completed_at,
+        declared = declarations.get(row.paper_id)
+        if declared is not None:
+            reading = ReadingTime(
+                precision=declared.precision,
+                basis=declared.basis,
+                day=declared.day,
+                month=declared.month,
+                recorded_at_utc=as_utc(declared.recorded_at),
             )
-            if source is ReadingSourceKind.SYSTEM and completed_at is not None
-            else _UNKNOWN_READING
-        )
-        metadata = _dict_field(content, "metadata")
+        else:
+            reading = (
+                ReadingTime(
+                    precision=TimePrecision.DAY,
+                    basis=ReadingTimeBasis.SYSTEM_RECORDED,
+                    day=local_date(completed_at, period.timezone),
+                    recorded_at_utc=completed_at,
+                )
+                if source is ReadingSourceKind.SYSTEM and completed_at is not None
+                else _UNKNOWN_READING
+            )
         versions = _feedback_versions(row, ratings_by_paper.get(row.paper_id, []), archived_at)
         projections.append(
             PaperProjection(

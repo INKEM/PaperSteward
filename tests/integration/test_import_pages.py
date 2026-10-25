@@ -209,3 +209,89 @@ def test_confirm_year_validation(client, migrated_engine):
     )
     assert page.status_code == 400
     assert "1500–2100" in page.text
+
+
+def test_confirm_with_read_time_day_creates_revision(client, migrated_engine):
+    activate(client)
+    _post(client, "/ui/import/resolve", {"identifier": ""})
+    confirm = client.post(
+        "/ui/import/confirm",
+        data={
+            "title": "带阅读日的导入",
+            "score": "4",
+            "read_time_precision": "day",
+            "read_time_day": "2026-09-30",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert confirm.status_code == 303
+    paper_id = confirm.headers["location"].split("/papers/")[1].split("?")[0]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        from papersteward.reading.insights.timeline import read_time_view
+
+        view = read_time_view(session, paper_id)
+        assert view.current_revision == 1
+        assert str(view.effective.day) == "2026-09-30"
+
+
+def test_confirm_with_read_time_month_keeps_precision(client, migrated_engine):
+    activate(client)
+    _post(client, "/ui/import/resolve", {"identifier": ""})
+    confirm = client.post(
+        "/ui/import/confirm",
+        data={
+            "title": "带阅读月的导入",
+            "score": "3",
+            "read_time_precision": "month",
+            "read_time_month": "2026-08",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert confirm.status_code == 303
+    paper_id = confirm.headers["location"].split("/papers/")[1].split("?")[0]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        from papersteward.reading.insights.timeline import read_time_view
+
+        assert read_time_view(session, paper_id).effective.month == "2026-08"
+
+
+def test_confirm_read_time_error_preserves_fields(client, migrated_engine):
+    activate(client)
+    _post(client, "/ui/import/resolve", {"identifier": ""})
+    page = _post(
+        client,
+        "/ui/import/confirm",
+        {
+            "title": "日期错的导入",
+            "score": "3",
+            "read_time_precision": "day",
+            "read_time_day": "2026-13-99",
+        },
+    )
+    assert page.status_code == 400
+    assert "阅读日期格式无效" in page.text
+    # 错误回显保留已填字段。
+    assert 'name="title" value="日期错的导入"' in page.text
+    assert 'value="day" selected' in page.text
+
+
+def test_confirm_without_read_time_has_no_revision(client, migrated_engine):
+    activate(client)
+    _post(client, "/ui/import/resolve", {"identifier": ""})
+    confirm = client.post(
+        "/ui/import/confirm",
+        data={"title": "无日期表单导入", "score": "4"},
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert confirm.status_code == 303
+    paper_id = confirm.headers["location"].split("/papers/")[1].split("?")[0]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        from papersteward.reading.insights.timeline import read_time_view
+
+        assert read_time_view(session, paper_id).current_revision == 0

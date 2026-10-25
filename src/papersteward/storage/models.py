@@ -683,6 +683,42 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class ReadingTimeRevisionRow(Base):
+    """阅读时间声明版本；只追加，不改归档快照/评分/事件。
+
+    精度三值互斥由 CHECK 下沉到数据库；``(paper_id, revision)`` 主键提供
+    乐观并发的最终兜底，幂等键唯一索引支撑重复请求重放。
+    """
+
+    __tablename__ = "reading_time_revision"
+    __table_args__ = (
+        CheckConstraint("precision IN ('day', 'month', 'unknown')", name="precision_allowed"),
+        CheckConstraint(
+            "(precision = 'day' AND declared_date IS NOT NULL AND declared_month IS NULL)"
+            " OR (precision = 'month' AND declared_date IS NULL AND declared_month IS NOT NULL)"
+            " OR (precision = 'unknown' AND declared_date IS NULL AND declared_month IS NULL)",
+            name="precision_value_coherent",
+        ),
+        CheckConstraint(
+            "basis IN ('system_recorded', 'declared', 'unknown')", name="basis_allowed"
+        ),
+        Index("uq_reading_time_idempotency", "idempotency_key", unique=True),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    precision: Mapped[str] = mapped_column(String(8), nullable=False)
+    declared_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    declared_month: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    basis: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class LLMCacheRow(Base):
     """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
 

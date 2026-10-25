@@ -131,6 +131,22 @@ class ReadMode(StrEnum):
     SKIM = "skim"
 
 
+class TimePrecision(StrEnum):
+    """阅读时间精度；月精度不得对外伪装成精确日。"""
+
+    DAY = "day"
+    MONTH = "month"
+    UNKNOWN = "unknown"
+
+
+class ReadingTimeBasis(StrEnum):
+    """阅读时间的依据：系统记录、用户声明或来源未明。"""
+
+    SYSTEM_RECORDED = "system_recorded"
+    DECLARED = "declared"
+    UNKNOWN = "unknown"
+
+
 class RelevanceBand(StrEnum):
     """P4 相关度 R 的入队区间；不直接改变文献状态。"""
 

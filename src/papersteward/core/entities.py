@@ -27,6 +27,7 @@ from papersteward.core.enums import (
     EventType,
     OaStatus,
     PaperStatus,
+    ReadingTimeBasis,
     ReadMode,
     ReviewResolution,
     ReviewStatus,
@@ -38,6 +39,7 @@ from papersteward.core.enums import (
     SummaryValidationStatus,
     TagLevel,
     TagRole,
+    TimePrecision,
 )
 from papersteward.core.errors import DomainValidationError
 
@@ -1011,6 +1013,62 @@ class Rating:
             "created_at",
             _require_aware(self.created_at, "rating.created_at"),
         )
+
+
+_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingTimeRevision:
+    """阅读时间声明的一个版本；只追加，不修改归档/评分/事件。"""
+
+    paper_id: str
+    revision: int
+    recorded_at: datetime
+    precision: TimePrecision
+    basis: ReadingTimeBasis
+    idempotency_key: str
+    day: date | None = None
+    month: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "reading_time.paper_id"))
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 1
+        ):
+            raise DomainValidationError("reading_time.revision", "必须是正整数")
+        object.__setattr__(
+            self,
+            "recorded_at",
+            _require_aware(self.recorded_at, "reading_time.recorded_at"),
+        )
+        if not isinstance(self.precision, TimePrecision):
+            raise DomainValidationError("reading_time.precision", "必须是 TimePrecision")
+        if not isinstance(self.basis, ReadingTimeBasis):
+            raise DomainValidationError("reading_time.basis", "必须是 ReadingTimeBasis")
+        object.__setattr__(
+            self,
+            "idempotency_key",
+            _require_text(self.idempotency_key, "reading_time.idempotency_key"),
+        )
+        if self.day is not None and not isinstance(self.day, date):
+            raise DomainValidationError("reading_time.day", "必须是 date 或 null")
+        if self.month is not None and not _MONTH_PATTERN.fullmatch(self.month):
+            raise DomainValidationError("reading_time.month", "必须是 YYYY-MM 或 null")
+        if self.precision is TimePrecision.DAY:
+            if self.day is None or self.month is not None:
+                raise DomainValidationError(
+                    "reading_time.precision", "日精度必须提供 day 且不得提供 month"
+                )
+        elif self.precision is TimePrecision.MONTH:
+            if self.month is None or self.day is not None:
+                raise DomainValidationError(
+                    "reading_time.precision", "月精度必须提供 month 且不得提供 day"
+                )
+        elif self.day is not None or self.month is not None:
+            raise DomainValidationError("reading_time.precision", "未知精度不得提供 day 或 month")
 
 
 @dataclass(frozen=True, slots=True)

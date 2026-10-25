@@ -937,6 +937,7 @@ def _detail_article(
     notice: str = "",
     notice_role: str = "status",
     note_draft: str | None = None,
+    read_time_draft: dict[str, str] | None = None,
 ) -> str:
     """详情页正文（UXR-09）：详情路由与详情上下文的动作响应共用同一渲染，
     反馈完成后内容保留、仅反馈区切换；notice 插在正文最前（成功或错误提示）。"""
@@ -966,8 +967,15 @@ def _detail_article(
         body += _summary_slots(summary_data)
         body += _source_material(summary_data, paper)
         rating_label = record.score if record.score is not None else "未评分"
+        from papersteward.api.insights_pages import read_time_block, reading_time_label
+        from papersteward.reading.insights.timeline import read_time_view, workspace_timezone
+
+        view = read_time_view(session, paper_id)
+        archive_day = record.archived_at.astimezone(workspace_timezone(session)).date()
+        # 阅读时间与归档时间分开呈现（§3.1）：导入归档未声明时如实显示「未记录」。
         body += (
-            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 完成于 {record.archived_at.date()}</p>"
+            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 归档于 {archive_day} · "
+            f"阅读时间 {escape(reading_time_label(view))}</p>"
         )
         saved_note = note_draft if note_draft is not None else record.note
         body += "<p>" + escape(saved_note or "暂无备注") + "</p>"
@@ -990,6 +998,7 @@ def _detail_article(
                     + "</li>"
                 )
             body += "</ul></details>"
+        body += read_time_block(view, draft=read_time_draft)
         score_data = record.content.get("score")
         if isinstance(score_data, dict):
             # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
@@ -1172,10 +1181,16 @@ def archive(
             meta.append(personal)
             if mode_label:
                 meta.append(mode_label)
-            meta.append(f"完成于 {record.archived_at.date()}")
+            is_import = record.content.get("origin") == "import"
+            # 导入归档的录入日期不是阅读日期（§3.1）；如实标注为导入时间。
+            meta.append(
+                f"导入于 {record.archived_at.date()}"
+                if is_import
+                else f"完成于 {record.archived_at.date()}"
+            )
             if machine_score is not None:
                 meta.append(f"推荐参考分 {float(machine_score):.1f}")
-            if record.content.get("origin") == "import":
+            if is_import:
                 meta.insert(0, '<span class="tag">导入</span>')
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
             body += f"{escape(title)}</a></h2><p>{' · '.join(meta)}</p>"

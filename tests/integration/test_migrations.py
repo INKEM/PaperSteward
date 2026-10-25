@@ -209,8 +209,26 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "paper_id",
             "score_date",
         ]
+        assert {column["name"] for column in inspector.get_columns("reading_time_revision")} == {
+            "paper_id",
+            "revision",
+            "recorded_at",
+            "precision",
+            "declared_date",
+            "declared_month",
+            "basis",
+            "idempotency_key",
+        }
+        revision_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_time_revision")
+        }
+        assert "uq_reading_time_idempotency" in revision_indexes
+        assert inspector.get_pk_constraint("reading_time_revision")["constrained_columns"] == [
+            "paper_id",
+            "revision",
+        ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0020"
+        assert current == "0021"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -276,6 +294,72 @@ def test_migration_matches_models(sqlite_engine: Engine) -> None:
 
     with sqlite_engine.connect() as connection:
         command.check(_alembic_config(connection))
+
+
+def test_0021_roundtrip_preserves_archives_with_representative_data(
+    sqlite_engine: Engine,
+) -> None:
+    """带代表数据的 0020 → 0021 → 0020 → 0021 往返：归档保留，日期声明随 0021 移除。"""
+    _upgrade(sqlite_engine, "0020")
+    factory = create_session_factory(sqlite_engine)
+    with session_scope(factory) as session:
+        # 无主标签的导入归档 + 有主标签的 done 归档，代表两类既有数据。
+        for paper_id in ("p-import", "p-done"):
+            PaperRepository(session).add(
+                Paper(
+                    id=paper_id,
+                    title=paper_id,
+                    status=PaperStatus.DONE,
+                    first_seen_at=NOW_MIGRATIONS,
+                )
+            )
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-import', '2026-10-21 08:00:00.000000', NULL, NULL, "
+                "'1.0', '1.0', '1.0.0', :import_hash, '{}', '[]'), "
+                "('p-done', '2026-10-21 08:00:00.000000', 'T01', 'b1', "
+                "'1.0', '1.0', '1.0.0', :done_hash, '{}', '[]')"
+            ),
+            {"import_hash": "b" * 64, "done_hash": "c" * 64},
+        )
+
+    _upgrade(sqlite_engine, "0021")
+    with session_scope(factory) as session:
+        from papersteward.core.entities import ReadingTimeRevision
+        from papersteward.core.enums import ReadingTimeBasis, TimePrecision
+        from papersteward.storage.insights import ReadingTimeRevisionRepository
+
+        ReadingTimeRevisionRepository(session).add(
+            ReadingTimeRevision(
+                paper_id="p-import",
+                revision=1,
+                recorded_at=NOW_MIGRATIONS,
+                precision=TimePrecision.MONTH,
+                basis=ReadingTimeBasis.DECLARED,
+                month="2026-09",
+                idempotency_key="roundtrip-key",
+            )
+        )
+
+    _downgrade(sqlite_engine, "0020")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "reading_time_revision" not in tables
+        rows = connection.execute(
+            text("SELECT paper_id FROM archive_snapshot ORDER BY paper_id")
+        ).all()
+        assert {row[0] for row in rows} == {"p-done", "p-import"}
+
+    _upgrade(sqlite_engine, "0021")
+    with sqlite_engine.connect() as connection:
+        assert "reading_time_revision" in set(inspect(connection).get_table_names())
+        # 原归档在往返后仍可读取；声明版本已被 0021 downgrade 移除（发布说明的数据损失范围）。
+        count = connection.execute(text("SELECT COUNT(*) FROM archive_snapshot")).scalar()
+        assert count == 2
 
 
 def test_p0_rows_are_migrated_to_formal_schema(sqlite_engine: Engine) -> None:

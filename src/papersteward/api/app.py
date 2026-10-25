@@ -16,6 +16,8 @@ from papersteward.api.errors import install_error_handlers
 from papersteward.api.governance import router as governance_router
 from papersteward.api.import_pages import router as import_pages_router
 from papersteward.api.imports import router as imports_router
+from papersteward.api.insights import router as insights_router
+from papersteward.api.insights_pages import router as insights_pages_router
 from papersteward.api.jobs import router as jobs_router
 from papersteward.api.middleware import RequestIdMiddleware
 from papersteward.api.onboarding import router as onboarding_router
@@ -77,6 +79,8 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(archive_router)
     app.include_router(imports_router)
     app.include_router(import_pages_router)
+    app.include_router(insights_router)
+    app.include_router(insights_pages_router)
     app.include_router(pages_router)
     app.include_router(settings_router)
     app.include_router(settings_pages_router)

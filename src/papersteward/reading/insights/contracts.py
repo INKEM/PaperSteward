@@ -10,6 +10,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from papersteward.core.enums import ReadingTimeBasis as ReadingTimeBasis
+from papersteward.core.enums import TimePrecision as TimePrecision
+
 PROJECTION_VERSION = "reading-insights.projection/1"
 
 
@@ -31,22 +34,6 @@ class PeriodKind(StrEnum):
     MONTH = "month"
     ALL = "all"
     CUSTOM = "custom"
-
-
-class TimePrecision(StrEnum):
-    """阅读时间精度；月精度不得对外伪装成精确日。"""
-
-    DAY = "day"
-    MONTH = "month"
-    UNKNOWN = "unknown"
-
-
-class ReadingTimeBasis(StrEnum):
-    """阅读时间的依据：系统记录、用户声明或来源未明。"""
-
-    SYSTEM_RECORDED = "system_recorded"
-    DECLARED = "declared"
-    UNKNOWN = "unknown"
 
 
 class ReadingSourceKind(StrEnum):
@@ -118,17 +105,15 @@ class ResolvedPeriod(InsightsModel):
     end_utc_exclusive: AwareDatetime | None = None
 
 
-class ReadingTime(InsightsModel):
-    """一篇文献的阅读时间解释；三种精度字段互斥。字段名避开类型名 ``date``。"""
+class ReadTimeDeclaration(InsightsModel):
+    """一次阅读时间声明；三种精度字段互斥，字段名避开类型名 ``date``。"""
 
     precision: TimePrecision
-    basis: ReadingTimeBasis
     day: date | None = None
     month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
-    recorded_at_utc: AwareDatetime | None = None
 
     @model_validator(mode="after")
-    def coherent(self) -> "ReadingTime":
+    def coherent(self) -> "ReadTimeDeclaration":
         if self.precision is TimePrecision.DAY:
             if self.day is None or self.month is not None:
                 raise ValueError("日精度必须提供 day 且不得提供 month")
@@ -138,6 +123,40 @@ class ReadingTime(InsightsModel):
         elif self.day is not None or self.month is not None:
             raise ValueError("未知精度不得提供 day 或 month")
         return self
+
+
+class ReadingTime(ReadTimeDeclaration):
+    """一篇文献的阅读时间解释；声明或系统回退得到的当前有效值。"""
+
+    basis: ReadingTimeBasis
+    recorded_at_utc: AwareDatetime | None = None
+
+
+class ReadTimeInput(ReadTimeDeclaration):
+    """补记/更正阅读时间的请求；expected_revision 防止两个页面相互覆盖。"""
+
+    expected_revision: int = Field(ge=0, strict=True)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class ReadTimeRevision(InsightsModel):
+    """已记录的一个阅读时间版本；只追加，不修改。"""
+
+    revision: int
+    recorded_at: AwareDatetime
+    precision: TimePrecision
+    basis: ReadingTimeBasis
+    day: date | None = None
+    month: str | None = None
+
+
+class ReadTimeView(InsightsModel):
+    """一篇归档的阅读时间现状；effective 无声明时回退归档兼容默认。"""
+
+    paper_id: str
+    current_revision: int
+    effective: ReadingTime
+    revisions: list[ReadTimeRevision] = Field(default_factory=list)
 
 
 class FeedbackVersion(InsightsModel):

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from papersteward.core.enums import ReadMode
+from papersteward.reading.insights.contracts import ReadTimeDeclaration
 from papersteward.scoring.contracts import QueueItem
 
 
@@ -81,6 +82,8 @@ class ImportReadPaperInput(InputModel):
     identifier_input: str | None = Field(default=None, max_length=2048)
     resolve: dict[str, Any] | None = None
     primary_tag: str | None = Field(default=None, max_length=64)
+    # 选填阅读时间；缺省时导入归档保持“阅读时间未知”，不产生日期记录。
+    read_time: ReadTimeDeclaration | None = None
 
 
 class ArchiveRecord(InputModel):

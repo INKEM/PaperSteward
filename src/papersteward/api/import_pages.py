@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from html import escape
 from urllib.parse import quote
 
@@ -50,6 +50,9 @@ _CONFIRM_FIELDS = (
     "score",
     "note",
     "primary_tag",
+    "read_time_precision",
+    "read_time_day",
+    "read_time_month",
     "identifier_input",
     "resolve",
 )
@@ -154,6 +157,14 @@ def _confirm_body(
         + '<label>主标签（可选，来自当前分类法）<select name="primary_tag">'
         + select_options(tag_options, values.get("primary_tag") or "")
         + "</select></label>"
+        + '<label>实际阅读时间（可选；默认未知）<select name="read_time_precision">'
+        + select_options(
+            [("", "不记录（按未知处理）"), ("day", "按具体日期"), ("month", "只记得月份")],
+            values.get("read_time_precision") or "",
+        )
+        + "</select></label>"
+        + text_field("read_time_day", "实际阅读日期（选择按日时填写）", kind="date")
+        + text_field("read_time_month", "实际阅读月份（选择按月时填写）", kind="month")
         + hidden("identifier_input", values.get("identifier_input", ""))
         + hidden("resolve", values.get("resolve", ""))
         + '<button type="submit">导入并归档</button></form>'
@@ -233,6 +244,7 @@ def _confirm_payload(data: dict[str, str], session: Session) -> ImportReadPaperI
         codes = {tag.code for tag in taxonomy.tags} if taxonomy else set()
         if primary_tag not in codes:
             raise InvalidRequestError("所选标签不在当前分类法中，请返回重选")
+    read_time = _parse_read_time(data)
     return ImportReadPaperInput.model_validate(
         {
             "title": data.get("title") or "",
@@ -248,8 +260,29 @@ def _confirm_payload(data: dict[str, str], session: Session) -> ImportReadPaperI
             "identifier_input": (data.get("identifier_input") or "").strip() or None,
             "resolve": resolve,
             "primary_tag": primary_tag,
+            "read_time": read_time,
         }
     )
+
+
+def _parse_read_time(data: dict[str, str]) -> dict[str, str] | None:
+    """确认表单的阅读时间选填字段；留空即未知，不产生日期记录。"""
+    precision = (data.get("read_time_precision") or "").strip()
+    if not precision:
+        return None
+    if precision == "day":
+        day_text = (data.get("read_time_day") or "").strip()
+        try:
+            date.fromisoformat(day_text)
+        except ValueError:
+            raise InvalidRequestError("阅读日期格式无效，请用 YYYY-MM-DD") from None
+        return {"precision": "day", "day": day_text}
+    if precision == "month":
+        month_text = (data.get("read_time_month") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", month_text):
+            raise InvalidRequestError("阅读月份格式无效，请用 YYYY-MM")
+        return {"precision": "month", "month": month_text}
+    raise InvalidRequestError("阅读时间精度无效，请重新选择")
 
 
 @router.post("/import/confirm")

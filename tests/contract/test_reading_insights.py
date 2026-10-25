@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import ValidationError
 
+from papersteward.delivery.contracts import ImportReadPaperInput
 from papersteward.reading.insights.contracts import (
     PROJECTION_VERSION,
     FeedbackVersion,
@@ -21,6 +22,8 @@ from papersteward.reading.insights.contracts import (
     ReadingSourceKind,
     ReadingTime,
     ReadingTimeBasis,
+    ReadTimeDeclaration,
+    ReadTimeInput,
     ResolvedPeriod,
     ReviewMode,
     ScoreFeedbackChange,
@@ -210,3 +213,75 @@ def test_minimal_projection_json_is_frozen():
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"precision": "day"},
+        {"precision": "day", "day": "2026-10-20", "month": "2026-10"},
+        {"precision": "month", "month": "2026-1"},
+        {"precision": "month"},
+        {"precision": "unknown", "day": "2026-10-20"},
+        {"precision": "bogus"},
+    ],
+)
+def test_read_time_declaration_precision_is_mutually_exclusive(payload: dict):
+    with pytest.raises(ValidationError):
+        ReadTimeDeclaration.model_validate(payload)
+
+
+def test_read_time_input_requires_version_and_key():
+    good = ReadTimeInput.model_validate(
+        {"precision": "day", "day": "2026-10-20", "expected_revision": 0, "idempotency_key": "k1"}
+    )
+    assert good.expected_revision == 0
+    with pytest.raises(ValidationError):
+        ReadTimeInput.model_validate({"precision": "day", "day": "2026-10-20"})
+    with pytest.raises(ValidationError):
+        ReadTimeInput.model_validate(
+            {
+                "precision": "day",
+                "day": "2026-10-20",
+                "expected_revision": "0",
+                "idempotency_key": "k",
+            }
+        )
+    with pytest.raises(ValidationError):
+        ReadTimeInput.model_validate(
+            {
+                "precision": "day",
+                "day": "2026-10-20",
+                "expected_revision": 0,
+                "idempotency_key": "has space",
+            }
+        )
+    with pytest.raises(ValidationError):
+        ReadTimeInput.model_validate(
+            {
+                "precision": "day",
+                "day": "2026-10-20",
+                "expected_revision": 0,
+                "idempotency_key": "k",
+                "extra": 1,
+            }
+        )
+
+
+def test_import_input_read_time_is_optional_and_strict():
+    without = ImportReadPaperInput.model_validate({"title": "t", "score": 3})
+    assert without.read_time is None
+    payload = {
+        "title": "t",
+        "score": 3,
+        "read_time": {"precision": "month", "month": "2026-10"},
+    }
+    assert ImportReadPaperInput.model_validate(payload).read_time is not None
+    with pytest.raises(ValidationError):
+        ImportReadPaperInput.model_validate(
+            {
+                "title": "t",
+                "score": 3,
+                "read_time": {"precision": "month", "month": "2026-10", "x": 1},
+            }
+        )

@@ -11,7 +11,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import event
 
-from conftest import activate_workspace
 from papersteward.core.entities import ArchiveSnapshot, Event, Paper, Rating
 from papersteward.core.enums import EventType, PaperStatus
 from papersteward.core.errors import InvariantViolation
@@ -27,7 +26,6 @@ from papersteward.reading.insights.contracts import (
 )
 from papersteward.reading.insights.projection import build_projection
 from papersteward.storage import session_scope
-from papersteward.storage.db import create_session_factory
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.mappers import (
     archive_snapshot_to_row,
@@ -48,12 +46,6 @@ REVISIONS: Sequence[tuple[datetime, int | None, str | None]] = [
     (datetime(2026, 10, 24, 3, tzinfo=UTC), 4, "更新"),
     (datetime(2026, 10, 27, 3, tzinfo=UTC), None, "更新"),  # 知识截止之后
 ]
-
-
-@pytest.fixture
-def insights_factory(migrated_engine):
-    activate_workspace(migrated_engine)
-    return create_session_factory(migrated_engine)
 
 
 def seed_paper(session, paper_id: str, *, first_seen_at: datetime) -> None:
@@ -126,6 +118,8 @@ def seed_archive(
     session.add(
         event_to_row(Event(uuid4().hex, EventType.PAPER_ARCHIVED, archived_at, paper_id, payload))
     )
+    # autoflush=False 下同事务内的后续查询需要显式 flush 才可见。
+    session.flush()
 
 
 def seed_week_scenario(factory) -> None:
@@ -339,14 +333,125 @@ def test_full_coverage_beyond_200_with_batched_queries(insights_factory, migrate
     assert all(p.source is ReadingSourceKind.IMPORTED for p in projection.papers)
     assert all(p.membership is PeriodMembership.UNASSIGNED_UNKNOWN for p in projection.papers)
     assert all(p.recorded_in_period for p in projection.papers)
-    # 查询数随批次增长：100+100+50 三批即止，每批 3 条 IN 查询，无逐篇查询。
+    # 查询数随批次增长：100+100+50 三批即止，每批 4 条 IN 查询，无逐篇查询。
     snapshot_selects = [s for s in statements if "FROM archive_snapshot" in s]
     rating_selects = [s for s in statements if "FROM rating" in s]
     event_selects = [s for s in statements if "FROM event" in s]
+    revision_selects = [s for s in statements if "FROM reading_time_revision" in s]
     assert len(snapshot_selects) == 3
     assert len(rating_selects) == len(snapshot_selects)
     assert len(event_selects) == len(snapshot_selects)
+    assert len(revision_selects) == len(snapshot_selects)
     assert all(" IN " in s for s in rating_selects)
+
+
+def test_declared_reading_time_overrides_default_by_cutoff(insights_factory):
+    factory = insights_factory
+    t_import = datetime(2026, 10, 20, 1, tzinfo=UTC)
+    declared_late = datetime(2026, 10, 27, 3, tzinfo=UTC)  # 知识截止之后
+    with session_scope(factory) as session:
+        seed_paper(session, "imp-declared", first_seen_at=t_import)
+        seed_archive(
+            session,
+            "imp-declared",
+            archived_at=t_import,
+            content=import_content(title="声明月份"),
+            rating_col=4,
+            ratings=[(t_import, 4, None)],
+        )
+        from papersteward.core.entities import ReadingTimeRevision
+        from papersteward.core.enums import ReadingTimeBasis, TimePrecision
+        from papersteward.storage.insights import ReadingTimeRevisionRepository
+
+        repository = ReadingTimeRevisionRepository(session)
+        repository.add(
+            ReadingTimeRevision(
+                paper_id="imp-declared",
+                revision=1,
+                recorded_at=t_import,
+                precision=TimePrecision.MONTH,
+                basis=ReadingTimeBasis.DECLARED,
+                month="2026-10",
+                idempotency_key="decl-1",
+            )
+        )
+        repository.add(
+            ReadingTimeRevision(
+                paper_id="imp-declared",
+                revision=2,
+                recorded_at=declared_late,
+                precision=TimePrecision.DAY,
+                basis=ReadingTimeBasis.DECLARED,
+                day=date(2026, 10, 21),
+                idempotency_key="decl-2",
+            )
+        )
+    # 当时记录：只可见截止前的月份声明；10 月对周周期只算部分覆盖。
+    with session_scope(factory) as session:
+        month_view = build_projection(
+            session,
+            month_october_request(),
+            collected_at=COLLECTED,
+        )
+        week_view = build_projection(session, week_request(), collected_at=COLLECTED)
+    month_paper = {p.paper_id: p for p in month_view.papers}["imp-declared"]
+    assert month_paper.reading.precision.value == "month"
+    assert month_paper.reading.basis.value == "declared"
+    assert month_paper.reading.month == "2026-10"
+    assert month_paper.membership is PeriodMembership.IN_PERIOD
+    week_paper = {p.paper_id: p for p in week_view.papers}["imp-declared"]
+    assert week_paper.membership is PeriodMembership.UNASSIGNED_PARTIAL_MONTH
+
+    # 现在重新回顾：截止后的精确日声明生效。
+    with session_scope(factory) as session:
+        revised = build_projection(
+            session,
+            month_october_request(ReviewMode.REVISED_NOW),
+            collected_at=datetime(2026, 10, 28, 4, tzinfo=UTC),
+        )
+    revised_paper = {p.paper_id: p for p in revised.papers}["imp-declared"]
+    assert revised_paper.reading.precision.value == "day"
+    assert str(revised_paper.reading.day) == "2026-10-21"
+
+
+def test_declared_unknown_clears_system_reading_date(insights_factory):
+    factory = insights_factory
+    with session_scope(factory) as session:
+        seed_week_scenario_data(session)
+    with session_scope(factory) as session:
+        from papersteward.core.entities import ReadingTimeRevision
+        from papersteward.core.enums import ReadingTimeBasis, TimePrecision
+        from papersteward.storage.insights import ReadingTimeRevisionRepository
+
+        ReadingTimeRevisionRepository(session).add(
+            ReadingTimeRevision(
+                paper_id="sys-week",
+                revision=1,
+                recorded_at=datetime(2026, 10, 23, 3, tzinfo=UTC),
+                precision=TimePrecision.UNKNOWN,
+                basis=ReadingTimeBasis.DECLARED,
+                idempotency_key="clear-1",
+            )
+        )
+    with session_scope(factory) as session:
+        projection = build_projection(session, week_request(), collected_at=COLLECTED)
+    paper = projection.papers[0]
+    assert paper.reading.precision.value == "unknown"
+    assert paper.reading.basis.value == "declared"
+    assert paper.membership is PeriodMembership.UNASSIGNED_UNKNOWN
+
+
+def seed_week_scenario_data(session) -> None:
+    seed_paper(session, "sys-week", first_seen_at=T_DONE)
+    seed_archive(
+        session,
+        "sys-week",
+        archived_at=T_DONE,
+        content=system_content(title="冻结标题", completed_at=T_DONE),
+        rating_col=5,
+        note_col="初始",
+        ratings=REVISIONS,
+    )
 
 
 def test_projection_is_stable_for_same_inputs(insights_factory):
