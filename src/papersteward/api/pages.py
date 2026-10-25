@@ -958,8 +958,8 @@ def _detail_article(
             ' <span class="tag">导入</span>' if record.content.get("origin") == "import" else ""
         )
         body = (
-            notice_html
-            + '<p class="back-link"><a href="/ui/archive">← 返回归档</a></p>'
+            notice_html + '<p class="back-link"><a href="/ui/archive">← 返回归档</a> · '
+            '<a href="/ui/reading-insights">阅读回顾</a></p>'
             + f'<p class="success">已完成归档{origin_badge}</p>'
         )
         body += _paper_links(session, paper_id)
@@ -1205,7 +1205,10 @@ def archive(
             f"阅读归档 · {total} 篇",
             body,
             nav="归档",
-            heading_actions='<a class="button secondary" href="/ui/import">导入已读论文</a>',
+            heading_actions=(
+                '<a class="button secondary" href="/ui/import">导入已读论文</a> '
+                '<a class="button secondary" href="/ui/reading-insights">阅读回顾</a>'
+            ),
         )
     except (DomainError, AppError) as exc:
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")

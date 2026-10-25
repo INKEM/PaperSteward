@@ -1,13 +1,24 @@
-"""阅读回顾页面集成测试（R1-02）：详情页阅读时间展示、补记表单与错误保留。"""
+"""阅读回顾页面集成测试：详情页阅读时间、补记表单与事实概览页（R1-02/03）。"""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
+from test_reading_insight_projection import (
+    import_content,
+    seed_archive,
+    seed_paper,
+    system_content,
+)
 from test_ui_flows import HEADERS
 
 from conftest import activate
+from papersteward.core.entities import ReadingTimeRevision, utc_now
+from papersteward.core.enums import ReadingTimeBasis, TimePrecision
 from papersteward.delivery.contracts import ImportReadPaperInput
 from papersteward.reading.import_service import import_read_paper
+from papersteward.reading.insights.contracts import ReadTimeDeclaration
+from papersteward.reading.insights.timeline import record_reading_time
 from papersteward.storage import create_session_factory, session_scope
+from papersteward.storage.insights import ReadingTimeRevisionRepository
 
 NOW2 = datetime(2026, 10, 25, 18, 0, tzinfo=UTC)
 
@@ -128,3 +139,225 @@ def test_archive_list_labels_import_copy(client, migrated_engine):
     assert archive.status_code == 200
     assert "导入于" in archive.text
     assert f'href="/ui/papers/{paper_id}"' in archive.text
+
+
+# —— R1-03：事实概览页 ————————————————————————————————————————
+
+WEEK_ANCHOR = "2026-10-22"  # 上海时区 2026-10-19..25
+NOW3 = datetime(2026, 10, 22, 3, 0, tzinfo=UTC)  # 声明记录于周期内，as_recorded 可见
+
+
+def seed_week_fixtures(client, *, imports: int = 50, system: int = 2) -> None:
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        for index in range(system):
+            done = datetime(2026, 10, 20 + index, 2, tzinfo=UTC)
+            paper_id = f"ov-sys-{index}"
+            seed_paper(session, paper_id, first_seen_at=done)
+            seed_archive(
+                session,
+                paper_id,
+                archived_at=done,
+                content=system_content(title=f"系统阅读{index}", completed_at=done),
+                rating_col=4,
+                note_col="初始",
+                ratings=[(done, 4, "初始")],
+            )
+        for index in range(imports):
+            archived = datetime(2026, 10, 19, 0, tzinfo=UTC) + timedelta(hours=index)
+            paper_id = f"ov-imp-{index:02d}"
+            seed_paper(session, paper_id, first_seen_at=archived)
+            seed_archive(
+                session,
+                paper_id,
+                archived_at=archived,
+                content=import_content(title=f"补录{index}"),
+                rating_col=3,
+                ratings=[(archived, 3, None)],
+            )
+
+
+def test_week_overview_counts_readings_and_backfills_separately(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client)
+    page = client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}")
+    assert page.status_code == 200
+    assert "实时概览，尚未保存" in page.text
+    assert "阅读明细（2）" in page.text
+    assert "补录明细（50）" in page.text
+    assert "未定阅读日期（50）" in page.text
+    # 不把 52 当阅读量；全部历史为 52。
+    assert "阅读明细（52）" not in page.text
+    assert "全部历史（当前范围）" in page.text
+    assert '<td data-label="数值">52</td>' in page.text
+    # 知识截止与采集时刻明示。
+    assert "知识截止" in page.text and "采集时刻" in page.text
+
+
+def test_overview_json_matches_page_counts(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client, imports=3, system=2)
+    params = f"kind=week&anchor_date={WEEK_ANCHOR}"
+    api = client.get(f"/reading-insights/overview?{params}")
+    assert api.status_code == 200
+    body = api.json()
+    assert body["metrics"]["readings_total"] == 2
+    assert body["metrics"]["backfills_total"] == 3
+    assert body["metrics"]["unassigned_total"] == 3
+    assert body["metrics"]["all_history_total"] == 5
+    page = client.get(f"/ui/reading-insights?{params}")
+    assert "阅读明细（2）" in page.text and "补录明细（3）" in page.text
+
+
+def test_overview_json_requires_activation(client, migrated_engine):
+    response = client.get("/reading-insights/overview")
+    assert response.status_code == 409
+
+
+def test_overview_page_requires_activation(client, migrated_engine):
+    response = client.get("/ui/reading-insights", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/setup"
+
+
+def test_overview_empty_state(client, migrated_engine):
+    activate(client)
+    page = client.get("/ui/reading-insights")
+    assert page.status_code == 200
+    assert "还没有可回顾的归档" in page.text
+    assert "暂无" in page.text
+
+
+def test_overview_tag_filter_narrows(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client, imports=2, system=1)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        archived = datetime(2026, 10, 21, 3, tzinfo=UTC)
+        seed_paper(session, "ov-other-tag", first_seen_at=archived)
+        seed_archive(
+            session,
+            "ov-other-tag",
+            archived_at=archived,
+            content=system_content(title="其他标签", completed_at=archived),
+            rating_col=3,
+            primary_tag="T09",
+            ratings=[(archived, 3, None)],
+        )
+    base = client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}")
+    assert "全部历史（当前范围）" in base.text
+    assert '<td data-label="数值">4</td>' in base.text
+    filtered = client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}&tag=T09")
+    assert '<td data-label="数值">1</td>' in filtered.text
+    assert (
+        "当前筛选范围内没有归档记录"
+        in client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}&tag=NOPE").text
+    )
+
+
+def test_overview_declared_import_overlaps_reading_and_backfill(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client, imports=1, system=1)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        record_reading_time(
+            session,
+            "ov-imp-00",
+            ReadTimeDeclaration.model_validate({"precision": "day", "day": "2026-10-20"}),
+            now=NOW3,
+            expected_revision=0,
+        )
+    page = client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}")
+    # 声明本周读完的导入：阅读 +1，补录仍计 1，二者可能重叠。
+    assert "阅读明细（2）" in page.text
+    assert "补录明细（1）" in page.text
+
+
+def test_overview_revised_now_shows_backfill_marker(client, migrated_engine):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    # 目标周取真实时钟的过去周（2026-09-21..27）；「现在」归档必然晚于周期结束。
+    past_anchor = "2026-09-22"
+    late = utc_now()
+    with session_scope(factory) as session:
+        seed_paper(session, "ov-late", first_seen_at=late)
+        seed_archive(
+            session,
+            "ov-late",
+            archived_at=late,
+            content=import_content(title="后补导入"),
+            rating_col=4,
+            ratings=[(late, 4, None)],
+        )
+        ReadingTimeRevisionRepository(session).add(
+            ReadingTimeRevision(
+                paper_id="ov-late",
+                revision=1,
+                recorded_at=late,
+                precision=TimePrecision.DAY,
+                basis=ReadingTimeBasis.DECLARED,
+                day=date(2026, 9, 24),
+                idempotency_key="late-1",
+            )
+        )
+    as_recorded = client.get(
+        f"/ui/reading-insights?kind=week&anchor_date={past_anchor}&mode=as_recorded"
+    )
+    assert "阅读明细（0）" in as_recorded.text
+    revised = client.get(
+        f"/ui/reading-insights?kind=week&anchor_date={past_anchor}&mode=revised_now"
+    )
+    assert "阅读明细（1）" in revised.text
+    assert "含后补 1" in revised.text
+    assert "现在重新回顾" in revised.text
+
+
+def test_overview_pagination_keeps_metrics_and_filters(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client, imports=51, system=1)
+    first = client.get(
+        f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}&section=backfills"
+    )
+    assert "补录明细（51）" in first.text
+    assert "上一页" not in first.text and "下一页" in first.text
+    second = client.get(
+        f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}&section=backfills&offset=50"
+    )
+    assert "补录明细（51）" in second.text  # 分页不改变指标总数
+    assert "上一页" in second.text
+    assert "kind=week" in second.text and "anchor_date=" in second.text
+
+
+def test_overview_feedback_changes_section(client, migrated_engine):
+    activate(client)
+    seed_week_fixtures(client, imports=0, system=1)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        from papersteward.delivery.contracts import Action
+        from papersteward.reading.actions import apply_action
+
+        apply_action(
+            session,
+            "ov-sys-0",
+            Action(request_id="rev-1", kind="score", score=2),
+            now=datetime(2026, 10, 22, 3, tzinfo=UTC),
+        )
+    page = client.get(f"/ui/reading-insights?kind=week&anchor_date={WEEK_ANCHOR}&section=changes")
+    assert "反馈修订（1）" in page.text
+    assert "4 → 2" in page.text
+    assert "评分 1 次" in page.text
+    assert "涉及 1 篇" in page.text
+
+
+def test_overview_invalid_params_show_error(client, migrated_engine):
+    activate(client)
+    page = client.get("/ui/reading-insights?kind=bogus")
+    assert page.status_code == 400
+    assert "周期类型无效" in page.text
+
+
+def test_archive_page_links_to_overview(client, migrated_engine):
+    activate(client)
+    archive = client.get("/ui/archive")
+    assert 'href="/ui/reading-insights"' in archive.text
+    assert "阅读回顾" in archive.text

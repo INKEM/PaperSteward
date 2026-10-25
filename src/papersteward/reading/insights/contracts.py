@@ -216,3 +216,74 @@ class InsightsProjection(InsightsModel):
     knowledge_cutoff: AwareDatetime
     collected_at: AwareDatetime
     papers: list[PaperProjection] = Field(default_factory=list)
+
+
+class CoverageStats(InsightsModel):
+    """覆盖统计；空集合（total=0）由展示层显示「暂无」，不显示虚假的 0%。"""
+
+    scored: int = Field(ge=0)
+    noted: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class ScoreDistribution(InsightsModel):
+    """本期阅读集合的评分档分布；1–5 分及未评分互斥且完备。"""
+
+    score_1: int = Field(default=0, ge=0)
+    score_2: int = Field(default=0, ge=0)
+    score_3: int = Field(default=0, ge=0)
+    score_4: int = Field(default=0, ge=0)
+    score_5: int = Field(default=0, ge=0)
+    unrated: int = Field(default=0, ge=0)
+
+
+class FeedbackChangeStats(InsightsModel):
+    """本期发生的实际认知变化；初始归档不算修订，值未变不产事件。"""
+
+    score_events: int = Field(default=0, ge=0)
+    note_events: int = Field(default=0, ge=0)
+    papers_affected: int = Field(default=0, ge=0)
+
+
+class CountEntry(InsightsModel):
+    """分布表的一个分组；主题分布以 (code, taxonomy_version) 互斥分组。"""
+
+    key: str
+    label: str
+    count: int = Field(ge=0)
+    taxonomy_version: str | None = None
+
+
+class InsightMetrics(InsightsModel):
+    """事实概览指标；口径见阶段计划 §3.3，阅读量与补录量可能重叠。"""
+
+    period: ResolvedPeriod
+    mode: ReviewMode
+    knowledge_cutoff: AwareDatetime
+    collected_at: AwareDatetime
+    readings_total: int = Field(ge=0)
+    readings_system: int = Field(ge=0)
+    readings_imported: int = Field(ge=0)
+    readings_backfilled: int = Field(ge=0)
+    system_completions: int = Field(ge=0)
+    backfills_total: int = Field(ge=0)
+    unassigned_total: int = Field(ge=0)
+    partial_month_total: int = Field(ge=0)
+    coverage: CoverageStats
+    backfill_coverage: CoverageStats
+    score_distribution: ScoreDistribution
+    feedback_changes: FeedbackChangeStats
+    reading_modes: list[CountEntry] = Field(default_factory=list)
+    primary_tags: list[CountEntry] = Field(default_factory=list)
+    published_decades: list[CountEntry] = Field(default_factory=list)
+    all_history_total: int = Field(ge=0)
+
+
+class InsightOverview(InsightsModel):
+    """一次事实概览：指标与四组明细由同一函数产出，计数天然一致。"""
+
+    metrics: InsightMetrics
+    readings: list[PaperProjection] = Field(default_factory=list)
+    backfills: list[PaperProjection] = Field(default_factory=list)
+    changes: list[FeedbackChange] = Field(default_factory=list)
+    unassigned: list[PaperProjection] = Field(default_factory=list)

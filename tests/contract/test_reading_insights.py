@@ -9,9 +9,12 @@ import pytest
 from pydantic import ValidationError
 
 from papersteward.delivery.contracts import ImportReadPaperInput
+from papersteward.reading.insights.aggregate import build_overview
 from papersteward.reading.insights.contracts import (
     PROJECTION_VERSION,
+    CoverageStats,
     FeedbackVersion,
+    InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
     InsightsProjection,
@@ -285,3 +288,113 @@ def test_import_input_read_time_is_optional_and_strict():
                 "read_time": {"precision": "month", "month": "2026-10", "x": 1},
             }
         )
+
+
+# —— 概览统计契约：严格性与最小固定结果 ——————————————————————————
+
+
+def _minimal_projection() -> InsightsProjection:
+    period = ResolvedPeriod(
+        kind=PeriodKind.CUSTOM,
+        timezone="Asia/Shanghai",
+        label="2026-03-05..2026-03-05",
+        start_date=date(2026, 3, 5),
+        end_date_inclusive=date(2026, 3, 5),
+        start_utc=datetime(2026, 3, 4, 16, tzinfo=UTC),
+        end_utc_exclusive=datetime(2026, 3, 5, 16, tzinfo=UTC),
+    )
+    return InsightsProjection(
+        projection_version=PROJECTION_VERSION,
+        mode=ReviewMode.AS_RECORDED,
+        period=period,
+        knowledge_cutoff=datetime(2026, 3, 5, 16, tzinfo=UTC),
+        collected_at=datetime(2026, 3, 5, 16, tzinfo=UTC),
+        papers=[
+            PaperProjection(
+                paper_id="p1",
+                archived_at=datetime(2026, 3, 5, 2, tzinfo=UTC),
+                source=ReadingSourceKind.SYSTEM,
+                content_available=True,
+                reading=ReadingTime(
+                    precision=TimePrecision.DAY,
+                    basis=ReadingTimeBasis.SYSTEM_RECORDED,
+                    day=date(2026, 3, 5),
+                    recorded_at_utc=datetime(2026, 3, 5, 2, tzinfo=UTC),
+                ),
+                membership=PeriodMembership.IN_PERIOD,
+                recorded_in_period=True,
+                title="冻结标题",
+                reading_mode="deep",
+                primary_tag="T01",
+                taxonomy_version="tv1",
+                feedback=[
+                    FeedbackVersion(
+                        recorded_at=datetime(2026, 3, 5, 2, tzinfo=UTC),
+                        score=4,
+                        note="初始",
+                        is_initial=True,
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def test_overview_models_reject_extra_fields():
+    with pytest.raises(ValidationError):
+        CoverageStats(scored=1, noted=1, total=1, rank=1)
+    overview = build_overview(_minimal_projection())
+    payload = overview.model_dump(mode="json")
+    with pytest.raises(ValidationError):
+        InsightOverview.model_validate({**payload, "surprise": 1})
+
+
+def test_minimal_overview_json_is_frozen():
+    overview = build_overview(_minimal_projection())
+    assert overview.model_dump(mode="json") == {
+        "metrics": {
+            "period": {
+                "kind": "custom",
+                "timezone": "Asia/Shanghai",
+                "label": "2026-03-05..2026-03-05",
+                "start_date": "2026-03-05",
+                "end_date_inclusive": "2026-03-05",
+                "start_utc": "2026-03-04T16:00:00Z",
+                "end_utc_exclusive": "2026-03-05T16:00:00Z",
+            },
+            "mode": "as_recorded",
+            "knowledge_cutoff": "2026-03-05T16:00:00Z",
+            "collected_at": "2026-03-05T16:00:00Z",
+            "readings_total": 1,
+            "readings_system": 1,
+            "readings_imported": 0,
+            "readings_backfilled": 0,
+            "system_completions": 1,
+            "backfills_total": 0,
+            "unassigned_total": 0,
+            "partial_month_total": 0,
+            "coverage": {"scored": 1, "noted": 1, "total": 1},
+            "backfill_coverage": {"scored": 0, "noted": 0, "total": 0},
+            "score_distribution": {
+                "score_1": 0,
+                "score_2": 0,
+                "score_3": 0,
+                "score_4": 1,
+                "score_5": 0,
+                "unrated": 0,
+            },
+            "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "reading_modes": [
+                {"key": "deep", "label": "deep", "count": 1, "taxonomy_version": None}
+            ],
+            "primary_tags": [{"key": "T01", "label": "T01", "count": 1, "taxonomy_version": "tv1"}],
+            "published_decades": [
+                {"key": "unknown", "label": "unknown", "count": 1, "taxonomy_version": None}
+            ],
+            "all_history_total": 1,
+        },
+        "readings": [overview.model_dump(mode="json")["readings"][0]],
+        "backfills": [],
+        "changes": [],
+        "unassigned": [],
+    }
