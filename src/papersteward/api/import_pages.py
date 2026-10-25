@@ -37,7 +37,7 @@ from papersteward.storage.repositories import TaxonomyRepository
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
 _MANUAL_HINT = "暂时无法自动解析，请手动填写论文信息。"
-_MISS_HINT = "已识别标识符，但来源中没有找到这篇论文，请手动填写。"
+_MISS_HINT = "没有从来源找到这篇论文；可以检查标识符后重试，或直接手动填写。"
 _CONFIRM_FIELDS = (
     "title",
     "authors",

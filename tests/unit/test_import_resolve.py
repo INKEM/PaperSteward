@@ -87,6 +87,17 @@ def test_resolve_returns_none_without_identifier() -> None:
     assert resolve_identifier("只是一段没有标识符的文字", now=NOW) is None
 
 
+def test_resolve_accepts_scheme_less_urls() -> None:
+    """浏览器复制的链接常不带协议头（表单占位符即此形式）。"""
+    doi_fake = _FakeLookup(_candidate("openalex", "W1"))
+    resolve_identifier("doi.org/10.0000/Fixture", now=NOW, openalex=doi_fake)  # type: ignore[arg-type]
+    assert doi_fake.calls == ["10.0000/fixture"]
+
+    arxiv_fake = _FakeLookup(_candidate("arxiv", "2610.00001v2"))
+    resolve_identifier("www.arxiv.org/abs/2610.00001", now=NOW, arxiv=arxiv_fake)  # type: ignore[arg-type]
+    assert arxiv_fake.calls == ["2610.00001"]
+
+
 def test_resolve_returns_none_on_lookup_miss() -> None:
     fake = _FakeLookup(None)
     assert resolve_identifier("10.0000/missing", now=NOW, openalex=fake) is None  # type: ignore[arg-type]

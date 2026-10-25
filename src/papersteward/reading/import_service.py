@@ -5,6 +5,7 @@
 完成快照、状态迁移与补发事件，不放宽其任何不变量。
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -72,12 +73,13 @@ def resolve_identifier(
 ) -> ResolvedIdentifier | None:
     """规范化用户输入并按标识符直查元数据。
 
-    识别裸 DOI / arXiv ID 及 doi.org、arxiv.org 链接形式（normalize_* 内建）。
+    识别裸 DOI / arXiv ID 及 doi.org、arxiv.org 链接形式（normalize_* 内建）；
+    浏览器复制的链接常不带协议头（``arxiv.org/abs/…``），先补全再规范化。
     无标识符返回 None；来源不可达或响应畸形抛 SourceError，由调用方降级手填。
     解析不查库、不写库——去重守卫由调用方另调 ``guard_duplicate``。
     """
-    doi = normalize_doi(raw)
-    arxiv_id = None if doi is not None else normalize_arxiv(raw)
+    doi = normalize_doi(_with_scheme(raw))
+    arxiv_id = None if doi is not None else normalize_arxiv(_with_scheme(raw))
     if doi is None and arxiv_id is None:
         return None
     clients: list[SourceHTTP] = []
@@ -95,6 +97,13 @@ def resolve_identifier(
     if candidate is None:
         return None
     return ResolvedIdentifier(candidate=canonicalize(candidate))
+
+
+def _with_scheme(raw: str | None) -> str | None:
+    """浏览器复制的链接常省略协议头；仅对已知的两个文献域名补全 https://。"""
+    if raw is None:
+        return None
+    return re.sub(r"^(?:(?:https?://)?(?:www\.)?)?(doi\.org|arxiv\.org)/", r"https://\1/", raw)
 
 
 def _default_openalex(clients: list[SourceHTTP]) -> DoiLookup:

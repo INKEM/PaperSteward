@@ -132,7 +132,7 @@ def test_resolve_miss_hint_when_identifier_unknown(client, migrated_engine, monk
     )
     page = _post(client, "/ui/import/resolve", {"identifier": "10.0000/missing"})
     assert page.status_code == 200
-    assert "来源中没有找到这篇论文" in page.text
+    assert "没有从来源找到这篇论文" in page.text
 
 
 def test_resolve_duplicate_shows_detail_link(client, migrated_engine, monkeypatch):
