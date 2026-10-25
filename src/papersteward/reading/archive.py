@@ -1,5 +1,6 @@
 """阅读完成时冻结全文上下文；修订留在Rating/事件，不覆盖归档。"""
 
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -232,14 +233,28 @@ def archive_imported(
     )
 
 
+def verified_archive_content(
+    content_json: Mapping[str, Any] | None, expected_hash: str
+) -> tuple[dict[str, Any], bool]:
+    """校验归档内容哈希，返回 ``(内容, 是否可用)``。
+
+    空内容视为不可用且跳过校验；哈希不匹配抛 ``InvariantViolation``，
+    由调用方决定拒绝读取（``read_archive``）还是降级为缺失（分析投影）。
+    """
+    content = dict(content_json or {})
+    if content and content_hash(content) != expected_hash:
+        raise InvariantViolation("archive.hash", "归档内容校验失败")
+    return content, bool(content)
+
+
 def read_archive(session: Session, paper_id: str) -> ArchiveRecord:
     ensure_active(session, action="archive.read")
     snapshot = ArchiveSnapshotRepository(session).get(paper_id)
     if snapshot is None:
         raise NotFoundError("归档不存在")
-    content = dict(snapshot.content_json)
-    if content and content_hash(content) != snapshot.content_hash:
-        raise InvariantViolation("archive.hash", "归档内容校验失败")
+    content, content_available = verified_archive_content(
+        snapshot.content_json, snapshot.content_hash
+    )
     ratings = RatingRepository(session).list_for_paper(paper_id)
     latest = ratings[-1] if ratings else None
     return ArchiveRecord(
@@ -250,7 +265,7 @@ def read_archive(session: Session, paper_id: str) -> ArchiveRecord:
         filing_bucket_id=snapshot.filing_bucket_id,
         content_hash=snapshot.content_hash,
         content=content,
-        content_available=bool(content),
+        content_available=content_available,
         initial_score=snapshot.rating,
         initial_note=snapshot.note,
         score=snapshot.rating if latest is None else latest.score,
