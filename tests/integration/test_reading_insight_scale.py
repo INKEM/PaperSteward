@@ -92,7 +92,8 @@ def test_full_history_scale_and_batch_cancellation(insights_factory, size, clien
     assert overview.metrics.readings_total == overview.metrics.all_history_total == size
     assert overview.metrics.feedback_changes.score_events == 2 * size
     assert len(projection.papers) == size
-    assert len(queries) <= 4 * (size // 500) + 3
+    # 每批 5 条 IN 查询：快照、评分、归档事件、日期声明与结构化理由。
+    assert len(queries) <= 5 * (size // 500) + 3
     page = client.get(f"/ui/reading-insights?kind=all&offset={size - 50}")
     assert page.status_code == 200
     assert f"阅读明细（{size}）" in page.text

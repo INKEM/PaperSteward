@@ -13,6 +13,7 @@ from papersteward.storage.insights import (
     ReadingAssetRepository,
     ReadingDerivedCopyRepository,
     ReadingReportRepository,
+    ReadingStructuredFeedbackRepository,
     ReadingTimeRevisionRepository,
     ReadingWriteReceiptRepository,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "ReadingAssetRepository",
     "ReadingDerivedCopyRepository",
     "ReadingReportRepository",
+    "ReadingStructuredFeedbackRepository",
     "ReadingTimeRevisionRepository",
     "ReadingWriteReceiptRepository",
     "ReviewRepository",

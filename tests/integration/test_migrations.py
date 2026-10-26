@@ -684,14 +684,13 @@ def test_migrated_schema_enforces_unique_primary_tag(sqlite_engine: Engine) -> N
 
 
 def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: Engine) -> None:
-    """旧请求只恢复有证据的字段；无运行记录的主题不默认为全部，往返不改正文。"""
+    """旧请求只恢复有证据的字段；无运行记录的主题不默认为全部，往返不改正文。
+
+    冻结正文按 0024 之前代码的产物形态手工构造（对齐 0026 测试做法），
+    避免在旧 schema 上运行新版投影代码。
+    """
     from papersteward.core.entities import Run
-    from papersteward.jobs.ui_flow import ReviewParams
-    from papersteward.reading.insights.reports import (
-        prepare_report,
-        read_report,
-        report_input_status,
-    )
+    from papersteward.reading.insights.reports import read_report, report_input_status
     from papersteward.storage.delivery import content_hash
     from papersteward.storage.models import ReadingReportContextRow, ReadingReportRow, RunRow
     from papersteward.storage.repositories import RunRepository
@@ -780,16 +779,74 @@ def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: 
 
     before = related_state()
     assert all(before.values())
-    with session_scope(factory) as session:
-        prepared = prepare_report(
-            session,
-            ReviewParams(period="week", anchor_date=date(2026, 10, 22)),
-            collected_at=NOW_MIGRATIONS,
-        )
-    frozen = prepared.content.model_dump(mode="json")
-    for ref in frozen["assets"]:
-        for field in ("revision", "source_paper_ids", "cross_topic"):
-            ref.pop(field, None)
+    frozen = {
+        "contract": "reading-insights.report/1",
+        "metrics": {
+            "period": {
+                "kind": "week",
+                "timezone": "Asia/Shanghai",
+                "label": "2026-W43",
+                "start_date": "2026-10-19",
+                "end_date_inclusive": "2026-10-25",
+                "start_utc": "2026-10-18T16:00:00Z",
+                "end_utc_exclusive": "2026-10-25T16:00:00Z",
+            },
+            "mode": "as_recorded",
+            "knowledge_cutoff": NOW_MIGRATIONS.isoformat(),
+            "collected_at": NOW_MIGRATIONS.isoformat(),
+            "readings_total": 1,
+            "readings_system": 1,
+            "readings_imported": 0,
+            "readings_backfilled": 0,
+            "system_completions": 1,
+            "backfills_total": 0,
+            "unassigned_total": 0,
+            "partial_month_total": 0,
+            "coverage": {"scored": 1, "noted": 0, "total": 1},
+            "backfill_coverage": {"scored": 0, "noted": 0, "total": 0},
+            "score_distribution": {
+                "score_1": 0,
+                "score_2": 0,
+                "score_3": 0,
+                "score_4": 1,
+                "score_5": 0,
+                "unrated": 0,
+            },
+            "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "all_history_total": 1,
+        },
+        "readings": [
+            {
+                "paper_id": "legacy-paper",
+                "archived_at": at.isoformat(),
+                "source": "system",
+                "content_available": True,
+                "reading": {
+                    "precision": "day",
+                    "basis": "declared",
+                    "day": at.date().isoformat(),
+                    "month": None,
+                    "recorded_at_utc": at.isoformat(),
+                },
+                "membership": "in_period",
+                "recorded_in_period": True,
+                "title": "旧冻结论文",
+                "feedback": [],
+            }
+        ],
+        "backfills": [],
+        "unassigned": [],
+        "changes": [],
+        "assets": [
+            {
+                "asset_id": "legacy-asset-row",
+                "title": "旧私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": "旧私人正文",
+            }
+        ],
+    }
     assert frozen["assets"][0]["title"] == "旧私人标题"
     frozen_hash = content_hash(frozen)
     requests = {
@@ -829,12 +886,12 @@ def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: 
                 ReadingReportRow(
                     id=key,
                     report_kind="week",
-                    period_label=prepared.period.label,
-                    period_start=prepared.period.start_date,
-                    period_end=prepared.period.end_date_inclusive,
-                    timezone=prepared.period.timezone,
+                    period_label="2026-W43",
+                    period_start=date(2026, 10, 19),
+                    period_end=date(2026, 10, 25),
+                    timezone="Asia/Shanghai",
                     review_mode="as_recorded",
-                    knowledge_cutoff=prepared.knowledge_cutoff,
+                    knowledge_cutoff=NOW_MIGRATIONS,
                     generated_at=NOW_MIGRATIONS,
                     contract=frozen["contract"],
                     input_fingerprint=content_hash({"fixture": key}),
