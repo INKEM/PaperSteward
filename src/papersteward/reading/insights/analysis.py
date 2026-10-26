@@ -19,10 +19,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from papersteward.core.entities import utc_now
-from papersteward.errors import NotAuthorizedError
+from papersteward.errors import NotAuthorizedError, NotFoundError
 from papersteward.llm.cost import merge_usage, record_llm_usage
 from papersteward.llm.errors import LLMError
 from papersteward.llm.gateway import LLMGateway, LLMUsage
@@ -55,6 +56,9 @@ __all__ = [
     "ANALYSIS_BUDGET_MAX_INPUT_CHARS",
     "ANALYSIS_BUDGET_MAX_PAPERS",
     "AnalysisRunParamsView",
+    "candidates_for_paper",
+    "candidates_view_for_run",
+    "list_analysis_runs",
     "run_insight_analysis",
 ]
 
@@ -460,3 +464,80 @@ def _close_provider(gateway: LLMGateway) -> None:
     if provider is not None and hasattr(provider, "close"):
         with suppress(Exception):
             provider.close()
+
+
+def list_analysis_runs(session: Session, *, limit: int = 5) -> list[dict[str, object]]:
+    """最近的分析运行摘要（Run.stats_json → 只读视图），新的在前。"""
+    from papersteward.storage.mappers import run_from_row
+    from papersteward.storage.models import RunRow
+
+    rows = session.scalars(
+        select(RunRow)
+        .where(RunRow.run_type == "ui.insight_analysis")
+        .order_by(RunRow.started_at.desc(), RunRow.id)
+        .limit(limit)
+    ).all()
+    summaries: list[dict[str, object]] = []
+    for row in rows:
+        run = run_from_row(row)
+        generated = run.stats_json.get("generated")
+        data = generated if isinstance(generated, dict) else {}
+        summaries.append(
+            {
+                "run_id": run.id,
+                "status": run.status.value,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+                "papers_total": _int_of(data, "papers_total"),
+                "papers_completed": _int_of(data, "papers_completed"),
+                "papers_failed": _int_of(data, "papers_failed"),
+                "papers_stale": _int_of(data, "papers_stale"),
+                "papers_insufficient": _int_of(data, "papers_insufficient"),
+                "papers_unfinished": _int_of(data, "papers_unfinished"),
+                "candidate_count": _int_of(data, "candidate_count"),
+                "rejected_count": _int_of(data, "rejected_count"),
+                "stopped_reason": data.get("stopped_reason"),
+            }
+        )
+    return summaries
+
+
+def _int_of(data: dict[str, object], key: str) -> int:
+    value = data.get(key)
+    return value if isinstance(value, int) else 0
+
+
+def candidates_view_for_run(session: Session, run_id: str) -> list[dict[str, object]]:
+    """某次运行的候选属主视图；运行不存在返回空列表（404 由调用方判断）。"""
+    from papersteward.storage.models import RunRow
+
+    if session.get(RunRow, run_id) is None:
+        raise NotFoundError("运行记录不存在")
+    rows = ReadingAnalysisCandidateRepository(session).by_run(run_id)
+    return [_candidate_view(row) for row in rows]
+
+
+def candidates_for_paper(session: Session, paper_id: str) -> list[dict[str, object]]:
+    return [
+        _candidate_view(row)
+        for row in ReadingAnalysisCandidateRepository(session).list_for_paper(paper_id)
+    ]
+
+
+def _candidate_view(row: ReadingAnalysisCandidateRow) -> dict[str, object]:
+    return {
+        "candidate_id": row.id,
+        "run_id": row.run_id,
+        "paper_id": row.paper_id,
+        "kind": row.kind,
+        "nature": row.nature,
+        "statement": row.statement,
+        "conditions": row.conditions,
+        "limitations": row.limitations,
+        "quote": row.quote,
+        "quote_source_id": row.quote_source_id,
+        "source_refs": list(row.source_refs_json or []),
+        "stale": bool(row.stale),
+        "verification": row.verification,
+        "created_at": as_utc(row.created_at),
+    }

@@ -844,3 +844,48 @@ class AnalysisPreviewView(InsightsModel):
     model_config_version: str
     expires_at: AwareDatetime
     consumed: bool = False
+
+
+class CandidateSourceRef(InsightsModel):
+    """候选引用的材料来源（与清单一致的类别/目标/版本锚点）。"""
+
+    kind: MaterialKind
+    target_id: str
+    version_key: str
+
+
+class AnalysisCandidateView(InsightsModel):
+    """分析候选的属主视图；确认/修订入口随下一批提供。"""
+
+    candidate_id: str
+    run_id: str
+    paper_id: str
+    kind: str
+    nature: str
+    statement: str
+    conditions: str | None = None
+    limitations: str | None = None
+    quote: str | None = None
+    quote_source_id: str | None = None
+    source_refs: list[CandidateSourceRef] = Field(default_factory=list)
+    stale: bool = False
+    verification: str = "pending_user"
+    created_at: AwareDatetime
+
+
+class AnalysisRunSummary(InsightsModel):
+    """一次分析运行的只读摘要（来自 Run.stats_json，无私人正文）。"""
+
+    run_id: str
+    status: str
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
+    papers_total: int = 0
+    papers_completed: int = 0
+    papers_failed: int = 0
+    papers_stale: int = 0
+    papers_insufficient: int = 0
+    papers_unfinished: int = 0
+    candidate_count: int = 0
+    rejected_count: int = 0
+    stopped_reason: str | None = None

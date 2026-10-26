@@ -3,17 +3,23 @@
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 from sqlalchemy.orm import Session
 
 from papersteward.api.deps import SessionDep
 from papersteward.api.domain_errors import domain_errors
+from papersteward.api.workspace_runtime import resolve_workspace
 from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
-from papersteward.errors import InvalidRequestError
+from papersteward.errors import InvalidRequestError, NotAuthorizedError
 from papersteward.reading.insights.aggregate import (
     OVERVIEW_DETAIL_DEFAULT_LIMIT,
     OVERVIEW_DETAIL_MAX_LIMIT,
+)
+from papersteward.reading.insights.analysis import (
+    candidates_for_paper,
+    candidates_view_for_run,
+    list_analysis_runs,
 )
 from papersteward.reading.insights.assets import (
     append_revision,
@@ -54,6 +60,7 @@ from papersteward.reading.insights.contracts import (
 )
 from papersteward.reading.insights.materials import (
     add_excerpt,
+    consume_preview_token,
     create_manifest,
     create_preview_token,
     delete_excerpt,
@@ -69,6 +76,10 @@ from papersteward.reading.insights.timeline import (
     read_time_view,
     record_reading_time,
     workspace_timezone,
+)
+from papersteward.storage.insights import (
+    ReadingAnalysisGrantRepository,
+    ReadingAnalysisManifestRepository,
 )
 from papersteward.storage.onboarding import ensure_active
 from papersteward.storage.repositories import TaxonomyRepository
@@ -246,11 +257,9 @@ def _parse_date_param(name: str, value: str | None) -> date | None:
 
 from uuid import uuid4  # noqa: E402
 
-from fastapi import Request  # noqa: E402
 from fastapi.responses import PlainTextResponse  # noqa: E402
 from pydantic import Field  # noqa: E402
 
-from papersteward.api.workspace_runtime import resolve_workspace  # noqa: E402
 from papersteward.jobs.ui_flow import FlowRequest, ReviewParams  # noqa: E402
 from papersteward.reading.insights.contracts import (  # noqa: E402
     ReportDetail,
@@ -580,3 +589,93 @@ def delete_paper_excerpt(paper_id: str, excerpt_id: str, session: SessionDep) ->
     with domain_errors(), session.begin():
         delete_excerpt(session, paper_id, excerpt_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# —— 分析提交与候选（R2-03）———————————————————————————————————————
+
+
+class AnalysisSubmitInput(InsightsModel):
+    """提交单篇分析：预览令牌绑定清单与模型配置版本，提交时核对并消费。"""
+
+    preview_token: str = Field(min_length=1, max_length=64)
+    run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def submit_analysis(
+    request: Request, body: AnalysisSubmitInput, session: Session
+) -> dict[str, str]:
+    """校验预览令牌与授权 → 提交 ui.insight_analysis → 消费令牌。
+
+    令牌在任务预约成功后消费：提交冲突（已有任务运行）时不消耗，可重试。
+    """
+    from papersteward.jobs.ui_flow import AnalysisRunParams, FlowRequest
+
+    token_row = validate_preview_token(session, token=body.preview_token, now=utc_now())
+    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(token_row.purpose)
+    grant = next((item for item in grants if item.scope_mode == "workspace"), None) or next(
+        (
+            item
+            for item in grants
+            if item.scope_mode == "once" and item.manifest_hash == token_row.manifest_hash
+        ),
+        None,
+    )
+    if grant is None:
+        raise NotAuthorizedError("阅读分析尚未授权：请先核对数据去向并授权")
+    manifest = ReadingAnalysisManifestRepository(session).get(token_row.manifest_id)
+    if manifest is None or manifest.manifest_hash != token_row.manifest_hash:
+        raise InvalidRequestError("清单与令牌不一致，请重新生成预览")
+    run_id = body.run_id or uuid4().hex
+    spec = FlowRequest(
+        run_id=run_id,
+        kind="insight_analysis",
+        analysis=AnalysisRunParams(
+            manifest_id=token_row.manifest_id,
+            manifest_hash=token_row.manifest_hash,
+            grant_id=grant.id,
+            purpose=token_row.purpose,
+        ),
+    )
+    resolve_workspace(request).ui_flows.submit(spec)
+    with write_tx(session):
+        consume_preview_token(session, token_row, now=utc_now())
+    return {"run_id": run_id, "run_url": f"/ui/runs/{run_id}"}
+
+
+@router.post(
+    "/analysis/runs",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="提交单篇分析任务（消费预览令牌；发送边界在运行内逐篇核对）",
+)
+def post_analysis_run(
+    body: AnalysisSubmitInput, request: Request, session: SessionDep
+) -> dict[str, Any]:
+    with domain_errors():
+        return submit_analysis(request, body, session)
+
+
+@router.get(
+    "/analysis/runs",
+    summary="最近的分析运行摘要",
+)
+def get_analysis_runs(session: SessionDep) -> list[dict[str, Any]]:
+    with domain_errors():
+        return list_analysis_runs(session)
+
+
+@router.get(
+    "/analysis/runs/{run_id}/candidates",
+    summary="某次分析运行的候选列表（未经确认，仅属主可读）",
+)
+def get_run_candidates(run_id: str, session: SessionDep) -> list[dict[str, Any]]:
+    with domain_errors():
+        return candidates_view_for_run(session, run_id)
+
+
+@router.get(
+    "/analysis/candidates",
+    summary="按论文查询全部候选",
+)
+def get_paper_candidates(paper_id: str, session: SessionDep) -> list[dict[str, Any]]:
+    with domain_errors():
+        return candidates_for_paper(session, paper_id)

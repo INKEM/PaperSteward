@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 
 import pytest
 from test_reading_insight_projection import T_DONE, seed_archive, seed_paper, system_content
+from test_ui_flows import HEADERS
 
-from conftest import activate_workspace
+from conftest import activate, activate_workspace
 from papersteward.config import Settings
 from papersteward.core.entities import Run
 from papersteward.errors import InvalidRequestError, NotAuthorizedError
@@ -31,6 +32,7 @@ from papersteward.reading.insights.authorization import (
 )
 from papersteward.reading.insights.materials import (
     create_manifest,
+    create_preview_token,
 )
 from papersteward.storage import session_scope
 from papersteward.storage.db import create_session_factory
@@ -576,3 +578,152 @@ def wait_run(engine, run_id: str):
             return run
         time.sleep(0.01)
     raise AssertionError("run did not finish")
+
+
+# —— 提交入口与候选展示（JSON＋页面）—————————————————————————————
+
+
+def test_json_submit_and_candidates_roundtrip(client, migrated_engine, monkeypatch):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    params, manifest_id, manifest_hash, grant_id = setup_run(
+        factory, {"paper-api": NOTE_A, "paper-api2": "第二篇备注"}
+    )
+    del params, manifest_hash, grant_id
+
+    # 无令牌提交 → 404
+    missing = client.post("/reading-insights/analysis/runs", json={"preview_token": "ghost"})
+    assert missing.status_code == 404
+
+    # 建清单＋令牌（走页面预览同语义的 JSON：manifests）
+    manifest = client.post(
+        "/reading-insights/analysis/manifests",
+        json={"paper_ids": ["paper-api", "paper-api2"], "kinds": ["user_notes"]},
+    )
+    assert manifest.status_code == 201
+    token = manifest.json()["preview"]["token"]
+
+    # 注入 FakeLLM 后提交
+    provider = ReflectionProvider(
+        {
+            "paper-api": reflection_payload("paper-api"),
+            "paper-api2": reflection_payload("paper-api2", quote=None),
+        }
+    )
+    monkeypatch.setattr(
+        "papersteward.reading.insights.authorization.build_llm_provider",
+        lambda config, **kwargs: provider,
+    )
+    submitted = client.post("/reading-insights/analysis/runs", json={"preview_token": token})
+    assert submitted.status_code == 202
+    run_id = submitted.json()["run_id"]
+
+    run = wait_run(migrated_engine, run_id)
+    from papersteward.core.enums import RunStatus
+
+    assert run.status is RunStatus.SUCCEEDED
+
+    # 令牌已消费：同令牌再提交 → 409
+    again = client.post("/reading-insights/analysis/runs", json={"preview_token": token})
+    assert again.status_code == 409
+
+    # 运行摘要与候选
+    runs = client.get("/reading-insights/analysis/runs")
+    assert runs.status_code == 200
+    assert runs.json()[0]["run_id"] == run_id
+    assert runs.json()[0]["candidate_count"] == 2
+
+    candidates = client.get(f"/reading-insights/analysis/runs/{run_id}/candidates")
+    assert candidates.status_code == 200
+    items = candidates.json()
+    assert [item["paper_id"] for item in items] == ["paper-api", "paper-api2"]
+    assert items[0]["verification"] == "pending_user"
+    assert items[0]["quote"] == QUOTE_A
+
+    by_paper = client.get("/reading-insights/analysis/candidates?paper_id=paper-api")
+    assert [item["candidate_id"] for item in by_paper.json()] == [items[0]["candidate_id"]]
+
+    missing_run = client.get("/reading-insights/analysis/runs/ghost/candidates")
+    assert missing_run.status_code == 404
+
+
+def test_json_submit_requires_grant(client, migrated_engine):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    connect_llm(factory)
+    seed_note_paper(factory, "paper-nog", NOTE_A)
+    with session_scope(factory) as session:
+        row, _ = create_manifest(
+            session, paper_ids=["paper-nog"], kinds=["user_notes"], now=datetime.now(UTC)
+        )
+        token = create_preview_token(session, manifest_id=row.id, now=datetime.now(UTC))
+    response = client.post("/reading-insights/analysis/runs", json={"preview_token": token.token})
+    assert response.status_code == 403
+    assert "授权" in response.json()["error"]["message"]
+
+
+def test_page_analysis_flow_end_to_end(client, migrated_engine, monkeypatch):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    connect_llm(factory)
+    seed_note_paper(factory, "paper-page", NOTE_A)
+    from papersteward.reading.insights.authorization import grant_analysis_authorization
+
+    with session_scope(factory) as session:
+        grant_analysis_authorization(
+            session,
+            scope_mode="workspace",
+            material_classes=["user_notes"],
+            settings=SETTINGS,
+            now=NOW2,
+        )
+
+    # 预览（页面语义：建清单＋令牌＋提交表单）
+    preview = client.post(
+        "/ui/reading-insights/analysis/preview",
+        data={"paper_ids": "paper-page", "kind_user_notes": "1"},
+        headers=HEADERS,
+    )
+    assert preview.status_code == 200
+    assert "提交分析" in preview.text
+    assert 'name="preview_token"' in preview.text
+    import re as _re
+
+    token_match = _re.search(r'name="preview_token" value="([0-9a-f]{32})"', preview.text)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    # 提交（FakeLLM）
+    monkeypatch.setattr(
+        "papersteward.reading.insights.authorization.build_llm_provider",
+        lambda config, **kwargs: ReflectionProvider(
+            {"paper-page": reflection_payload("paper-page", quote=None)}
+        ),
+    )
+    submitted = client.post(
+        "/ui/reading-insights/analysis/runs",
+        data={"preview_token": token, "run_id": "run-page"},
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert submitted.status_code == 303
+    assert submitted.headers["location"].endswith("/ui/runs/run-page")
+
+    run = wait_run(client.app.state.engine, "run-page")
+    from papersteward.core.enums import RunStatus
+
+    assert run.status is RunStatus.SUCCEEDED
+
+    # 分析页展示运行与候选
+    page = client.get("/ui/reading-insights/analysis?run=run-page")
+    assert page.status_code == 200
+    assert "分析结果" in page.text
+    assert "候选 1 条" in page.text
+    assert "用户认为双盲流程值得复用" in page.text
+    assert "用户表达" in page.text
+    assert "候选未经你确认" in page.text
+
+    # 运行页终态跳转目标
+    detail = client.get("/ui/runs/run-page", follow_redirects=False)
+    assert detail.status_code == 303
+    assert "/ui/reading-insights/analysis?run=run-page" in detail.headers["location"]

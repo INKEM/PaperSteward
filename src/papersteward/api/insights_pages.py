@@ -63,8 +63,10 @@ from papersteward.reading.insights.contracts import (
 )
 from papersteward.reading.insights.materials import (
     add_excerpt,
+    create_manifest,
+    create_preview_token,
     delete_excerpt,
-    preview_materials,
+    manifest_content_of,
 )
 from papersteward.reading.insights.structured_feedback import (
     revise_structured_feedback,
@@ -2128,6 +2130,7 @@ def _analysis_page_body(
     *,
     preview: AnalysisManifestContent | None,
     draft: dict[str, str] | None,
+    submit: tuple[str, str, str] | None = None,
 ) -> str:
     body = (
         '<p class="back-link"><a href="/ui/reading-insights">← 阅读回顾</a></p>'
@@ -2144,12 +2147,100 @@ def _analysis_page_body(
     )
     if preview is not None:
         body += _analysis_preview_result(preview)
+        if submit is not None:
+            token, manifest_id, manifest_hash = submit
+            body += _analysis_submit_form(token, manifest_id, manifest_hash)
+    return body
+
+
+def _analysis_submit_form(token: str, manifest_id: str, manifest_hash: str) -> str:
+    """预览确认后的显式提交表单；参数只含清单/令牌标识，无私人正文。"""
+    return (
+        '<form method="post" action="/ui/reading-insights/analysis/runs" class="stacked-form">'
+        + hidden("preview_token", token)
+        + hidden("manifest_id", manifest_id)
+        + hidden("manifest_hash", manifest_hash)
+        + hidden("run_id", uuid4().hex)
+        + '<p class="muted">提交后按清单逐篇分析（每篇发送前重新核对授权与端点）；'
+        "已有候选的篇目会自动跳过。</p>" + '<button type="submit">提交分析</button></form>'
+    )
+
+
+def _analysis_runs_section(session: SessionDep, *, selected_run: str | None) -> str:
+    """分析结果区：最近运行列表与选中运行的候选（只读，未确认）。"""
+    from papersteward.reading.insights.analysis import (
+        candidates_view_for_run,
+        list_analysis_runs,
+    )
+
+    runs = list_analysis_runs(session, limit=5)
+    if not runs:
+        return (
+            "<h2>分析结果</h2>"
+            '<p class="muted">还没有分析运行。生成预览并提交后，候选会显示在这里。</p>'
+        )
+    items = ""
+    for run in runs:
+        label = "已完成" if run["status"] == "succeeded" else run["status"]
+        link = f"/ui/reading-insights/analysis?run={escape(str(run['run_id']))}"
+        items += (
+            f'<li><a href="{link}">{escape(str(run["started_at"]))}</a> · '
+            f"{escape(str(label))} · 候选 {run['candidate_count']} 条"
+            f"（完成 {run['papers_completed']} / 失败 {run['papers_failed']} / "
+            f"材料不足 {run['papers_insufficient']}）</li>"
+        )
+    body = f"<h2>分析结果</h2><ul>{items}</ul>"
+    target = selected_run or (str(runs[0]["run_id"]) if runs else None)
+    if target is None:
+        return body
+    try:
+        candidates = candidates_view_for_run(session, target)
+    except (DomainError, AppError):
+        return body + '<p class="muted">所选运行不存在。</p>'
+    body += f"<h3>选中运行的候选（{len(candidates)}）</h3>"
+    if not candidates:
+        body += (
+            '<p class="muted">这次运行没有生成候选'
+            "（可能材料不足、全部被证据核对拒绝或尚未运行到该篇）。</p>"
+        )
+        return body
+    kind_labels = {"harvest": "收获", "question": "问题", "method": "方法"}
+    nature_labels = {
+        "paper_statement": "论文陈述",
+        "user_expression": "用户表达",
+        "model_inference": "模型归纳（待核对）",
+    }
+    body += '<p class="muted">候选未经你确认，不会写入资产或长期画像；确认入口随下一批提供。</p>'
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for item in candidates:
+        grouped.setdefault(str(item["paper_id"]), []).append(item)
+    for paper_id, group in grouped.items():
+        body += f"<h4>{escape(paper_id)}</h4><ul>"
+        for item in group:
+            kind_text = kind_labels.get(str(item["kind"]), str(item["kind"]))
+            nature_text = nature_labels.get(str(item["nature"]), str(item["nature"]))
+            body += (
+                "<li><p>"
+                f"{escape(kind_text)} · {escape(nature_text)}"
+                + (" · 源已变化" if item["stale"] else "")
+                + "</p><p>"
+                + escape(str(item["statement"]))
+                + "</p>"
+            )
+            if item["conditions"]:
+                body += f'<p class="muted">适用条件：{escape(str(item["conditions"]))}</p>'
+            if item["limitations"]:
+                body += f'<p class="muted">限制：{escape(str(item["limitations"]))}</p>'
+            if item["quote"]:
+                body += f"<p>引文：{escape(str(item['quote']))}</p>"
+            body += '<p class="muted">待核对</p></li>'
+        body += "</ul>"
     return body
 
 
 @router.get("/analysis")
-async def analysis_page(session: SessionDep) -> Response:
-    return await _analysis_render(session)
+async def analysis_page(session: SessionDep, run: str | None = None) -> Response:
+    return await _analysis_render(session, selected_run=run)
 
 
 async def _analysis_render(
@@ -2160,6 +2251,8 @@ async def _analysis_render(
     notice: str | None = None,
     notice_role: str = "status",
     status_code: int = 200,
+    submit: tuple[str, str, str] | None = None,
+    selected_run: str | None = None,
 ) -> Response:
 
     if get_onboarding(session).stage.value != "active":
@@ -2168,10 +2261,9 @@ async def _analysis_render(
     notice_html = (
         f'<p role="{notice_role}" tabindex="-1" autofocus>{escape(notice)}</p>' if notice else ""
     )
-    response = _page(
-        "阅读分析 · PaperSteward",
-        notice_html + _analysis_page_body(authorization_status, preview=preview, draft=draft),
-    )
+    body = _analysis_page_body(authorization_status, preview=preview, draft=draft, submit=submit)
+    body += _analysis_runs_section(session, selected_run=selected_run)
+    response = _page("阅读分析 · PaperSteward", notice_html + body)
     response.status_code = status_code
     return response
 
@@ -2263,14 +2355,22 @@ async def preview_analysis_materials(request: Request, session: SessionDep) -> R
                     {"paper_id": paper_id, "reason": reason.strip() or "用户排除"}
                 )
             )
-        content = preview_materials(
-            session, paper_ids=paper_ids, kinds=kinds, exclusions=exclusions, now=utc_now()
-        )
+        with write_tx(session):
+            manifest, _created = create_manifest(
+                session,
+                paper_ids=paper_ids,
+                kinds=kinds,
+                exclusions=exclusions,
+                now=utc_now(),
+            )
+            token = create_preview_token(session, manifest_id=manifest.id, now=utc_now())
+        content = manifest_content_of(manifest)
         return await _analysis_render(
             session,
             preview=content,
             draft=draft,
-            notice="预览已生成；这只读取本地数据，未发送任何请求。",
+            submit=(token.token, manifest.id, manifest.manifest_hash),
+            notice="预览已生成；这只读取本地数据，未发送任何请求。确认无误后可提交分析。",
         )
     except (DomainError, AppError, ValidationError) as exc:
         message = (
@@ -2412,3 +2512,31 @@ async def delete_paper_excerpt_page(
                 status_code=getattr(exc, "status_code", 409),
                 headers=HEADERS,
             )
+
+
+@router.post("/analysis/runs")
+async def submit_analysis_page(request: Request, session: SessionDep) -> Response:
+    """提交单篇分析任务并跳运行进度页；冲突时引导到占用中的任务。"""
+    from papersteward.api.form_utils import conflict_redirect
+    from papersteward.api.insights import AnalysisSubmitInput, submit_analysis
+
+    try:
+        form = await form_fields(request)
+        body = AnalysisSubmitInput.model_validate(
+            {
+                "preview_token": form.get("preview_token", ""),
+                "run_id": form.get("run_id") or None,
+            }
+        )
+        outcome = submit_analysis(request, body, session)
+        return RedirectResponse(outcome["run_url"], status_code=303)
+    except ValidationError as exc:
+        return failure(
+            InvalidRequestError(f"分析参数无效：{json_details(exc)}"),
+            back="/ui/reading-insights/analysis",
+        )
+    except (DomainError, AppError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        return failure(exc, back="/ui/reading-insights/analysis")

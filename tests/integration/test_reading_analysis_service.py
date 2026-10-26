@@ -577,6 +577,10 @@ def test_analysis_grant_page_flow(client, migrated_engine):
 def test_analysis_preview_page_flow(client, migrated_engine):
     activate(client)
     factory = create_session_factory(client.app.state.engine)
+    # 预览令牌绑定模型配置：先连接模型（R2-03 起预览即建清单与令牌）。
+    from test_reading_analysis_runner import connect_llm
+
+    connect_llm(factory)
     with session_scope(factory) as session:
         seed_paper(session, "page-a", first_seen_at=T_DONE)
         seed_archive(
