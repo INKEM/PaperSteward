@@ -186,3 +186,17 @@ def test_recorded_in_period_uses_local_archive_day():
     assert recorded_in_period(
         datetime(2026, 10, 25, 16, 30, tzinfo=UTC), resolve_period(period_request("all"))
     )
+
+
+def test_dst_day_ends_at_next_local_midnight():
+    request = InsightPeriodRequest.model_validate(
+        {
+            "kind": "custom",
+            "timezone": "America/New_York",
+            "start_date": "2026-03-08",
+            "end_date": "2026-03-08",
+        }
+    )
+    period = resolve_period(request)
+    assert period.start_utc.isoformat() == "2026-03-08T05:00:00+00:00"
+    assert period.end_utc_exclusive.isoformat() == "2026-03-09T04:00:00+00:00"

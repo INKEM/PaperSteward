@@ -406,7 +406,7 @@ def test_revision_conflict_on_page_preserves_draft(client, migrated_engine):
     )
     assert stale.status_code == 409
     assert "已被其他页面更新" in stale.text
-    assert "另一个窗口的正文" in stale.text  # 草稿保留
+    assert ">另一个窗口的正文</textarea>" in stale.text  # 草稿完整保留且不重复
 
 
 def test_report_and_overview_show_asset_activity(client, migrated_engine):

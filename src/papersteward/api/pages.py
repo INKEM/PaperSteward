@@ -4,7 +4,7 @@ from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -905,7 +905,11 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
 
 @router.get("/papers/{paper_id}")
 def detail(
-    paper_id: str, session: SessionDep, imported: str = "", asset_created: str = ""
+    paper_id: str,
+    session: SessionDep,
+    imported: str = "",
+    asset_created: str = "",
+    return_to: str = "",
 ) -> HTMLResponse:
     try:
         paper = PaperRepository(session).get(paper_id)
@@ -921,9 +925,23 @@ def detail(
         notice = "已导入这篇已读论文并完成归档；评分与备注可在下方修订。" if imported else ""
         if asset_created:
             notice = "已保存这条资产；它关联了本篇文献。"
+        context_link = ""
+        try:
+            target = urlsplit(return_to)
+        except ValueError:
+            target = urlsplit("")
+        if (
+            not target.scheme
+            and not target.netloc
+            and (
+                target.path == "/ui/reading-insights"
+                or target.path.startswith("/ui/reading-insights/")
+            )
+        ):
+            context_link = f'<p><a href="{escape(return_to)}">返回刚才的阅读回顾</a></p>'
         return _page(
             paper.title,
-            _detail_article(session, paper_id, paper=paper, notice=notice),
+            context_link + _detail_article(session, paper_id, paper=paper, notice=notice),
             nav=nav_key,
         )
     except (DomainError, AppError) as exc:

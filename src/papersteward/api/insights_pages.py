@@ -7,7 +7,7 @@
 
 from html import escape
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -19,7 +19,7 @@ from papersteward.api.deps import SessionDep
 from papersteward.api.form_utils import failure, hidden, json_details
 from papersteward.api.form_utils import fields as form_fields
 from papersteward.api.html import HTML_HEADERS as HEADERS
-from papersteward.api.html import page as _page
+from papersteward.api.html import page as _shell_page
 from papersteward.api.html import pagination as _pagination
 from papersteward.api.html import select_options
 from papersteward.core.entities import utc_now
@@ -46,6 +46,24 @@ from papersteward.storage.onboarding import ensure_active, get_onboarding
 from papersteward.storage.repositories import PaperRepository, TaxonomyRepository
 
 router = APIRouter(prefix="/ui/reading-insights", include_in_schema=False)
+
+
+def insights_navigation() -> str:
+    return (
+        '<nav class="insights-nav" aria-label="阅读回顾">'
+        '<a href="/ui/reading-insights?kind=week">本周</a>'
+        '<a href="/ui/reading-insights?kind=month">本月</a>'
+        '<a href="/ui/reading-insights?kind=all">全部历史</a>'
+        '<a href="/ui/reading-insights/reports">已保存回顾</a>'
+        '<a href="/ui/reading-insights/assets">手工资产</a>'
+        '<a href="/ui/reading-insights/export">导出副本</a>'
+        '<a href="/ui/archive">返回归档</a></nav>'
+    )
+
+
+def _page(title: str, body: str, *, nav: str = "归档") -> HTMLResponse:
+    return _shell_page(title, insights_navigation() + body, nav=nav)
+
 
 _PRECISION_OPTIONS = (
     ("day", "按具体日期"),
@@ -120,7 +138,7 @@ def _parse_form(form: dict[str, str]) -> ReadTimeInput:
     try:
         expected = int(form.get("expected_revision") or "0")
     except ValueError as exc:
-        raise ValidationError("expected_revision 无效") from exc
+        raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
     payload: dict[str, object] = {
         "precision": form.get("precision", ""),
         "expected_revision": expected,
@@ -216,11 +234,7 @@ def overview_page(
 ) -> Response:
     """实时事实概览；无需模型与网络，GET 不产生任何写入。"""
     from papersteward.api.insights import finalize_overview, parse_overview_query
-    from papersteward.reading.insights.aggregate import (
-        OVERVIEW_DETAIL_MAX_LIMIT,
-        build_overview,
-    )
-    from papersteward.reading.insights.projection import build_projection
+    from papersteward.reading.insights.overview import collect_overview
 
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
@@ -243,22 +257,28 @@ def overview_page(
             tag=tag,
         )
         selected = section if section in _SECTIONS else "readings"
-        projection = build_projection(session, query)
-        overview = finalize_overview(
-            session,
-            build_overview(projection, tag=tag_code),
-            detail_limit=OVERVIEW_DETAIL_MAX_LIMIT,
+        raw_params["anchor_date"] = (
+            query.period.anchor_date.isoformat() if query.period.anchor_date else ""
         )
+        overview = finalize_overview(session, collect_overview(session, query), detail_limit=None)
         body = _overview_body(
             session, overview, selected=selected, offset=max(0, offset), raw_params=raw_params
         )
+        period_title = (
+            "全部历史" if query.period.kind.value == "all" else overview.metrics.period.label
+        )
         return _page(
-            f"阅读回顾 · {overview.metrics.period.label}",
+            f"阅读回顾 · {period_title}",
             body,
             nav="归档",
         )
     except (DomainError, AppError) as exc:
-        rendered = _page("阅读回顾", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+        rendered = _page(
+            "阅读回顾",
+            f'<p role="alert">{escape(exc.message)}，请修改筛选后重试。</p>'
+            + _filter_form(session, raw_params),
+            nav="归档",
+        )
         rendered.status_code = exc.status_code if isinstance(exc, AppError) else 409
         return rendered
 
@@ -289,6 +309,8 @@ def _overview_body(
     body += _filter_form(session, filter_params)
     body += "<h2>本期指标</h2>" + _metrics_table(metrics)
     body += "<h2>分布</h2>" + _distributions_html(metrics)
+    if metrics.period.kind.value == "all":
+        body += _all_history_body(session, overview)
     sections: dict[str, tuple[str, list[Any], str]] = {
         "readings": ("阅读明细", overview.readings, "阅读时间明确属于本期的独立文献"),
         "backfills": (
@@ -342,6 +364,9 @@ def _report_section(session: SessionDep, filter_params: dict[str, str]) -> str:
         + hidden("start_date", form_values["start_date"])
         + hidden("end_date", form_values["end_date"])
         + hidden("mode", form_values["mode"])
+        + hidden("tag", filter_params.get("tag", ""))
+        + '<label class="check"><input type="checkbox" name="asset_bodies" value="yes">'
+        "包含手工资产正文副本（私人原文会保存在报告中）</label>"
         + "<button>把当前筛选保存为回顾报告</button></form>"
         '<p class="muted">报告冻结当前事实：之后修改评分或日期不会改动已保存的报告。</p>'
     )
@@ -361,11 +386,12 @@ def _report_section(session: SessionDep, filter_params: dict[str, str]) -> str:
 
 
 def _filter_form(session: SessionDep, current: dict[str, str]) -> str:
-    taxonomy = TaxonomyRepository(session).latest_confirmed()
     tag_options: list[tuple[str, str]] = [("", "全部标签")]
-    if taxonomy:
+    for taxonomy in TaxonomyRepository(session).list():
         tag_options += [
-            (t.code, t.name) for t in taxonomy.tags if t.level.value == "primary" and t.active
+            (f"{taxonomy.version}::{t.code}", f"{t.name}（{taxonomy.version}）")
+            for t in taxonomy.tags
+            if t.level.value == "primary"
         ]
     kind_options = [
         ("week", "本周"),
@@ -374,7 +400,7 @@ def _filter_form(session: SessionDep, current: dict[str, str]) -> str:
         ("custom", "自选日期"),
     ]
     return (
-        '<form method="get" class="queue-filters">'
+        '<form method="get" class="queue-filters" data-insight-period>'
         '<label>周期<select name="kind">'
         + select_options(kind_options, selected=current.get("kind") or "week")
         + '</select></label><label>周/月所属日<input type="date" name="anchor_date" value="'
@@ -543,7 +569,14 @@ def _section_block(
     if name == "changes":
         body += _changes_table(window)
     else:
-        body += _papers_table(window, tz)
+        return_to = "/ui/reading-insights?" + urlencode({**page_params, "offset": offset})
+        body += _papers_table(window, tz, return_to=return_to)
+    if name != selected and total > _SECTION_PREVIEW:
+        body += (
+            '<p><a href="/ui/reading-insights?'
+            + escape(urlencode({**page_params, "section": name, "offset": 0}))
+            + '">查看此组全部明细</a></p>'
+        )
     if name == selected and total > _PAGE_SIZE:
         body += _pagination(
             "/ui/reading-insights", page_params, offset=offset, total=total, page_size=_PAGE_SIZE
@@ -551,7 +584,9 @@ def _section_block(
     return body
 
 
-def _papers_table(papers: list[Any], tz: ZoneInfo) -> str:
+def _papers_table(
+    papers: list[Any], tz: ZoneInfo, *, return_to: str = "/ui/reading-insights"
+) -> str:
     body = (
         '<table><thead><tr><th scope="col">文献</th><th scope="col">来源</th>'
         '<th scope="col">阅读时间</th><th scope="col">归档日</th>'
@@ -567,7 +602,8 @@ def _papers_table(papers: list[Any], tz: ZoneInfo) -> str:
         body += (
             "<tr>"
             '<th scope="row"><a href="/ui/papers/'
-            f'{escape(paper.paper_id)}">{escape(title)}</a></th>'
+            f"{escape(paper.paper_id)}?return_to={quote(return_to, safe='')}"
+            f'">{escape(title)}</a></th>'
             f'<td data-label="来源">{escape(source_label)}</td>'
             f'<td data-label="阅读时间">{escape(reading)}</td>'
             f'<td data-label="归档日">{escape(archived_day)}</td>'
@@ -617,6 +653,8 @@ async def submit_report_page(request: Request) -> Response:
                 "review": {
                     "period": form.get("period", ""),
                     "mode": form.get("mode", "as_recorded"),
+                    "tag": form.get("tag") or None,
+                    "asset_bodies": form.get("asset_bodies") == "yes",
                     "anchor_date": form.get("anchor_date") or None,
                     "start_date": form.get("start_date") or None,
                     "end_date": form.get("end_date") or None,
@@ -748,8 +786,25 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
         f"生成时间 {escape(detail.generated_at.isoformat())} · "
         f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a></p>'
     )
+    from papersteward.reading.insights.reports import report_input_status
+
+    state = report_input_status(session, detail, now=utc_now())
+    message = (
+        "按此报告模式与周期重新检查，相关数据已有变化；可重新保存一版回顾。"
+        if state["changed"]
+        else "按此报告模式与周期重新检查，有效事实未变化。"
+    )
     body += (
-        "<p>导出："
+        f'<p class="notice">{message} 比较截止 '
+        f"{escape(state['compared_cutoff'].isoformat())}。原快照保持不变。</p>"
+    )
+    body += (
+        "<p>导出选择："
+        f'<a href="/ui/reading-insights/export?report_id={escape(detail.report_id)}">'
+        "事实分享副本／个人副本</a></p>"
+    )
+    body += (
+        "<p>事实副本快捷导出："
         f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}'
         '?format=markdown">Markdown</a> · '
         f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}?format=json">JSON</a>　'
@@ -759,13 +814,21 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     body += "<h2>分布</h2>" + _distributions_html(metrics)
     body += f"<h2>阅读明细（{len(detail.content.readings)}）</h2>"
     body += (
-        _papers_table(list(detail.content.readings), tz)
+        _papers_table(
+            list(detail.content.readings),
+            tz,
+            return_to=f"/ui/reading-insights/reports/{detail.report_id}",
+        )
         if detail.content.readings
         else '<p class="muted">无</p>'
     )
     body += f"<h2>补录明细（{len(detail.content.backfills)}）</h2>"
     body += (
-        _papers_table(list(detail.content.backfills), tz)
+        _papers_table(
+            list(detail.content.backfills),
+            tz,
+            return_to=f"/ui/reading-insights/reports/{detail.report_id}",
+        )
         if detail.content.backfills
         else '<p class="muted">无</p>'
     )
@@ -773,7 +836,11 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     body += _report_changes_table(list(detail.content.changes))
     body += f"<h2>未定阅读日期（{len(detail.content.unassigned)}）</h2>"
     body += (
-        _papers_table(list(detail.content.unassigned), tz)
+        _papers_table(
+            list(detail.content.unassigned),
+            tz,
+            return_to=f"/ui/reading-insights/reports/{detail.report_id}",
+        )
         if detail.content.unassigned
         else '<p class="muted">无</p>'
     )
@@ -816,14 +883,23 @@ def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
     body += "<ul>"
     for ref in refs:
         if repository.get_asset(ref.asset_id) is None:
-            body += "<li>来源已移除</li>"
+            body += "<li>来源已移除"
+            if ref.body is not None:
+                body += "；此报告仍含保存时的私人正文副本：<p>" + escape(ref.body) + "</p>"
+            body += "</li>"
             continue
         kind_label = _ASSET_KIND_LABELS.get(ref.kind, ref.kind)
         body += (
             f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
             f"{escape(ref.title)}</a> · {escape(kind_label)} · "
             f"{escape(_asset_status_text(ref.status))}"
-            + (" · 含正文副本" if ref.body is not None else "")
+            + (
+                "<details><summary>保存时的私人正文副本</summary><p>"
+                + escape(ref.body).replace("\n", "<br>")
+                + "</p></details>"
+                if ref.body is not None
+                else ""
+            )
             + "</li>"
         )
     return body + "</ul>"
@@ -1039,21 +1115,26 @@ def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> s
     )
 
 
-def _asset_create_form(source_paper: str = "") -> str:
+def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None = None) -> str:
+    draft = draft or {}
     return (
-        "<details><summary>记录新的收获或问题</summary>"
+        ("<details open>" if draft else "<details>") + "<summary>记录新的收获或问题</summary>"
         '<form method="post" action="/ui/reading-insights/assets" class="stacked-form">'
         + hidden("source_paper", source_paper)
-        + hidden("idempotency_key", uuid4().hex)
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
         + '<label>类型<select name="kind">'
-        + select_options([("harvest", "收获"), ("problem", "问题")])
-        + '</select></label><label>标题<input name="title" required maxlength="256"></label>'
+        + select_options([("harvest", "收获"), ("problem", "问题")], selected=draft.get("kind"))
+        + '</select></label><label>标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title", ""))
+        + '"></label>'
         + '<label>内容<textarea name="body" rows="4" required maxlength="20000">'
+        + escape(draft.get("body", ""))
         + "</textarea></label>"
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
+        + escape(draft.get("applicability", ""))
         + "</textarea></label>"
         + '<label>来源论文 ID（每行一个，已归档文献）<textarea name="sources" rows="2">'
-        + escape(source_paper)
+        + escape(draft.get("sources", source_paper))
         + "</textarea></label>"
         + "<button>保存资产</button></form></details>"
     )
@@ -1116,10 +1197,7 @@ def _asset_form_error_page(message: str, values: dict[str, str]) -> HTMLResponse
         f'<p role="alert" tabindex="-1" autofocus>{escape(message)}'
         "（已保留你的输入，可修正后重试）</p>"
     )
-    body += _asset_create_form(values.get("source_paper", ""))
-    draft_note = values.get("body", "")
-    if draft_note:
-        body += f'<p class="muted">草稿内容已保留在下方表单之外：{escape(draft_note[:200])}</p>'
+    body += _asset_create_form(values.get("source_paper", ""), draft=values)
     return _page("手工资产", body, nav="归档")
 
 
@@ -1148,11 +1226,15 @@ def asset_page(
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
     draft = {
-        "title": title,
-        "body": body,
-        "applicability": applicability,
-        "status": status,
-        "sources": sources,
+        k: v
+        for k, v in {
+            "title": title,
+            "body": body,
+            "applicability": applicability,
+            "status": status,
+            "sources": sources,
+        }.items()
+        if v
     }
     try:
         view = get_asset_view(session, asset_id)
@@ -1205,13 +1287,13 @@ def _asset_detail_body(
         + '/revisions" class="stacked-form">'
         + hidden("expected_revision", str(revision.revision))
         + '<label>标题<input name="title" required maxlength="256" value="'
-        + escape(draft.get("title") or revision.title)
+        + escape(draft.get("title", revision.title))
         + '"></label>'
         + '<label>内容<textarea name="body" rows="4" required maxlength="20000">'
-        + escape(draft.get("body") or revision.body)
+        + escape(draft.get("body", revision.body))
         + "</textarea></label>"
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
-        + escape(draft.get("applicability") or revision.applicability or "")
+        + escape(draft.get("applicability", revision.applicability) or "")
         + "</textarea></label>"
         + '<label>状态<select name="status">'
         + select_options(
@@ -1221,10 +1303,10 @@ def _asset_detail_body(
                 ("resolved", "已解决"),
                 ("archived", "已归档"),
             ],
-            selected=draft.get("status") or revision.status,
+            selected=draft.get("status", revision.status),
         )
         + '</select></label><label>来源论文 ID（每行一个）<textarea name="sources" rows="2">'
-        + escape(draft.get("sources") or "\n".join(source.paper_id for source in revision.sources))
+        + escape(draft.get("sources", "\n".join(source.paper_id for source in revision.sources)))
         + "</textarea></label>"
         + "<button>保存为新版本</button></form>"
     )
@@ -1252,6 +1334,7 @@ def _asset_detail_body(
         f"{preview['source_count']} 条来源引用。"
         "仅引用此资产（不含正文副本）的报告会继续显示「来源已移除」。</p>"
     )
+    body += '<form method="post" action="' + url + '/delete" class="stacked-form">'
     if preview["reports_with_body"]:
         body += "<p>以下报告曾选入此资产的正文副本，可一并删除：</p><ul>"
         for report_id in preview["reports_with_body"]:
@@ -1262,7 +1345,6 @@ def _asset_detail_body(
             )
         body += "</ul>"
     body += (
-        '<form method="post" action="' + url + '/delete" class="stacked-form">'
         '<label>输入「删除资产」确认<input name="confirmation" autocomplete="off"></label>'
         "<button>删除资产</button></form>"
     )
@@ -1323,7 +1405,7 @@ def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
     try:
         expected = int(form.get("expected_revision") or "0")
     except ValueError as exc:
-        raise ValidationError("expected_revision 无效") from exc
+        raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
     lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
     return AssetRevisionInput.model_validate(
         {
@@ -1346,7 +1428,7 @@ async def asset_status_page(request: Request, asset_id: str, session: SessionDep
         try:
             expected = int(form.get("expected_revision") or "0")
         except ValueError as exc:
-            raise ValidationError("expected_revision 无效") from exc
+            raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
         with session.begin():
             ensure_active(session, action="reading_insights.assets")
             change_status(
@@ -1370,12 +1452,41 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
         form = await form_fields(request)
         if form.get("confirmation") != "删除资产":
             raise InvalidRequestError("请输入「删除资产」以确认删除")
-        preview = delete_preview(session, asset_id)
-        removable = set(preview["reports_with_body"])
-        also = [rid for rid in removable if form.get(f"also_{rid}")]
         with session.begin():
+            preview = delete_preview(session, asset_id)
+            removable = set(preview["reports_with_body"])
+            also = [rid for rid in removable if form.get(f"also_{rid}")]
             ensure_active(session, action="reading_insights.assets")
             delete_asset(session, asset_id, also_report_ids=also)
     except (DomainError, AppError) as exc:
         return failure(exc, back=f"/ui/reading-insights/assets/{asset_id}")
     return RedirectResponse("/ui/reading-insights/assets", status_code=303)
+
+
+def _all_history_body(session: SessionDep, overview: InsightOverview) -> str:
+    from papersteward.reading.insights.assets import list_assets
+
+    metrics = overview.metrics
+    body = "<h2>全历史数据完整性与来源</h2><p>包含全部归档，不对长期偏好或领域掌握作推断。</p>"
+    body += _entry_table(metrics.source_distribution, "来源", key_labels=_SOURCE_LABELS)
+    body += _entry_table(
+        metrics.date_precision_distribution,
+        "阅读日期精度",
+        key_labels={"day": "具体日期", "month": "仅知月份", "unknown": "未知"},
+    )
+    listing = list_assets(session, limit=10, offset=0)
+    body += f"<h2>当前手工资产（{listing['total']}）</h2><ul>"
+    for item in listing["items"]:
+        revision = item["revision"]
+        body += (
+            f'<li><a href="/ui/reading-insights/assets/{escape(item["asset_id"])}">'
+            f"{escape(revision['title'])}</a> · "
+            f"{escape(_asset_status_text(revision['status']))}</li>"
+        )
+    body += '</ul><p><a href="/ui/reading-insights/assets">查找全部资产</a> · '
+    today = utc_now().astimezone(ZoneInfo(metrics.period.timezone)).date()
+    period_query = urlencode(
+        {"kind": "custom", "start_date": today.replace(day=1), "end_date": today}
+    )
+    body += f'<a href="/ui/reading-insights?{escape(period_query)}">按阅读时期找回记录</a></p>'
+    return body

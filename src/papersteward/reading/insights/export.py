@@ -22,7 +22,27 @@ _MODE_LABELS = {ReviewMode.AS_RECORDED: "当时记录", ReviewMode.REVISED_NOW: 
 _SOURCE_LABELS = {"system": "系统完成", "imported": "外部导入", "unknown": "来源未明"}
 
 
-def export_report(detail: ReportDetail, format: ReportExportFormat) -> str:
+def export_report(
+    detail: ReportDetail, format: ReportExportFormat, *, include_private: bool = False
+) -> str:
+    if not include_private:
+        detail = detail.model_copy(
+            update={
+                "content": detail.content.model_copy(
+                    update={
+                        "assets": [
+                            ref.model_copy(
+                                update={
+                                    "title": "手工问题" if ref.kind == "problem" else "手工收获",
+                                    "body": None,
+                                }
+                            )
+                            for ref in detail.content.assets
+                        ]
+                    }
+                )
+            }
+        )
     if format == "json":
         return json.dumps(detail.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
     return _export_markdown(detail)
@@ -86,6 +106,15 @@ def _export_markdown(detail: ReportDetail) -> str:
             text = "备注变更"
         lines.append(f"- {change.recorded_at.isoformat()} · {_escape_md(change.paper_id)} · {text}")
     lines.append("")
+    lines += ["## 手工资产", ""]
+    for ref in detail.content.assets:
+        lines.append(
+            f"- {_escape_md(ref.title)} · {_escape_md(ref.status)} · {_escape_md(ref.asset_id)}"
+        )
+        if ref.body is not None:
+            lines.append("")
+            lines.append(_escape_md(ref.body))
+            lines.append("")
     lines.append("> 数据完整性：阅读时间未知与月精度未计入的文献单列，不冒充精确计数；")
     lines.append("> 本报告不含备注原文，评分与备注可在原归档页查看。")
     lines.append("")

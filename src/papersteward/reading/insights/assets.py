@@ -32,6 +32,7 @@ from papersteward.storage.insights import ReadingAssetRepository
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
+    RatingRow,
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
@@ -240,16 +241,23 @@ def asset_events(session: Session, *, until: datetime) -> list[tuple[str, dateti
     return [
         (row.asset_id, as_utc(row.recorded_at))
         for row in repository.all_revisions()
-        if as_utc(row.recorded_at) <= until
+        if as_utc(row.recorded_at) < until
     ]
 
 
 def _reports_with_asset(session: Session, asset_id: str) -> tuple[list[str], list[str]]:
     """含正文副本的报告与仅含引用的报告（按生成时间倒序）。"""
-    listing = list_reports(session, limit=1000, offset=0)
+    summaries = []
+    offset = 0
+    while True:
+        listing = list_reports(session, limit=200, offset=offset)
+        summaries.extend(listing["items"])
+        offset += len(listing["items"])
+        if offset >= listing["total"]:
+            break
     with_body: list[str] = []
     referenced: list[str] = []
-    for summary in listing["items"]:
+    for summary in summaries:
         detail = read_report(session, summary.report_id)
         refs = detail.content.assets
         if asset_id not in {ref.asset_id for ref in refs}:
@@ -276,6 +284,14 @@ def _resolve_sources(
         snapshot = session.get(ArchiveSnapshotRow, source.paper_id)
         if snapshot is None:
             raise DomainValidationError("asset.sources", f"来源 {source.paper_id} 不是已归档的文献")
+        if (
+            source.rating_at is not None
+            and session.get(
+                RatingRow, {"paper_id": source.paper_id, "created_at": source.rating_at}
+            )
+            is None
+        ):
+            raise DomainValidationError("asset.sources", "引用的反馈版本不存在，请重新选择")
         resolved.append(
             (
                 source.paper_id,

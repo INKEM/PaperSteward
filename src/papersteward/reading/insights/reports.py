@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from papersteward.core.errors import InvariantViolation
@@ -28,6 +29,7 @@ from papersteward.reading.insights.contracts import (
     InsightsProjection,
     NoteFeedbackChange,
     PaperProjection,
+    PeriodKind,
     ReportAssetRef,
     ReportChange,
     ReportDetail,
@@ -42,10 +44,14 @@ from papersteward.reading.insights.periods import knowledge_cutoff, resolve_peri
 from papersteward.reading.insights.projection import build_projection
 from papersteward.reading.insights.timeline import workspace_timezone
 from papersteward.storage.delivery import content_hash
-from papersteward.storage.insights import ReadingAssetRepository, ReadingReportRepository
+from papersteward.storage.insights import ReadingReportRepository
 from papersteward.storage.mappers import as_utc
-from papersteward.storage.models import ReadingReportRow
+from papersteward.storage.models import ReadingAssetRevisionRow, ReadingAssetRow, ReadingReportRow
 from papersteward.storage.repositories import RunRepository
+
+
+class ReportPreparationCancelled(Exception):
+    """只读采集在批次边界停止，不保存半成品。"""
 
 
 class ReviewSpec(Protocol):
@@ -86,12 +92,14 @@ def prepare_report(
     collected_at: datetime,
     note: Callable[[str], None] | None = None,
     include_asset_bodies: bool = False,
+    timezone_name: str | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> PreparedReport:
     """读取记录并汇总事实；只读，不产生任何写入。"""
     timezone = workspace_timezone(session)
     payload: dict[str, object] = {
         "kind": params.period,
-        "timezone": timezone.key,
+        "timezone": timezone_name or timezone.key,
     }
     for name in ("anchor_date", "start_date", "end_date"):
         value = getattr(params, name)
@@ -101,20 +109,42 @@ def prepare_report(
         period_request = InsightPeriodRequest.model_validate(payload)
     except ValueError as exc:
         raise InvalidRequestError(f"报告周期参数无效：{exc}") from None
-    query = InsightQueryRequest(period=period_request, mode=ReviewMode(params.mode))
+    query = InsightQueryRequest(
+        period=period_request, mode=ReviewMode(params.mode), tag=getattr(params, "tag", None)
+    )
     period = resolve_period(period_request)
     cutoff = knowledge_cutoff(period, query.mode, collected_at)
     if note is not None:
         note("reading")
-    projection = build_projection(session, query)
-    if note is not None:
-        note("summarizing")
-    # 延迟导入：assets 服务反向依赖本模块的删除/列表。
+
+    def checkpoint() -> None:
+        if should_abort is not None and should_abort():
+            raise ReportPreparationCancelled
+        if note is not None:
+            note("reading")
+
+    # 论文、反馈、日期与资产共享同一个真实 SQLite 读取快照。
     from papersteward.reading.insights.assets import asset_events
 
-    events = asset_events(session, until=cutoff)
-    overview = build_overview(projection, asset_events=events)
-    assets = _asset_refs_at(session, cutoff, include_bodies=include_asset_bodies)
+    session.execute(text("BEGIN DEFERRED"))
+    try:
+        projection = build_projection(
+            session, query, collected_at=collected_at, shared_snapshot=True, on_batch=checkpoint
+        )
+        events = asset_events(session, until=cutoff)
+        assets = _asset_refs_at(session, cutoff, include_bodies=include_asset_bodies)
+    finally:
+        session.rollback()
+    checkpoint()
+    if note is not None:
+        note("summarizing")
+    overview = build_overview(projection, tag=query.tag, asset_events=events)
+    if period.kind is not PeriodKind.ALL:
+        from papersteward.reading.insights.aggregate import _period_asset_events
+
+        active_ids = {asset_id for asset_id, _ in _period_asset_events(events, period)}
+        assets = [ref for ref in assets if ref.asset_id in active_ids]
+        events = [(asset_id, at) for asset_id, at in events if asset_id in active_ids]
     content = build_report_content(overview, assets=assets)
     fingerprint = report_fingerprint(
         query, period, cutoff, projection, assets=assets, asset_events=events
@@ -140,7 +170,7 @@ def report_fingerprint(
 ) -> str:
     """输入指纹：规范化请求 + 时间语义 + 全部参与数据的逐篇摘要。
 
-    包含截止与「周期已结束」标记——周期从未结束变为已结束属于语义变化，
+    截止先用于选取有效版本；「周期已结束」标记变化属于语义变化，
     必须生成新快照；不含墙钟生成时间，相同输入去重到既有快照。
     """
     closed = period.end_utc_exclusive is not None and period.end_utc_exclusive <= cutoff
@@ -149,7 +179,6 @@ def report_fingerprint(
             "contract": REPORT_CONTRACT,
             "request": query.model_dump(mode="json"),
             "period_closed": closed,
-            "knowledge_cutoff": cutoff.isoformat(),
             "papers": [paper.model_dump(mode="json") for paper in projection.papers],
             "assets": [ref.model_dump(mode="json") for ref in assets],
             "asset_events": sorted(
@@ -178,15 +207,14 @@ def _asset_refs_at(
     session: Session, cutoff: datetime, *, include_bodies: bool
 ) -> list[ReportAssetRef]:
     """快照时刻的资产引用；正文仅在用户显式勾选时保存副本。"""
-    repository = ReadingAssetRepository(session)
     refs: dict[str, ReportAssetRef] = {}
-    for row in repository.all_revisions():
-        recorded = as_utc(row.recorded_at)
-        if recorded > cutoff:
-            continue
-        asset = repository.get_asset(row.asset_id)
-        if asset is None:
-            continue
+    rows = session.execute(
+        select(ReadingAssetRevisionRow, ReadingAssetRow)
+        .join(ReadingAssetRow, ReadingAssetRow.id == ReadingAssetRevisionRow.asset_id)
+        .where(ReadingAssetRevisionRow.recorded_at < cutoff)
+        .order_by(ReadingAssetRevisionRow.asset_id, ReadingAssetRevisionRow.revision)
+    )
+    for row, asset in rows:
         refs[row.asset_id] = ReportAssetRef(
             asset_id=row.asset_id,
             title=row.title,
@@ -335,3 +363,54 @@ def _row_to_detail(row: ReadingReportRow) -> ReportDetail:
         raise InvariantViolation("reading_report.hash", "报告内容校验失败")
     content = InsightReportContent.model_validate(row.content_json)
     return ReportDetail(content=content, **_row_to_summary(row).model_dump())
+
+
+def report_input_status(session: Session, detail: ReportDetail, *, now: datetime) -> dict[str, Any]:
+    """按报告原时区、周期和模式比较有效事实；不改动保存内容。
+
+    当时记录的已结束周期仍用原历史截止；现在重新回顾允许后来更正。
+    全库库存的增减不使无关周期报告被误标为变化。
+    """
+    from papersteward.jobs.ui_flow import ReviewParams
+
+    run = RunRepository(session).get(detail.run_id)
+    request = run.stats_json.get("request", {}) if run else {}
+    review = request.get("review", {}) if isinstance(request, dict) else {}
+    payload: dict[str, Any] = {
+        "period": detail.report_kind,
+        "mode": detail.mode.value,
+        "tag": review.get("tag") if isinstance(review, dict) else None,
+    }
+    if detail.report_kind in {"week", "month"}:
+        payload["anchor_date"] = detail.period_start
+    elif detail.report_kind == "custom":
+        payload.update(start_date=detail.period_start, end_date=detail.period_end)
+    prepared = prepare_report(
+        session,
+        ReviewParams.model_validate(payload),
+        collected_at=now,
+        timezone_name=detail.timezone,
+        include_asset_bodies=any(ref.body is not None for ref in detail.content.assets),
+    )
+    period_end = prepared.period.end_utc_exclusive
+    old_closed = period_end is not None and period_end <= detail.knowledge_cutoff
+    new_closed = period_end is not None and period_end <= prepared.knowledge_cutoff
+    return {
+        "changed": old_closed != new_closed
+        or _effective_facts(detail.content) != _effective_facts(prepared.content),
+        "compared_cutoff": prepared.knowledge_cutoff,
+        "mode": detail.mode,
+    }
+
+
+def _effective_facts(content: InsightReportContent) -> dict[str, Any]:
+    payload = content.model_dump(mode="json")
+    for field in (
+        "collected_at",
+        "knowledge_cutoff",
+        "all_history_total",
+        "source_distribution",
+        "date_precision_distribution",
+    ):
+        payload["metrics"].pop(field, None)
+    return payload

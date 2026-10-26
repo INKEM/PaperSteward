@@ -44,7 +44,11 @@ from papersteward.pipeline.relevance import (
     evaluate_relevance,
     extract_profile_facets,
 )
-from papersteward.reading.insights.reports import prepare_report, save_report
+from papersteward.reading.insights.reports import (
+    ReportPreparationCancelled,
+    prepare_report,
+    save_report,
+)
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.queue import refresh_queue
 from papersteward.scoring.service import read_scoring_config
@@ -105,6 +109,7 @@ class ReviewParams(BaseModel):
     end_date: date | None = None
     # 用户显式勾选时，报告快照保存资产正文副本；默认只列整理活动与引用。
     asset_bodies: bool = False
+    tag: str | None = None
 
     @model_validator(mode="after")
     def coherent(self) -> ReviewParams:
@@ -560,25 +565,38 @@ class UIFlowManager:
         assert request.review is not None
         if self._finalize_stop(identity) or self._terminated(identity):
             return
-        with session_scope(self.factory) as session:
-            prepared = prepare_report(
-                session,
-                request.review,
-                collected_at=utc_now(),
-                note=lambda stage: self._update(identity, stage=stage),
-                include_asset_bodies=request.review.asset_bodies,
-            )
-        self._update(identity, stage="saving")
-        with session_scope(self.factory, immediate=True) as session:
-            row = save_report(session, prepared, run_id=identity, now=utc_now())
-        if row is None:
-            # 运行在保存前被取消：不落报告，execute 的终态检查收尾。
+        try:
+            with session_scope(self.factory) as session:
+                prepared = prepare_report(
+                    session,
+                    request.review,
+                    collected_at=utc_now(),
+                    note=lambda stage: self._progress(identity, stage=stage),
+                    include_asset_bodies=request.review.asset_bodies,
+                    should_abort=lambda: self._is_stopping(identity),
+                )
+        except ReportPreparationCancelled:
+            self._finalize_stop(identity)
             return
-        self._update(
-            identity,
-            generated={"report_id": row.id},
-            deduplicated=row.run_id != identity,
-        )
+        self._update(identity, stage="saving")
+        # 与取消共享提交锁；快照、结果引用与成功终态同成同败。
+        with self.lock, session_scope(self.factory, immediate=True) as session:
+            if identity in self._cancel_flags:
+                return
+            row = save_report(session, prepared, run_id=identity, now=utc_now())
+            if row is None:
+                return
+            run = session.get(RunRow, identity)
+            assert run is not None
+            run.stats_json = {
+                **run.stats_json,
+                "generated": {"report_id": row.id},
+                "deduplicated": row.run_id != identity,
+                "stage": "completed",
+                "completed": ["reading", "summarizing", "saving"],
+                "updated_at": utc_now().isoformat(),
+            }
+            RunRepository(session).transition(identity, RunStatus.SUCCEEDED, finished_at=utc_now())
 
     def refresh(self, request: FlowRequest) -> None:
         with session_scope(self.factory) as session:

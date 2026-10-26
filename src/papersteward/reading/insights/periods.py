@@ -44,9 +44,8 @@ def resolve_period(request: InsightPeriodRequest) -> ResolvedPeriod:
         label = f"{start.isoformat()}..{end.isoformat()}"
     zone = ZoneInfo(request.timezone)
     start_utc = datetime(start.year, start.month, start.day, tzinfo=zone).astimezone(UTC)
-    end_utc = datetime(end.year, end.month, end.day, tzinfo=zone).astimezone(UTC) + timedelta(
-        days=1
-    )
+    next_day = end + timedelta(days=1)
+    end_utc = datetime(next_day.year, next_day.month, next_day.day, tzinfo=zone).astimezone(UTC)
     return ResolvedPeriod(
         kind=request.kind,
         timezone=request.timezone,
@@ -91,6 +90,12 @@ def classify_membership(reading: ReadingTime, period: ResolvedPeriod) -> PeriodM
         year, month = (int(part) for part in (reading.month or "").split("-"))
         if covers_whole_month(period, year, month):
             return PeriodMembership.IN_PERIOD
+        month_start = date(year, month, 1)
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+        if (period.start_date is not None and month_end < period.start_date) or (
+            period.end_date_inclusive is not None and month_start > period.end_date_inclusive
+        ):
+            return PeriodMembership.OUTSIDE_PERIOD
         return PeriodMembership.UNASSIGNED_PARTIAL_MONTH
     assert period.start_date is not None and period.end_date_inclusive is not None
     assert reading.day is not None

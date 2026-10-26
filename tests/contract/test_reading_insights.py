@@ -394,6 +394,12 @@ def test_minimal_overview_json_is_frozen():
                 {"key": "unknown", "label": "unknown", "count": 1, "taxonomy_version": None}
             ],
             "all_history_total": 1,
+            "source_distribution": [
+                {"key": "system", "label": "system", "count": 1, "taxonomy_version": None}
+            ],
+            "date_precision_distribution": [
+                {"key": "day", "label": "day", "count": 1, "taxonomy_version": None}
+            ],
         },
         "readings": [overview.model_dump(mode="json")["readings"][0]],
         "backfills": [],

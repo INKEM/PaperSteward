@@ -4,7 +4,7 @@
 """
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from papersteward.reading.insights.contracts import (
@@ -80,7 +80,7 @@ def build_overview(
     按版本记录时间归入周期（操作数=版本数，不同资产数=去重 asset_id），
     不会增加已读篇数。
     """
-    papers = [p for p in projection.papers if tag is None or p.primary_tag == tag]
+    papers = [p for p in projection.papers if matches_tag(p, tag)]
     period = projection.period
     readings = [
         p
@@ -127,6 +127,10 @@ def build_overview(
             primary_tags=_primary_tags(readings),
             published_decades=_published_decades(readings),
             all_history_total=len(papers),
+            source_distribution=_entries(_counts(p.source.value for p in papers)),
+            date_precision_distribution=_entries(
+                _counts(p.reading.precision.value for p in papers)
+            ),
         ),
         readings=readings,
         backfills=backfills,
@@ -260,3 +264,19 @@ def _sorted_tag_entries(entries: list[CountEntry]) -> list[CountEntry]:
         entries,
         key=lambda entry: (entry.key == "", -entry.count, entry.key, entry.taxonomy_version or ""),
     )
+
+
+def matches_tag(paper: PaperProjection, tag: str | None) -> bool:
+    if not tag:
+        return True
+    if "::" in tag:
+        version, code = tag.split("::", 1)
+        return paper.taxonomy_version == version and paper.primary_tag == code
+    return paper.primary_tag == tag
+
+
+def _counts(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for value in values:
+        counts[value] += 1
+    return counts

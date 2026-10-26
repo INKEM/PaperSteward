@@ -1753,3 +1753,19 @@ tr:last-child td {
     color: var(--ink-muted);
   }
 }
+
+/* 阅读回顾共用次级入口；窄屏自动换行，保留键盘焦点。 */
+.insights-nav { display: flex; flex-wrap: wrap; gap: .65rem 1.2rem; margin: 0 0 1.5rem; }
+.insights-nav a { padding: .35rem 0; }
+@media print {
+  header, .insights-nav, .pagination, form, button, #network-alert { display: none !important; }
+  body, main, article { background: white; color: black; max-width: none; box-shadow: none; }
+  table { display: table; width: 100%; border-collapse: collapse; }
+  thead { display: table-header-group; }
+  tbody { display: table-row-group; }
+  tr { display: table-row; break-inside: avoid; }
+  th, td { display: table-cell; width: auto; overflow-wrap: anywhere; }
+  td[data-label]::before { content: none; }
+  h2, h3 { break-after: avoid; }
+  a { color: black; }
+}

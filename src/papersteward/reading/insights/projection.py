@@ -4,7 +4,7 @@
 查询数随批次增长（每批 3 条 IN 查询），不受页面 ``limit=200`` 限制。
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -49,6 +49,8 @@ def build_projection(
     *,
     collected_at: datetime | None = None,
     batch_size: int = BATCH_SIZE,
+    shared_snapshot: bool = False,
+    on_batch: Callable[[], None] | None = None,
 ) -> InsightsProjection:
     """按周期与回顾模式批量读取归档事实。
 
@@ -61,11 +63,13 @@ def build_projection(
     collected = as_utc(collected_at) if collected_at is not None else datetime.now(UTC)
     period = resolve_period(request.period)
     cutoff = knowledge_cutoff(period, request.mode, collected)
-    session.execute(text("BEGIN DEFERRED"))
+    if not shared_snapshot:
+        session.execute(text("BEGIN DEFERRED"))
     try:
-        papers = _collect_papers(session, period, cutoff, batch_size)
+        papers = _collect_papers(session, period, cutoff, batch_size, on_batch)
     finally:
-        session.rollback()
+        if not shared_snapshot:
+            session.rollback()
     return InsightsProjection(
         projection_version=PROJECTION_VERSION,
         mode=request.mode,
@@ -77,17 +81,23 @@ def build_projection(
 
 
 def _collect_papers(
-    session: Session, period: ResolvedPeriod, cutoff: datetime, batch_size: int
+    session: Session,
+    period: ResolvedPeriod,
+    cutoff: datetime,
+    batch_size: int,
+    on_batch: Callable[[], None] | None,
 ) -> list[PaperProjection]:
     """按 paper_id 稳定键集分页遍历；输出与分页顺序一致，保证结果稳定。"""
     papers: list[PaperProjection] = []
     last_id = ""
     while True:
+        if on_batch is not None:
+            on_batch()
         rows = session.scalars(
             select(ArchiveSnapshotRow)
             .where(
                 ArchiveSnapshotRow.paper_id > last_id,
-                ArchiveSnapshotRow.archived_at <= cutoff,
+                ArchiveSnapshotRow.archived_at < cutoff,
             )
             .order_by(ArchiveSnapshotRow.paper_id)
             .limit(batch_size)
@@ -115,7 +125,7 @@ def _project_batch(
         .options(
             load_only(RatingRow.paper_id, RatingRow.created_at, RatingRow.score, RatingRow.note)
         )
-        .where(RatingRow.paper_id.in_(ids), RatingRow.created_at <= cutoff)
+        .where(RatingRow.paper_id.in_(ids), RatingRow.created_at < cutoff)
         .order_by(RatingRow.paper_id, RatingRow.created_at)
     ):
         ratings_by_paper.setdefault(rating.paper_id, []).append(rating)
@@ -125,7 +135,7 @@ def _project_batch(
         .where(
             EventRow.event_type == EventType.PAPER_ARCHIVED.value,
             EventRow.paper_id.in_(ids),
-            EventRow.created_at <= cutoff,
+            EventRow.created_at < cutoff,
         )
         .order_by(EventRow.created_at, EventRow.id)
     ).all():
@@ -138,7 +148,7 @@ def _project_batch(
     # 日期声明先受知识截止限制；每篇取截止前最大版本。
     declarations: dict[str, ReadingTimeRevision] = {}
     for paper_id, items in ReadingTimeRevisionRepository(session).list_for_papers(ids).items():
-        visible = [item for item in items if as_utc(item.recorded_at) <= cutoff]
+        visible = [item for item in items if as_utc(item.recorded_at) < cutoff]
         if visible:
             declarations[paper_id] = visible[-1]
 

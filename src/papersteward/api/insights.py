@@ -13,11 +13,9 @@ from papersteward.errors import InvalidRequestError
 from papersteward.reading.insights.aggregate import (
     OVERVIEW_DETAIL_DEFAULT_LIMIT,
     OVERVIEW_DETAIL_MAX_LIMIT,
-    build_overview,
 )
 from papersteward.reading.insights.assets import (
     append_revision,
-    asset_events,
     assets_for_paper,
     create_asset,
     delete_asset,
@@ -38,7 +36,6 @@ from papersteward.reading.insights.contracts import (
     ReadTimeView,
     ReviewMode,
 )
-from papersteward.reading.insights.projection import build_projection
 from papersteward.reading.insights.timeline import (
     read_time_view,
     record_reading_time,
@@ -111,7 +108,7 @@ def parse_overview_query(
     except ValueError as exc:
         raise InvalidRequestError(f"周期参数无效：{exc}", details={"field": "period"}) from None
     tag_code = (tag or "").strip() or None
-    return InsightQueryRequest(period=period, mode=ReviewMode(mode_value)), tag_code
+    return InsightQueryRequest(period=period, mode=ReviewMode(mode_value), tag=tag_code), tag_code
 
 
 def build_tag_labels(session: Session) -> dict[tuple[str, str], str]:
@@ -124,10 +121,10 @@ def build_tag_labels(session: Session) -> dict[tuple[str, str], str]:
 
 
 def finalize_overview(
-    session: Session, overview: InsightOverview, *, detail_limit: int
+    session: Session, overview: InsightOverview, *, detail_limit: int | None
 ) -> InsightOverview:
     """给主题分布补历史标签名并截断明细；指标始终全量。"""
-    if not 1 <= detail_limit <= OVERVIEW_DETAIL_MAX_LIMIT:
+    if detail_limit is not None and not 1 <= detail_limit <= OVERVIEW_DETAIL_MAX_LIMIT:
         raise InvalidRequestError(
             f"明细条数应在 1–{OVERVIEW_DETAIL_MAX_LIMIT} 之间",
             details={"field": "detail_limit"},
@@ -174,12 +171,9 @@ def get_overview(
             mode=mode,
             tag=tag,
         )
-        projection = build_projection(session, query)
-        overview = build_overview(
-            projection,
-            tag=tag_code,
-            asset_events=asset_events(session, until=utc_now()),
-        )
+        from papersteward.reading.insights.overview import collect_overview
+
+        overview = collect_overview(session, query)
         return finalize_overview(session, overview, detail_limit=detail_limit)
 
 
@@ -264,12 +258,15 @@ def get_report_detail(report_id: str, session: SessionDep) -> Any:
     summary="从保存快照导出报告",
 )
 def get_report_export(
-    report_id: str, session: SessionDep, format: ReportExportFormat = "markdown"
+    report_id: str,
+    session: SessionDep,
+    format: ReportExportFormat = "markdown",
+    include_private: bool = False,
 ) -> Response:
     with domain_errors():
         ensure_active(session, action="reading_insights.report")
         detail = read_report(session, report_id)
-        return PlainTextResponse(export_report(detail, format))
+        return PlainTextResponse(export_report(detail, format, include_private=include_private))
 
 
 @router.delete("/reports/{report_id}", summary="删除报告快照")
@@ -363,3 +360,12 @@ def delete_asset_route(
         ensure_active(session, action="reading_insights.assets")
         removed = delete_asset(session, asset_id, also_report_ids=also_report_ids or ())
         return {"deleted": True, "removed_reports": removed}
+
+
+@router.get("/reports/{report_id}/input-status", summary="报告有效输入是否变化")
+def get_report_input_status(report_id: str, session: SessionDep) -> Any:
+    from papersteward.reading.insights.reports import report_input_status
+
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        return report_input_status(session, read_report(session, report_id), now=utc_now())

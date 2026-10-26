@@ -184,10 +184,15 @@ def reset_preview(session: SessionDep) -> HTMLResponse:
     busy = bool(RunRepository(session).running_ui_runs())
     body = (
         "<article><h2>重置工作区并重新开始</h2>"
-        "<p>将清空论文、阅读反馈、归档、历史日报、运行记录、上传材料、研究档案和分类标签。"
+        "<p>将清空论文、阅读反馈、归档、阅读日期修订、回顾报告、手工资产及全部修订、历史日报、运行记录、上传材料、研究档案和分类标签。"
         "重置前会自动保存本地数据库备份；已有导出文件与备份保留。</p>"
         f"<p>当前有 {counts.get('paper', 0)} 篇论文、{counts.get('rating', 0)} 条阅读反馈、"
         f"{counts.get('intake_material', 0)} 份研究材料。</p>"
+        f"<p>阅读日期修订 {counts.get('reading_time_revision', 0)} 条、"
+        f"回顾报告 {counts.get('reading_report', 0)} 份、"
+        f"手工资产 {counts.get('reading_asset', 0)} 个、"
+        f"资产修订 {counts.get('reading_asset_revision', 0)} 条、"
+        f"来源引用 {counts.get('reading_asset_source', 0)} 条。</p>"
     )
     if busy:
         body += '<p class="notice">有任务正在运行，完成后才能重置工作区。</p>'

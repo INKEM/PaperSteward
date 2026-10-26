@@ -350,8 +350,10 @@ def test_migration_matches_models(sqlite_engine: Engine) -> None:
         command.check(_alembic_config(connection))
 
 
+@pytest.mark.parametrize("target", ["0021", "0023"])
 def test_0021_roundtrip_preserves_archives_with_representative_data(
     sqlite_engine: Engine,
+    target: str,
 ) -> None:
     """带代表数据的 0020 → 0021 → 0020 → 0021 往返：归档保留，日期声明随 0021 移除。"""
     _upgrade(sqlite_engine, "0020")
@@ -381,7 +383,7 @@ def test_0021_roundtrip_preserves_archives_with_representative_data(
             {"import_hash": "b" * 64, "done_hash": "c" * 64},
         )
 
-    _upgrade(sqlite_engine, "0021")
+    _upgrade(sqlite_engine, target)
     with session_scope(factory) as session:
         from papersteward.core.entities import ReadingTimeRevision
         from papersteward.core.enums import ReadingTimeBasis, TimePrecision
@@ -408,7 +410,7 @@ def test_0021_roundtrip_preserves_archives_with_representative_data(
         ).all()
         assert {row[0] for row in rows} == {"p-done", "p-import"}
 
-    _upgrade(sqlite_engine, "0021")
+    _upgrade(sqlite_engine, target)
     with sqlite_engine.connect() as connection:
         assert "reading_time_revision" in set(inspect(connection).get_table_names())
         # 原归档在往返后仍可读取；声明版本已被 0021 downgrade 移除（发布说明的数据损失范围）。

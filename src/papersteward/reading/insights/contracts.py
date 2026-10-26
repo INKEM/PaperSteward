@@ -91,6 +91,7 @@ class InsightQueryRequest(InsightsModel):
 
     period: InsightPeriodRequest
     mode: ReviewMode = ReviewMode.AS_RECORDED
+    tag: str | None = None
 
 
 class ResolvedPeriod(InsightsModel):
@@ -280,6 +281,8 @@ class InsightMetrics(InsightsModel):
     primary_tags: list[CountEntry] = Field(default_factory=list)
     published_decades: list[CountEntry] = Field(default_factory=list)
     all_history_total: int = Field(ge=0)
+    source_distribution: list[CountEntry] = Field(default_factory=list)
+    date_precision_distribution: list[CountEntry] = Field(default_factory=list)
 
 
 class InsightOverview(InsightsModel):

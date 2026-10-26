@@ -151,3 +151,18 @@ document.addEventListener("keydown", (event) => {
   if (typeof form.requestSubmit === "function") form.requestSubmit();
   else form.submit();
 });
+
+// 阅读回顾切换周期时，不提交另一个周期遗留的日期字段。
+function syncInsightPeriod(form) {
+  const kind = form.elements.namedItem("kind")?.value;
+  for (const field of ["anchor_date", "start_date", "end_date"]) {
+    const input = form.elements.namedItem(field);
+    if (!input) continue;
+    input.disabled = field === "anchor_date" ? !["week", "month"].includes(kind) : kind !== "custom";
+  }
+}
+document.querySelectorAll("form[data-insight-period]").forEach(syncInsightPeriod);
+document.addEventListener("change", (event) => {
+  const form = event.target.closest?.("form[data-insight-period]");
+  if (form) syncInsightPeriod(form);
+});
