@@ -830,6 +830,34 @@ class ReadingTimeRevisionRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class ReadingWriteReceiptRow(Base):
+    """写入回执：幂等键绑定操作、目标与规范化请求哈希，可重放原结果。
+
+    身份是幂等键（工作区内唯一，唯一索引兜底并发）；``request_hash`` 为空
+    表示无法证明原始请求内容，命中即冲突。无外键：回执比目标存得久，
+    目标删除后回执仍能解释「同键重放」而不是变成一次新写入。
+    """
+
+    __tablename__ = "reading_write_receipt"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('reading_time.record', 'asset.create', 'asset.revise', 'asset.status')",
+            name="receipt_operation_allowed",
+        ),
+        Index("uq_reading_write_receipt_key", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class LLMCacheRow(Base):
     """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
 

@@ -8,7 +8,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import delete, inspect, text
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -52,6 +52,7 @@ DOMAIN_TABLES = {
     "reading_asset",
     "reading_asset_revision",
     "reading_asset_source",
+    "reading_write_receipt",
 }
 
 
@@ -284,6 +285,19 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             },
         }.items():
             assert {column["name"] for column in inspector.get_columns(table)} == columns
+        assert {column["name"] for column in inspector.get_columns("reading_write_receipt")} == {
+            "id",
+            "idempotency_key",
+            "operation",
+            "target_id",
+            "request_hash",
+            "result_json",
+            "created_at",
+        }
+        receipt_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_write_receipt")
+        }
+        assert "uq_reading_write_receipt_key" in receipt_indexes
         asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
         assert "uq_reading_asset_idempotency" in asset_indexes
         assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
@@ -291,7 +305,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "revision",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0024"
+        assert current == "0025"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -787,3 +801,130 @@ def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: 
     with session_scope(factory) as session:
         assert read_report(session, "explicit").context.scope.topic_known is False
         assert session.get(ReadingReportRow, "explicit").content_json == frozen
+
+
+def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) -> None:
+    """既有幂等键从存储行恢复请求哈希；result_json 留空，业务行在往返中原样保留。"""
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from conftest import activate_workspace
+    from papersteward.core.entities import Rating
+    from papersteward.reading.insights.assets import create_asset
+    from papersteward.reading.insights.contracts import AssetCreateInput, ReadTimeDeclaration
+    from papersteward.reading.insights.idempotency import (
+        ASSET_CREATE,
+        READING_TIME_RECORD,
+        asset_content_payload,
+        reading_time_payload,
+        request_hash,
+    )
+    from papersteward.reading.insights.timeline import record_reading_time
+    from papersteward.storage.mappers import as_utc
+    from papersteward.storage.models import ReadingWriteReceiptRow
+    from papersteward.storage.repositories import RatingRepository
+
+    _upgrade(sqlite_engine, "0024")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    with session_scope(factory) as session:
+        seed_paper(session, "receipt-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "receipt-paper",
+            archived_at=at,
+            content=system_content(title="回执种子论文", completed_at=at),
+        )
+        RatingRepository(session).add(
+            Rating("receipt-paper", 4, "有具体反馈", (), None, as_utc(at))
+        )
+        create_asset(
+            session,
+            AssetCreateInput(
+                kind="harvest",
+                title="回执资产",
+                body="正文内容",
+                sources=[{"paper_id": "receipt-paper", "rating_at": as_utc(at)}],
+                idempotency_key="receipt-asset-key",
+            ),
+            now=at,
+        )
+        record_reading_time(
+            session,
+            "receipt-paper",
+            ReadTimeDeclaration(precision="day", day=at.date()),
+            now=at,
+            expected_revision=0,
+            idempotency_key="receipt-time-key",
+        )
+
+    def business_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                    "reading_time_revision",
+                )
+            }
+
+    before = business_state()
+    expected_asset_hash = request_hash(
+        ASSET_CREATE,
+        "",
+        asset_content_payload(
+            "harvest",
+            title="回执资产",
+            body="正文内容",
+            applicability=None,
+            sources=[("receipt-paper", as_utc(at).isoformat())],
+        ),
+    )
+    expected_time_hash = request_hash(
+        READING_TIME_RECORD,
+        "receipt-paper",
+        reading_time_payload(
+            paper_id="receipt-paper",
+            precision="day",
+            day=at.date().isoformat(),
+            month=None,
+        ),
+    )
+    _upgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    with session_scope(factory) as session:
+        asset_receipt = session.scalars(
+            select(ReadingWriteReceiptRow).where(
+                ReadingWriteReceiptRow.idempotency_key == "receipt-asset-key"
+            )
+        ).one()
+        assert asset_receipt.operation == ASSET_CREATE
+        assert asset_receipt.target_id == ""
+        assert asset_receipt.request_hash == expected_asset_hash
+        assert asset_receipt.result_json is None
+        time_receipt = session.scalars(
+            select(ReadingWriteReceiptRow).where(
+                ReadingWriteReceiptRow.idempotency_key == "receipt-time-key"
+            )
+        ).one()
+        assert time_receipt.operation == READING_TIME_RECORD
+        assert time_receipt.target_id == "receipt-paper"
+        assert time_receipt.request_hash == expected_time_hash
+
+    _downgrade(sqlite_engine, "0024")
+    assert business_state() == before
+    _upgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    with sqlite_engine.connect() as connection:
+        hashes = dict(
+            connection.execute(
+                text("SELECT idempotency_key, request_hash FROM reading_write_receipt")
+            ).all()
+        )
+    assert hashes == {
+        "receipt-asset-key": expected_asset_hash,
+        "receipt-time-key": expected_time_hash,
+    }

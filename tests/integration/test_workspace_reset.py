@@ -49,7 +49,7 @@ def test_reset_backs_up_and_restarts_setup(client, tmp_path, keep_model):
     assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(backups[0]) as connection:
         assert connection.execute("SELECT count(*) FROM paper").fetchone()[0] == 1
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0024"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0025"
     # The reset workspace can be activated and used again without version conflicts.
     from conftest import activate
 

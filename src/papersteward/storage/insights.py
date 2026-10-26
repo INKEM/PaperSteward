@@ -20,6 +20,7 @@ from papersteward.storage.models import (
     ReadingReportContextRow,
     ReadingReportRow,
     ReadingTimeRevisionRow,
+    ReadingWriteReceiptRow,
 )
 from papersteward.storage.repositories import _Repository
 
@@ -142,10 +143,24 @@ class ReadingReportRepository(_Repository):
         return True
 
 
+class ReadingWriteReceiptRepository(_Repository):
+    """写入回执；查询按幂等键，插入由调用方与业务写入同事务提交。"""
+
+    def find(self, key: str) -> ReadingWriteReceiptRow | None:
+        return self._session.scalars(
+            select(ReadingWriteReceiptRow).where(ReadingWriteReceiptRow.idempotency_key == key)
+        ).first()
+
+    def add(self, row: ReadingWriteReceiptRow) -> None:
+        self._session.add(row)
+        self._flush()
+
+
 __all__ = [
     "ReadingAssetRepository",
     "ReadingReportRepository",
     "ReadingTimeRevisionRepository",
+    "ReadingWriteReceiptRepository",
 ]
 
 
