@@ -9,10 +9,13 @@ from typing import Literal
 
 from papersteward.delivery.render import markdown as _escape_md
 from papersteward.reading.insights.contracts import (
+    LIMITED_REASON_LABELS,
+    VALUE_SOURCE_LABELS,
     InsightMetrics,
     ReportDetail,
     ReportPaper,
     ReviewMode,
+    StructuredFeedbackChange,
     TimePrecision,
 )
 
@@ -75,6 +78,7 @@ def _export_markdown(detail: ReportDetail) -> str:
         f"| 反馈变化 | 评分 {metrics.feedback_changes.score_events} · "
         f"备注 {metrics.feedback_changes.note_events} · "
         f"涉及 {metrics.feedback_changes.papers_affected} 篇 |",
+        f"| 结构化理由覆盖 | {_structured_coverage_text(metrics)} |",
         f"| 全部历史（当前范围） | {metrics.all_history_total} |",
         "",
     ]
@@ -106,6 +110,19 @@ def _export_markdown(detail: ReportDetail) -> str:
             text = "备注变更"
         lines.append(f"- {change.recorded_at.isoformat()} · {_escape_md(change.paper_id)} · {text}")
     lines.append("")
+    structured = detail.content.structured_changes
+    lines.append(f"## 结构化理由修订（{len(structured)}）")
+    lines.append("")
+    if not structured:
+        lines.append("（无）")
+        lines.append("")
+    for reason_change in structured:
+        lines.append(
+            f"- {reason_change.recorded_at.isoformat()} · "
+            f"{_escape_md(reason_change.paper_id)} · "
+            + _escape_md(_structured_change_text(reason_change))
+        )
+    lines.append("")
     lines += ["## 手工资产", ""]
     for ref in detail.content.assets:
         lines.append(
@@ -127,6 +144,45 @@ def _coverage_text(metrics: InsightMetrics, key: str) -> str:
         return "暂无"
     value = getattr(coverage, key)
     return f"{value}/{coverage.total}"
+
+
+def _structured_coverage_text(metrics: InsightMetrics) -> str:
+    coverage = metrics.structured_coverage
+    if coverage.total == 0:
+        return "暂无"
+    if coverage.covered == 0:
+        return f"0/{coverage.total}"
+    return (
+        f"{coverage.covered}/{coverage.total}（价值来源 {coverage.value_sources}"
+        f" · 价值有限 {coverage.limited_reasons} · 语境 {coverage.context}"
+        f" · 收获疑问 {coverage.free_text}）"
+    )
+
+
+def _structured_change_text(change: StructuredFeedbackChange) -> str:
+    parts = [
+        f"{sign}{_code_label(labels, code)}"
+        for codes, labels, sign in (
+            (change.added_value_sources, VALUE_SOURCE_LABELS, "+"),
+            (change.removed_value_sources, VALUE_SOURCE_LABELS, "−"),
+            (change.added_limited_reasons, LIMITED_REASON_LABELS, "+"),
+            (change.removed_limited_reasons, LIMITED_REASON_LABELS, "−"),
+        )
+        for code in codes
+    ]
+    if change.context_changed:
+        parts.append("语境变更")
+    if change.free_text_changed:
+        parts.append("文字变更")
+    if change.link_changed:
+        parts.append("关联评分变更")
+    if change.cleared:
+        parts.append("全部清除")
+    return " · ".join(parts) if parts else "内容调整"
+
+
+def _code_label(labels: dict[str, str], code: str) -> str:
+    return labels.get(code, code)
 
 
 def _distribution_lines(metrics: InsightMetrics) -> list[str]:

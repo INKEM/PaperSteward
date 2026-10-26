@@ -158,13 +158,17 @@ report_fingerprint = input_fingerprint
 def build_report_content(
     overview: InsightOverview, *, assets: Sequence[ReportAssetRef] = ()
 ) -> InsightReportContent:
-    """冻结正文：剥离私人备注原文，只留评分事实与备注有无标记。"""
+    """冻结正文：剥离私人备注原文，只留评分事实与备注有无标记。
+
+    结构化理由只含版本化码与有无标记，无私人原文，直接冻结。
+    """
     return InsightReportContent(
         contract=REPORT_CONTRACT,
         metrics=overview.metrics,
         readings=[_report_paper(paper) for paper in overview.readings],
         backfills=[_report_paper(paper) for paper in overview.backfills],
         changes=[_report_change(change) for change in overview.changes],
+        structured_changes=list(overview.structured_changes),
         unassigned=[_report_paper(paper) for paper in overview.unassigned],
         assets=list(assets),
     )
@@ -194,6 +198,7 @@ def _report_paper(paper: PaperProjection) -> ReportPaper:
             )
             for version in paper.feedback
         ],
+        structured_feedback=list(paper.structured_feedback),
     )
 
 

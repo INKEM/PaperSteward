@@ -148,6 +148,7 @@ def finalize_overview(
         readings=overview.readings[:detail_limit],
         backfills=overview.backfills[:detail_limit],
         changes=overview.changes[:detail_limit],
+        structured_changes=overview.structured_changes[:detail_limit],
         unassigned=overview.unassigned[:detail_limit],
     )
 

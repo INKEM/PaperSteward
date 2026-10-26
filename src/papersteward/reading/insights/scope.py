@@ -72,7 +72,10 @@ def normalized_query(query: InsightQueryRequest) -> InsightQueryRequest:
 
 
 def effective_papers(projection: InsightsProjection) -> list[PaperProjection]:
-    """未定日期和全库来源结构只是库存说明，除非参与本期活动或全部历史。"""
+    """未定日期和全库来源结构只是库存说明，除非参与本期活动或全部历史。
+
+    本期活动包括：本期归档/导入、评分或备注修订、结构化理由修订。
+    """
     period = projection.period
     if period.kind is PeriodKind.ALL:
         return list(projection.papers)
@@ -87,16 +90,28 @@ def effective_papers(projection: InsightsProjection) -> list[PaperProjection]:
                 and paper.source in {ReadingSourceKind.SYSTEM, ReadingSourceKind.IMPORTED}
             )
             or any(recorded_in_period(change.recorded_at, period) for change in paper.changes)
+            or any(
+                recorded_in_period(change.recorded_at, period)
+                for change in paper.structured_changes
+            )
         )
     ]
 
 
+# 结构化理由字段不参与清单指纹：排除后旧数据的投影哈希与既有存储逐字节
+# 一致（旧报告不会被误标「已有变化」）；理由变化也不使已冻结报告失效，
+# 其覆盖与修订由当期统计与新一轮报告表达（阶段计划 §11）。
 def paper_manifest(papers: list[PaperProjection]) -> list[EffectivePaperInput]:
     return [
         EffectivePaperInput(
             paper_id=paper.paper_id,
             archive_hash=paper.archive_hash,
-            input_hash=content_hash(paper.model_dump(mode="json")),
+            input_hash=content_hash(
+                paper.model_dump(
+                    mode="json",
+                    exclude={"structured_feedback", "structured_changes"},
+                )
+            ),
         )
         for paper in papers
     ]

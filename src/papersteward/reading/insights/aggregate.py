@@ -24,6 +24,10 @@ from papersteward.reading.insights.contracts import (
     ResolvedPeriod,
     ScoreDistribution,
     ScoreFeedbackChange,
+    StructuredFeedbackChange,
+    StructuredFeedbackChangeStats,
+    StructuredFeedbackCoverageStats,
+    StructuredFeedbackVersion,
     TimePrecision,
 )
 from papersteward.reading.insights.periods import local_date
@@ -66,6 +70,69 @@ def feedback_changes(
     return changes
 
 
+def structured_feedback_changes(
+    paper_id: str, versions: Sequence[StructuredFeedbackVersion]
+) -> list[StructuredFeedbackChange]:
+    """相邻结构化理由版本的实际修订；初始记录不算修订，空理由不补成中立。
+
+    内容完全相同的重复提交不产事件；语境与自由文本只标记变化，不携带
+    原文；全空修订（显式清除）产生 cleared 事件。
+    """
+    changes: list[StructuredFeedbackChange] = []
+    for prev, curr in zip(versions, versions[1:], strict=False):
+        added_sources = sorted(set(curr.value_sources) - set(prev.value_sources))
+        removed_sources = sorted(set(prev.value_sources) - set(curr.value_sources))
+        added_reasons = sorted(set(curr.limited_reasons) - set(prev.limited_reasons))
+        removed_reasons = sorted(set(prev.limited_reasons) - set(curr.limited_reasons))
+        context_changed = (
+            prev.has_context_note != curr.has_context_note
+            or prev.has_applicability != curr.has_applicability
+        )
+        free_text_changed = (
+            prev.has_takeaway != curr.has_takeaway
+            or prev.has_question != curr.has_question
+            or prev.has_usage_result != curr.has_usage_result
+        )
+        link_changed = prev.rating_at != curr.rating_at
+        if not (
+            added_sources
+            or removed_sources
+            or added_reasons
+            or removed_reasons
+            or context_changed
+            or free_text_changed
+            or link_changed
+        ):
+            continue
+        changes.append(
+            StructuredFeedbackChange(
+                paper_id=paper_id,
+                recorded_at=curr.recorded_at,
+                added_value_sources=added_sources,
+                removed_value_sources=removed_sources,
+                added_limited_reasons=added_reasons,
+                removed_limited_reasons=removed_reasons,
+                context_changed=context_changed,
+                free_text_changed=free_text_changed,
+                link_changed=link_changed,
+                cleared=_structured_version_empty(curr) and not _structured_version_empty(prev),
+            )
+        )
+    return changes
+
+
+def _structured_version_empty(version: StructuredFeedbackVersion) -> bool:
+    return not (
+        version.value_sources
+        or version.limited_reasons
+        or version.has_context_note
+        or version.has_applicability
+        or version.has_takeaway
+        or version.has_question
+        or version.has_usage_result
+    )
+
+
 def build_overview(
     projection: InsightsProjection,
     *,
@@ -100,6 +167,7 @@ def build_overview(
     partial_month = [p for p in papers if p.membership is PeriodMembership.UNASSIGNED_PARTIAL_MONTH]
     unassigned = unassigned_unknown + partial_month
     period_changes = _period_changes(papers, period)
+    period_structured_changes = _period_structured_changes(papers, period)
     period_assets = _period_asset_events(asset_events, period)
     asset_ids = {asset_id for asset_id, _ in period_assets}
 
@@ -121,6 +189,8 @@ def build_overview(
             backfill_coverage=_coverage(backfills),
             score_distribution=_score_distribution(readings),
             feedback_changes=_change_stats(period_changes),
+            structured_coverage=_structured_coverage(readings),
+            structured_change_stats=_structured_change_stats(period_structured_changes),
             asset_events=len(period_assets),
             asset_assets=len(asset_ids),
             reading_modes=_reading_modes(readings),
@@ -135,6 +205,7 @@ def build_overview(
         readings=readings,
         backfills=backfills,
         changes=period_changes,
+        structured_changes=period_structured_changes,
         unassigned=unassigned,
     )
 
@@ -150,6 +221,25 @@ def _coverage(papers: Sequence[PaperProjection]) -> CoverageStats:
         if latest.note is not None:
             noted += 1
     return CoverageStats(scored=scored, noted=noted, total=len(papers))
+
+
+def _structured_coverage(papers: Sequence[PaperProjection]) -> StructuredFeedbackCoverageStats:
+    """结构化理由覆盖：与评分覆盖同一阅读样本集合，只数显式填写的维度。"""
+    stats = StructuredFeedbackCoverageStats(total=len(papers))
+    for paper in papers:
+        latest = paper.structured_feedback[-1] if paper.structured_feedback else None
+        if latest is None or _structured_version_empty(latest):
+            continue
+        stats.covered += 1
+        if latest.value_sources:
+            stats.value_sources += 1
+        if latest.limited_reasons:
+            stats.limited_reasons += 1
+        if latest.has_context_note or latest.has_applicability:
+            stats.context += 1
+        if latest.has_takeaway or latest.has_question or latest.has_usage_result:
+            stats.free_text += 1
+    return stats
 
 
 def _score_distribution(papers: Sequence[PaperProjection]) -> ScoreDistribution:
@@ -205,6 +295,32 @@ def _change_stats(changes: Sequence[FeedbackChange]) -> FeedbackChangeStats:
         score_events=score_events,
         note_events=note_events,
         papers_affected=len(papers_affected),
+    )
+
+
+def _period_structured_changes(
+    papers: Sequence[PaperProjection], period: ResolvedPeriod
+) -> list[StructuredFeedbackChange]:
+    """结构化理由修订的周期口径，与反馈变化的本地日落期规则一致。"""
+    if period.kind is PeriodKind.ALL:
+        return [change for paper in papers for change in paper.structured_changes]
+    start = period.start_date
+    end = period.end_date_inclusive
+    scoped: list[StructuredFeedbackChange] = []
+    for paper in papers:
+        for change in paper.structured_changes:
+            day = local_date(change.recorded_at, period.timezone)
+            if start is not None and end is not None and start <= day <= end:
+                scoped.append(change)
+    return scoped
+
+
+def _structured_change_stats(
+    changes: Sequence[StructuredFeedbackChange],
+) -> StructuredFeedbackChangeStats:
+    return StructuredFeedbackChangeStats(
+        events=len(changes),
+        papers_affected=len({change.paper_id for change in changes}),
     )
 
 

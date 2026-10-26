@@ -407,3 +407,56 @@ def test_concurrent_same_key_serializes_and_second_replays(client, migrated_engi
             )
             == 1
         )
+
+
+def test_projection_selects_structured_versions_by_knowledge_cutoff(insights_factory):
+    """多次修订按知识截止选择：截止前全量版本可见，截止后版本不可见。"""
+    from test_reading_insight_projection import COLLECTED, week_request
+
+    from papersteward.reading.insights.contracts import ReviewMode
+    from papersteward.reading.insights.projection import build_projection
+
+    factory = insights_factory
+    before_cutoff = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)
+    after_cutoff = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+    with session_scope(factory) as session:
+        seed_archived(session, "sf-cut")
+        revise_structured_feedback(
+            session,
+            "sf-cut",
+            sf_input(
+                expected_revision=0,
+                idempotency_key="cut-1",
+                value_sources=("method_reusable",),
+                takeaway="第一版收获",
+            ),
+            now=before_cutoff,
+        )
+        revise_structured_feedback(
+            session,
+            "sf-cut",
+            sf_input(
+                expected_revision=1,
+                idempotency_key="cut-2",
+                value_sources=("aids_understanding",),
+            ),
+            now=before_cutoff,
+        )
+        revise_structured_feedback(
+            session,
+            "sf-cut",
+            sf_input(expected_revision=2, idempotency_key="cut-3", takeaway="截止后"),
+            now=after_cutoff,
+        )
+    with session_scope(factory) as session:
+        projection = build_projection(
+            session, week_request(ReviewMode.AS_RECORDED), collected_at=COLLECTED
+        )
+        target = next(p for p in projection.papers if p.paper_id == "sf-cut")
+        # 截止前两个版本可见；截止后版本不可见。
+        assert [v.revision for v in target.structured_feedback] == [1, 2]
+        assert target.structured_feedback[-1].value_sources == ["aids_understanding"]
+        assert [c.added_value_sources for c in target.structured_changes] == [
+            ["aids_understanding"]
+        ]
+        assert all(c.recorded_at < COLLECTED for c in target.structured_changes)
