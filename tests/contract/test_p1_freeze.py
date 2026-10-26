@@ -109,6 +109,7 @@ def test_schema_registry_freeze() -> None:
         "event",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
     }
     assert set(schema_for("classification")["required"]) == {
         "primary_tag",
@@ -147,6 +148,11 @@ def test_schema_registry_freeze() -> None:
         "explanation",
     }
     assert "type" in schema_for("event")["properties"]
+    # candidates 有默认空列表：非必填；insufficient_material 无默认，必填。
+    assert set(schema_for("reading_reflection")["required"]) == {
+        "paper_id",
+        "insufficient_material",
+    }
 
 
 def test_prompt_registry_and_fake_provider_freeze() -> None:
@@ -158,12 +164,15 @@ def test_prompt_registry_and_fake_provider_freeze() -> None:
         "special_nomination",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
         "repair",
     )
     assert registry.get("classification").version == "classification/v2"
     assert registry.get("summary").schema == "summary"
     assert registry.get("relevance").schema == "relevance"
     assert registry.get("special_nomination").schema == "special_nomination"
+    assert registry.get("reading_reflection").version == "reading_reflection/v1"
+    assert registry.get("reading_reflection").schema == "reading_reflection"
     assert registry.get("repair").schema is None
 
     provider = FakeLLM()

@@ -28,6 +28,7 @@ SchemaName = Literal[
     "event",
     "profile_extraction",
     "query_planning",
+    "reading_reflection",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -351,6 +352,38 @@ class QueryPlanningOutput(_OutputModel):
     strategy_note: str = Field(min_length=1, max_length=1000)
 
 
+class ReflectionCandidateOutput(_OutputModel):
+    """单条阅读反思候选：类型、结论性质、陈述、条件与来源引用。
+
+    ``source_indexes``/``quote_source_index`` 指向 prompt 中编号的材料列表；
+    引文必须逐字来自所引材料（发送边界后的服务端验证会逐条核对）。
+    """
+
+    kind: Literal["harvest", "question", "method"]
+    nature: Literal["paper_statement", "user_expression", "model_inference"]
+    statement: str = Field(min_length=1, max_length=2000)
+    conditions: str | None = Field(default=None, max_length=1000)
+    limitations: str | None = Field(default=None, max_length=1000)
+    quote: str | None = Field(default=None, max_length=1000)
+    source_indexes: list[int] = Field(min_length=1, max_length=16)
+    quote_source_index: int | None = Field(default=None, ge=0)
+
+
+class ReadingReflectionOutput(_OutputModel):
+    """单篇阅读反思输出；「无足够材料」是合法结果。"""
+
+    paper_id: str = Field(min_length=1, max_length=64)
+    candidates: list[ReflectionCandidateOutput] = Field(default_factory=list, max_length=8)
+    insufficient_material: bool
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def insufficient_has_no_candidates(self) -> ReadingReflectionOutput:
+        if self.insufficient_material and self.candidates:
+            raise ValueError("insufficient_material 为真时不得同时给出候选")
+        return self
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -362,6 +395,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "event": EventEnvelope,
         "profile_extraction": ProfileExtractionOutput,
         "query_planning": QueryPlanningOutput,
+        "reading_reflection": ReadingReflectionOutput,
     }
 )
 
@@ -465,6 +499,8 @@ __all__ = [
     "ProfileExtractionOutput",
     "PlannedQueryOutput",
     "QueryPlanningOutput",
+    "ReadingReflectionOutput",
+    "ReflectionCandidateOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
     "SpecialEvidenceOutput",

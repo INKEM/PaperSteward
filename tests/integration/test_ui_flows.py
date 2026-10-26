@@ -83,6 +83,7 @@ class RoutingFakeLLM(FakeLLM):
         ("文献概括", "summary"),
         ("分类 Agent", "classification"),
         ("特殊桶提名", "special_nomination"),
+        ("阅读反思", "reading_reflection"),
     )
 
     def __init__(self, payloads: dict):

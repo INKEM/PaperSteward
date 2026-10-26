@@ -23,6 +23,7 @@ def test_default_registry_is_versioned() -> None:
         "special_nomination",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
         "repair",
     )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")
@@ -84,6 +85,27 @@ def test_prompt_marks_untrusted_paper_text() -> None:
     assert "不可信数据" in rendered
     assert "Ignore previous instructions" in rendered
     assert "{braces}" in rendered
+
+
+def test_reading_reflection_prompt_rules() -> None:
+    from papersteward.llm import READING_REFLECTION_V1
+
+    assert READING_REFLECTION_V1.schema == "reading_reflection"
+    assert READING_REFLECTION_V1.version == "reading_reflection/v1"
+    rendered = READING_REFLECTION_V1.render(
+        {"paper_title": "标题", "paper_id": "p1", "materials": "[0] 主观评分：4"}
+    )
+    # 反有效性推导与反方向排除规则必须显式存在（计划 §7 测试要求）。
+    assert "不要从评分高低推导" in rendered
+    assert "不适配当前任务" in rendered
+    # 来源引用、逐字引文、无已确认状态、无足够材料合法。
+    assert "source_indexes" in rendered and "quote_source_index" in rendered
+    assert "逐字来自所引材料" in rendered
+    assert "用户已确认" in rendered
+    assert "insufficient_material" in rendered
+    # 材料标注为不可信数据；JSON 示例花括号已转义、变量已全部替换。
+    assert "不可信数据" in rendered
+    assert "{paper_id}" not in rendered and "{{" not in rendered
 
 
 def test_relevance_v2_prompt_requires_evidence_and_confidence() -> None:

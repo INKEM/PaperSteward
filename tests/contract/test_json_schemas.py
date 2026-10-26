@@ -103,6 +103,36 @@ def _special_scoring() -> dict[str, object]:
     return payload
 
 
+def _reading_reflection() -> dict[str, object]:
+    return {
+        "paper_id": "p001",
+        "candidates": [
+            {
+                "kind": "method",
+                "nature": "paper_statement",
+                "statement": "论文提出用双重差分估计处理效应",
+                "conditions": "面板数据，处理组对照组可比",
+                "limitations": "未讨论平行趋势检验",
+                "quote": "we identify causal effects using a difference-in-differences",
+                "source_indexes": [0, 1],
+                "quote_source_index": 0,
+            },
+            {
+                "kind": "question",
+                "nature": "model_inference",
+                "statement": "作者未说明样本选择是否受平台规则影响",
+                "conditions": None,
+                "limitations": "仅基于摘要判断",
+                "quote": None,
+                "source_indexes": [1],
+                "quote_source_index": None,
+            },
+        ],
+        "insufficient_material": False,
+        "note": None,
+    }
+
+
 def _event() -> dict[str, object]:
     return {
         "type": "paper.done",
@@ -123,6 +153,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         "event",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
     }
 
     classification = schema_for("classification")
@@ -145,6 +176,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         ("special_scoring", _special_scoring()),
         ("special_nomination", _special_nomination()),
         ("event", _event()),
+        ("reading_reflection", _reading_reflection()),
     ],
 )
 def test_valid_payloads(name: str, payload: dict[str, object]) -> None:
@@ -314,6 +346,37 @@ def test_special_nomination_bucket_specific_requirements() -> None:
     payload["nominations"].append(dict(payload["nominations"][0]))
     with pytest.raises(SchemaError, match="只能提名一次"):
         validate_mapping("special_nomination", payload)
+
+
+def test_reading_reflection_insufficient_rejects_candidates() -> None:
+    """「无足够材料」是合法结果，但不能同时携带候选。"""
+    with pytest.raises(SchemaError, match="不得同时给出候选"):
+        validate_mapping(
+            "reading_reflection",
+            {
+                "paper_id": "p001",
+                "candidates": [
+                    {
+                        "kind": "harvest",
+                        "nature": "user_expression",
+                        "statement": "x",
+                        "source_indexes": [0],
+                    }
+                ],
+                "insufficient_material": True,
+            },
+            source="test",
+        )
+
+
+def test_reading_reflection_fixture_validates() -> None:
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/llm/reading_reflection.valid.json"
+    model = validate_json_text("reading_reflection", fixture.read_text(encoding="utf-8"))
+    data = model.model_dump(mode="json")
+    assert data["insufficient_material"] is False
+    assert data["candidates"][0]["quote_source_index"] == 0
 
 
 def test_profile_extraction_fixture_validates() -> None:
