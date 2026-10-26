@@ -24,10 +24,12 @@ from papersteward.core.errors import DomainValidationError, InvariantViolation
 from papersteward.errors import ConflictError, InvalidRequestError, NotFoundError
 from papersteward.reading.insights.contracts import (
     AssetCreateInput,
+    AssetRevisionDetail,
     AssetRevisionInput,
     AssetRevisionSummary,
     AssetSourceInput,
     AssetSourceRef,
+    AssetSourceStatus,
     AssetView,
 )
 from papersteward.reading.insights.idempotency import (
@@ -45,6 +47,7 @@ from papersteward.storage.insights import ReadingAssetRepository
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
+    PaperRow,
     RatingRow,
     ReadingAssetRevisionRow,
     ReadingAssetRow,
@@ -237,6 +240,47 @@ def get_asset_view(session: Session, asset_id: str) -> AssetView:
             )
             for row in repository.revisions(asset_id)
         ],
+    )
+
+
+def get_asset_revision_detail(
+    session: Session, asset_id: str, revision_number: int
+) -> AssetRevisionDetail:
+    """逐版本读取：旧正文、适用说明与当时来源原样返回，引用状态明确标注。
+
+    版本不存在时 404，不回退到最新内容。
+    """
+    repository = ReadingAssetRepository(session)
+    asset = repository.get_asset(asset_id)
+    if asset is None:
+        raise NotFoundError("资产不存在")
+    row = repository.revision(asset_id, revision_number)
+    if row is None:
+        raise NotFoundError("资产版本不存在")
+    source_status: list[AssetSourceStatus] = []
+    for source in repository.sources(asset_id, revision_number):
+        paper_exists = session.get(PaperRow, source.paper_id) is not None
+        rating = (
+            session.get(RatingRow, {"paper_id": source.paper_id, "created_at": source.rating_at})
+            if source.rating_at is not None
+            else None
+        )
+        source_status.append(
+            AssetSourceStatus(
+                paper_id=source.paper_id,
+                archive_hash=source.archive_hash,
+                rating_at=as_utc(source.rating_at) if source.rating_at else None,
+                paper_exists=paper_exists,
+                rating_exists=rating is not None,
+                rating_score=rating.score if rating is not None else None,
+                rating_note=rating.note if rating is not None else None,
+            )
+        )
+    return AssetRevisionDetail(
+        asset_id=asset.id,
+        kind=asset.kind,
+        revision=_revision_view(repository, row),
+        source_status=source_status,
     )
 
 

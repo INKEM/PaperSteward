@@ -20,11 +20,13 @@ from papersteward.reading.insights.assets import (
     create_asset,
     delete_asset,
     delete_preview,
+    get_asset_revision_detail,
     get_asset_view,
     list_assets,
 )
 from papersteward.reading.insights.contracts import (
     AssetCreateInput,
+    AssetRevisionDetail,
     AssetRevisionInput,
     AssetView,
     InsightOverview,
@@ -324,6 +326,17 @@ def get_asset_detail(asset_id: str, session: SessionDep) -> Any:
     with domain_errors():
         ensure_active(session, action="reading_insights.assets")
         return get_asset_view(session, asset_id)
+
+
+@router.get(
+    "/assets/{asset_id}/revisions/{revision_number}",
+    response_model=AssetRevisionDetail,
+    summary="逐版本读取历史正文与来源状态",
+)
+def get_asset_revision(asset_id: str, revision_number: int, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.assets")
+        return get_asset_revision_detail(session, asset_id, revision_number)
 
 
 @router.get("/assets/{asset_id}/papers", summary="引用某篇论文的资产")

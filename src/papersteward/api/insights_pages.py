@@ -1341,7 +1341,24 @@ def _asset_detail_body(
             ],
             selected=draft.get("status", revision.status),
         )
-        + '</select></label><label>来源论文 ID（每行一个）<textarea name="sources" rows="2">'
+        + "</select></label>"
+    )
+    if revision.sources:
+        pins = " · ".join(
+            escape(
+                f"{source.paper_id}（引用反馈 {source.rating_at.isoformat()}）"
+                if source.rating_at is not None
+                else source.paper_id
+            )
+            for source in revision.sources
+        )
+        body += (
+            f'<p class="muted">当前来源：{pins}。'
+            "保留行即保留反馈引用；删除行即移除来源，新增行按未引用反馈处理。</p>"
+        )
+    body += (
+        "<label>来源论文 ID（每行一个，已归档文献；删行=移除来源）"
+        '<textarea name="sources" rows="2">'
         + escape(draft.get("sources", "\n".join(source.paper_id for source in revision.sources)))
         + "</textarea></label>"
         + "<button>保存为新版本</button></form>"
@@ -1360,7 +1377,8 @@ def _asset_detail_body(
         body += "<h2>历史版本</h2><ul>"
         for item in view.history:
             body += (
-                f"<li>版本 {item.revision} · {escape(item.recorded_at.isoformat())} · "
+                f'<li><a href="{url}/revisions/{item.revision}">版本 {item.revision}</a> · '
+                f"{escape(item.recorded_at.isoformat())} · "
                 f"{escape(item.title)} · {escape(_asset_status_text(item.status))}</li>"
             )
         body += "</ul>"
@@ -1390,7 +1408,11 @@ def _asset_detail_body(
 
 @router.post("/assets/{asset_id}/revisions")
 async def revise_asset_page(request: Request, asset_id: str, session: SessionDep) -> Response:
-    """追加修订；冲突或非法输入重渲染资产页并保留草稿（X-01）。"""
+    """追加修订；冲突或非法输入重渲染资产页并保留草稿（X-01）。
+
+    来源 textarea 只能表达论文 ID：按当前来源建立 paper_id → 反馈版本映射，
+    未主动增删的来源原样保留反馈引用（F05）。
+    """
     from papersteward.reading.insights.assets import append_revision, get_asset_view
 
     draft: dict[str, str] = {}
@@ -1404,7 +1426,9 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
             "sources": form.get("sources", ""),
             "idempotency_key": form.get("idempotency_key", ""),
         }
-        body = _parse_asset_revision(form)
+        current = get_asset_view(session, asset_id)
+        preserve = {source.paper_id: source.rating_at for source in current.revision.sources}
+        body = _parse_asset_revision(form, preserve)
         with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = append_revision(session, asset_id, body, now=utc_now())
@@ -1437,7 +1461,14 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
         return rendered
 
 
-def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
+def _parse_asset_revision(
+    form: dict[str, str], preserve: dict[str, Any] | None = None
+) -> AssetRevisionInput:
+    """表单只提交论文 ID：已有来源按映射回填反馈版本，新增来源不带引用。
+
+    ``preserve`` 是当前版本的 paper_id → rating_at 映射；列表中删行即移除
+    来源、加行即新增来源，都是显式动作。
+    """
     from papersteward.reading.insights.contracts import AssetRevisionInput
 
     try:
@@ -1445,6 +1476,15 @@ def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
     except ValueError as exc:
         raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
     lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
+    mapping = preserve or {}
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for paper_id in lines:
+        if paper_id in seen:
+            continue
+        seen.add(paper_id)
+        pin = mapping.get(paper_id)
+        sources.append({"paper_id": paper_id, "rating_at": pin} if pin else {"paper_id": paper_id})
     return AssetRevisionInput.model_validate(
         {
             "expected_revision": expected,
@@ -1453,8 +1493,61 @@ def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
             "body": form.get("body", ""),
             "applicability": form.get("applicability") or None,
             "status": form.get("status", ""),
-            "sources": [{"paper_id": pid} for pid in lines],
+            "sources": sources,
         }
+    )
+
+
+@router.get("/assets/{asset_id}/revisions/{revision_number}")
+def asset_revision_page(session: SessionDep, asset_id: str, revision_number: int) -> Response:
+    """逐版本详情：旧正文、适用说明与当时来源；缺失引用明确说明，不指向最新内容。"""
+    from papersteward.reading.insights.assets import get_asset_revision_detail
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        detail = get_asset_revision_detail(session, asset_id, revision_number)
+    except (DomainError, AppError) as exc:
+        rendered = _page("手工资产版本", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+        rendered.status_code = exc.status_code if isinstance(exc, AppError) else 404
+        return rendered
+    revision = detail.revision
+    url = f"/ui/reading-insights/assets/{escape(asset_id)}"
+    kind_label = _ASSET_KIND_LABELS.get(detail.kind, detail.kind)
+    body = (
+        f'<p class="muted">{escape(kind_label)} · 版本 {revision.revision} · '
+        f"记录于 {escape(revision.recorded_at.isoformat())} · "
+        f"当时状态 {escape(_asset_status_text(revision.status))} · "
+        f'<a href="{url}">返回当前版本</a></p>'
+        f"<h2>{escape(revision.title)}</h2>"
+        "<p>" + escape(revision.body).replace("\n", "<br>") + "</p>"
+    )
+    if revision.applicability:
+        body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += f"<h2>当时来源（{len(revision.sources)}）</h2><ul>"
+    for status in detail.source_status:
+        if not status.paper_exists:
+            body += f"<li>来源文献已删除（原 ID {escape(status.paper_id)}）</li>"
+            continue
+        paper_link = f'<a href="/ui/papers/{escape(status.paper_id)}">{escape(status.paper_id)}</a>'
+        if status.rating_at is None:
+            body += f"<li>{paper_link} · 归档哈希 {escape(status.archive_hash[:12])}…</li>"
+            continue
+        if not status.rating_exists:
+            body += (
+                f"<li>{paper_link} · 引用的反馈版本 {escape(status.rating_at.isoformat())}"
+                " 已不存在</li>"
+            )
+            continue
+        score = f"{status.rating_score}/5" if status.rating_score is not None else "未评分"
+        note = f" · 备注：{escape(status.rating_note[:80])}" if status.rating_note else ""
+        body += (
+            f"<li>{paper_link} · 引用反馈 {escape(status.rating_at.isoformat())}"
+            f" · 评分 {score}{note} · 归档哈希 {escape(status.archive_hash[:12])}…</li>"
+        )
+    body += "</ul>"
+    return _page(
+        f"手工资产 · {escape(revision.title)} · 版本 {revision.revision}", body, nav="归档"
     )
 
 

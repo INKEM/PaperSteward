@@ -506,3 +506,24 @@ class AssetView(InsightsModel):
     created_at: AwareDatetime
     revision: AssetRevisionView
     history: list[AssetRevisionSummary] = Field(default_factory=list)
+
+
+class AssetSourceStatus(InsightsModel):
+    """来源引用在读取时的解析状态；只说明当时版本，不改历史。"""
+
+    paper_id: str
+    archive_hash: str
+    rating_at: AwareDatetime | None = None
+    paper_exists: bool = True
+    rating_exists: bool = True
+    rating_score: int | None = None
+    rating_note: str | None = None
+
+
+class AssetRevisionDetail(InsightsModel):
+    """单个历史版本的完整正文与来源状态；缺失或失效的引用明确标注。"""
+
+    asset_id: str
+    kind: str
+    revision: AssetRevisionView
+    source_status: list[AssetSourceStatus] = Field(default_factory=list)
