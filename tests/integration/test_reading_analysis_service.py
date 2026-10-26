@@ -14,11 +14,14 @@ from test_reading_insight_projection import (
     seed_paper,
     system_content,
 )
+from test_ui_flows import HEADERS
 
-from conftest import activate_workspace
+from conftest import activate, activate_workspace
 from papersteward.config import Settings
+from papersteward.delivery.contracts import ImportReadPaperInput
 from papersteward.errors import InvalidRequestError, NotAuthorizedError, NotFoundError
 from papersteward.llm.runtime import LLMSettingsPayload, save_llm_config
+from papersteward.reading.import_service import import_read_paper
 from papersteward.reading.insights.authorization import (
     build_analysis_gateway,
     ensure_send_authorized,
@@ -507,3 +510,151 @@ def test_json_excerpt_api_roundtrip(client, migrated_engine):
 
     missing_paper = client.post("/reading-insights/papers/ghost/excerpts", json={"content": "x"})
     assert missing_paper.status_code == 404
+
+
+# —— 页面 ——————————————————————————————————————————————————————
+
+
+def _connect_llm_http(factory) -> None:
+    with session_scope(factory) as session:
+        save_llm_config(
+            session,
+            LLMSettingsPayload.model_validate(
+                {"base_url": "http://127.0.0.1:9/v1", "model": "test-model", "consent": True}
+            ),
+            SETTINGS,
+        )
+
+
+def test_analysis_page_renders_blocks(client, migrated_engine):
+    activate(client)
+    _connect_llm_http(create_session_factory(client.app.state.engine))
+    page = client.get("/ui/reading-insights/analysis")
+    assert page.status_code == 200
+    assert "阅读分析" in page.text
+    # 模型连接只读摘要与连接设置分别表达
+    assert "127.0.0.1:9/v1" in page.text
+    assert "连接只在设置页修改" in page.text
+    # 授权表单：范围单选、类别勾选、知情确认必勾
+    assert 'name="acknowledged" value="1" required' in page.text
+    assert 'name="cls_user_notes"' in page.text
+    assert "还没有授权记录" in page.text
+    # 材料预览表单折叠
+    assert "材料清单预览（不发送任何请求）" in page.text
+
+
+def test_analysis_grant_page_flow(client, migrated_engine):
+    activate(client)
+    _connect_llm_http(create_session_factory(client.app.state.engine))
+
+    # 未勾选确认 → 400 且保留选择
+    denied = client.post(
+        "/ui/reading-insights/analysis/grants",
+        data={"scope_mode": "workspace", "cls_user_notes": "1"},
+        headers=HEADERS,
+    )
+    assert denied.status_code == 400
+    assert "知情确认" in denied.text
+
+    granted = client.post(
+        "/ui/reading-insights/analysis/grants",
+        data={
+            "scope_mode": "workspace",
+            "cls_user_notes": "1",
+            "cls_archive_metadata": "1",
+            "acknowledged": "1",
+        },
+        headers=HEADERS,
+    )
+    assert granted.status_code == 200
+    assert "已保存授权" in granted.text
+    assert "生效中" in granted.text
+
+    revoked = client.post("/ui/reading-insights/analysis/grants/_missing_/revoke", headers=HEADERS)
+    assert revoked.status_code == 404
+
+
+def test_analysis_preview_page_flow(client, migrated_engine):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        seed_paper(session, "page-a", first_seen_at=T_DONE)
+        seed_archive(
+            session,
+            "page-a",
+            archived_at=T_DONE,
+            content=system_content(title="页面预览", completed_at=T_DONE),
+            rating_col=4,
+            note_col="有备注",
+            ratings=[(T_DONE, 4, "有备注")],
+        )
+    empty = client.post(
+        "/ui/reading-insights/analysis/preview",
+        data={"paper_ids": "", "kind_archive_metadata": "1"},
+        headers=HEADERS,
+    )
+    assert empty.status_code == 400
+
+    preview = client.post(
+        "/ui/reading-insights/analysis/preview",
+        data={
+            "paper_ids": "page-a",
+            "kind_archive_metadata": "1",
+            "kind_user_notes": "1",
+        },
+        headers=HEADERS,
+    )
+    assert preview.status_code == 200
+    assert "选中 1 篇" in preview.text
+    assert "冻结元数据／导入摘要" in preview.text
+    assert "未发送任何请求" in preview.text
+
+    ghost = client.post(
+        "/ui/reading-insights/analysis/preview",
+        data={"paper_ids": "ghost", "kind_archive_metadata": "1"},
+        headers=HEADERS,
+    )
+    assert ghost.status_code == 400
+    assert "尚未归档" in ghost.text
+
+
+def test_detail_excerpt_block_flow(client, migrated_engine):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        paper_id = import_read_paper(
+            session,
+            ImportReadPaperInput.model_validate({"title": "摘录页面论文", "score": 4}),
+            now=NOW2,
+        )
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert detail.status_code == 200
+    assert "补充摘录（可选）" in detail.text
+    assert "私人材料" in detail.text
+
+    saved = client.post(
+        f"/ui/reading-insights/papers/{paper_id}/excerpt",
+        data={"content": "关键原文片段", "source_note": "第 2 页"},
+        headers=HEADERS,
+    )
+    assert saved.status_code == 200
+    assert "已保存摘录" in saved.text
+    assert "关键原文片段" in saved.text
+    assert "出处：第 2 页" in saved.text
+
+    # 幂等：同内容重复提交不产生第二条
+    again = client.post(
+        f"/ui/reading-insights/papers/{paper_id}/excerpt",
+        data={"content": "关键原文片段"},
+        headers=HEADERS,
+    )
+    assert again.status_code == 200
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert detail.text.count("关键原文片段") == 1
+
+    empty = client.post(
+        f"/ui/reading-insights/papers/{paper_id}/excerpt",
+        data={"content": ""},
+        headers=HEADERS,
+    )
+    assert empty.status_code == 422
