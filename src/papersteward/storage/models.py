@@ -1066,16 +1066,12 @@ class ReadingAnalysisCandidateRow(Base):
 
     __tablename__ = "reading_analysis_candidate"
     __table_args__ = (
-        CheckConstraint(
-            "kind IN ('harvest', 'question', 'method')", name="candidate_kind_allowed"
-        ),
+        CheckConstraint("kind IN ('harvest', 'question', 'method')", name="candidate_kind_allowed"),
         CheckConstraint(
             "nature IN ('paper_statement', 'user_expression', 'model_inference')",
             name="candidate_nature_allowed",
         ),
-        CheckConstraint(
-            "verification IN ('pending_user')", name="candidate_verification_allowed"
-        ),
+        CheckConstraint("verification IN ('pending_user')", name="candidate_verification_allowed"),
         Index("ix_reading_analysis_candidate_run", "run_id"),
         Index("ix_reading_analysis_candidate_manifest", "manifest_hash", "paper_id"),
         Index("ix_reading_analysis_candidate_paper", "paper_id"),
@@ -1096,9 +1092,7 @@ class ReadingAnalysisCandidateRow(Base):
     quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     quote_source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_refs_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
-    verification: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending_user"
-    )
+    verification: Mapped[str] = mapped_column(String(16), nullable=False, default="pending_user")
     stale: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
