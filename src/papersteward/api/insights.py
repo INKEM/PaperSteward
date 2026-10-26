@@ -211,6 +211,7 @@ from papersteward.reading.insights.reports import (  # noqa: E402
     delete_report,
     list_reports,
     read_report,
+    save_sanitized_report,
 )
 
 
@@ -275,10 +276,22 @@ def get_report_export(
 
 @router.delete("/reports/{report_id}", summary="删除报告快照")
 def delete_report_route(report_id: str, session: SessionDep) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         ensure_active(session, action="reading_insights.report")
         delete_report(session, report_id)
         return {"deleted": True}
+
+
+@router.post(
+    "/reports/{report_id}/sanitized",
+    response_model=ReportDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="另存脱敏版本（清除资产标题与正文副本）",
+)
+def save_sanitized_report_route(report_id: str, session: SessionDep) -> Any:
+    with domain_errors(), write_tx(session):
+        ensure_active(session, action="reading_insights.report")
+        return save_sanitized_report(session, report_id, now=utc_now())
 
 
 # —— 手工资产 JSON 接口 ————————————————————————————————————————

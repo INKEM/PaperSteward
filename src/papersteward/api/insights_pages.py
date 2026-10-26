@@ -786,18 +786,45 @@ def _report_detail_body(
 ) -> str:
     """报告详情：全部内容来自保存快照，不重算。"""
     from papersteward.reading.insights.reports import list_series_reports
+    from papersteward.storage.insights import ReadingDerivedCopyRepository
+    from papersteward.storage.repositories import RunRepository
 
     metrics = detail.content.metrics
     tz = ZoneInfo(detail.timezone)
     mode_label = _MODE_LABELS.get(detail.mode, detail.mode.value)
+    run_row = RunRepository(session).get(detail.run_id)
+    run_text = (
+        f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a>'
+        if run_row is not None
+        else f"运行 {escape(detail.run_id)}（无运行记录；可能是另存的脱敏版本）"
+    )
     body = (
         '<p class="notice">这是已保存的报告快照：内容不会随后续评分或日期修改变化。</p>'
         '<p class="muted">'
         f"模式 {escape(mode_label)} · 时区 {escape(detail.timezone)} · "
         f"知识截止 {escape(detail.knowledge_cutoff.isoformat())} · "
         f"生成时间 {escape(detail.generated_at.isoformat())} · "
-        f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a></p>'
+        f"{run_text}</p>"
     )
+    lineage = [
+        item
+        for item in ReadingDerivedCopyRepository(session).lineage_for_report(detail.report_id)
+        if item.field_kind == "sanitized" and item.source_kind == "report"
+    ]
+    if lineage:
+        source_id = escape(lineage[0].source_id)
+        body += (
+            f'<p class="notice">这是报告 <a href="/ui/reading-insights/reports/{source_id}">'
+            f"{source_id}</a> 的脱敏版本：资产标题与正文副本已移除；原报告未修改。</p>"
+        )
+    elif any(ref.title or ref.body is not None for ref in detail.content.assets):
+        body += (
+            '<form method="post" action="'
+            + f"/ui/reading-insights/reports/{escape(detail.report_id)}/sanitize"
+            + '" class="inline">'
+            + "<button>另存脱敏版本</button></form>"
+            + '<span class="muted">（新建一份清除资产标题与正文副本的报告；原报告保持不变）</span>'
+        )
     from papersteward.reading.insights.reports import report_input_status
 
     state = report_input_status(session, detail, now=utc_now())
@@ -904,6 +931,20 @@ def _report_detail_body(
     return body
 
 
+@router.post("/reports/{report_id}/sanitize")
+async def sanitize_report_page(request: Request, report_id: str, session: SessionDep) -> Response:
+    """另存脱敏版本：新建清除私人标题与正文副本的报告；原报告保持不变。"""
+    from papersteward.reading.insights.reports import save_sanitized_report
+
+    try:
+        with write_tx(session):
+            ensure_active(session, action="reading_insights.report")
+            sanitized = save_sanitized_report(session, report_id, now=utc_now())
+    except (DomainError, AppError) as exc:
+        return failure(exc, back=f"/ui/reading-insights/reports/{report_id}")
+    return RedirectResponse(f"/ui/reading-insights/reports/{sanitized.report_id}", status_code=303)
+
+
 def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
     """快照中的资产引用；资产已删除时只显示「来源已移除」，不渲染旧标题。"""
     from papersteward.storage.insights import ReadingAssetRepository
@@ -922,9 +963,10 @@ def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
             body += "</li>"
             continue
         kind_label = _ASSET_KIND_LABELS.get(ref.kind, ref.kind)
+        title_text = ref.title or "（私人标题已移除）"
         body += (
             f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
-            f"{escape(ref.title)}</a> · {escape(kind_label)} · "
+            f"{escape(title_text)}</a> · {escape(kind_label)} · "
             f"{escape(_asset_status_text(ref.status))}"
             + (f" · 范围内版本 {ref.revision}" if ref.revision is not None else "")
             + (" · 跨主题来源" if ref.cross_topic else "")

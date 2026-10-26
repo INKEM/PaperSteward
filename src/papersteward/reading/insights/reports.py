@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from papersteward.core.errors import InvariantViolation
@@ -280,6 +281,75 @@ def read_report(session: Session, report_id: str) -> ReportDetail:
     if content_hash(row.content_json) != row.content_hash:
         raise InvariantViolation("reading_report.hash", "报告内容校验失败")
     return _row_to_detail(row, _context_for_report(session, row))
+
+
+def save_sanitized_report(session: Session, report_id: str, *, now: datetime) -> ReportDetail:
+    """另存脱敏版本：新建报告行清除资产标题与正文副本；原报告与哈希不动。
+
+    ``run_id`` 固定为 ``sanitized-{原ID}``（唯一索引）：重复调用沿用既有
+    脱敏副本，不产生多份。上下文随原报告复制，同系列可比较；派生关系
+    登记在 reading_derived_copy（field_kind='sanitized'）。
+    """
+    original = read_report(session, report_id)
+    lineage = ReadingDerivedCopyRepository(session).lineage_for_report(report_id)
+    if any(item.field_kind == "sanitized" for item in lineage):
+        raise InvalidRequestError("该报告本身已是脱敏版本，无需再次另存")
+    if not any(ref.title or ref.body is not None for ref in original.content.assets):
+        raise InvalidRequestError("该报告不含可脱敏的私人内容")
+    repository = ReadingReportRepository(session)
+    original_row = repository.get(report_id)
+    assert original_row is not None
+    run_id = f"sanitized-{report_id}"
+    existing = repository.get_by_run(run_id)
+    if existing is not None:
+        return read_report(session, existing.id)
+    content = original.content.model_copy(deep=True)
+    for ref in content.assets:
+        ref.title = ""
+        ref.body = None
+    content_json = content.model_dump(mode="json")
+    row = ReadingReportRow(
+        id=uuid4().hex,
+        report_kind=original_row.report_kind,
+        period_label=original_row.period_label,
+        period_start=original_row.period_start,
+        period_end=original_row.period_end,
+        timezone=original_row.timezone,
+        review_mode=original_row.review_mode,
+        knowledge_cutoff=original_row.knowledge_cutoff,
+        generated_at=now,
+        contract=original_row.contract,
+        input_fingerprint=content_hash({"sanitized_from": report_id, "content": content_json}),
+        content_json=content_json,
+        content_hash=content_hash(content_json),
+        run_id=run_id,
+    )
+    try:
+        repository.add(row)
+    except IntegrityError:
+        # 真并发下同键第二份：回滚后沿用已存在的脱敏副本。
+        session.rollback()
+        concurrent = repository.get_by_run(run_id)
+        if concurrent is not None:
+            return read_report(session, concurrent.id)
+        raise
+    context = _context_for_report(session, original_row)
+    repository.save_context(row.id, context.model_dump(mode="json"), series_key(context))
+    ReadingDerivedCopyRepository(session).add_many(
+        [
+            ReadingDerivedCopyRow(
+                id=uuid4().hex,
+                source_kind="report",
+                source_id=report_id,
+                source_revision=None,
+                derived_kind="report",
+                derived_id=row.id,
+                field_kind="sanitized",
+                created_at=now,
+            )
+        ]
+    )
+    return read_report(session, row.id)
 
 
 def list_reports(session: Session, *, limit: int, offset: int) -> dict[str, Any]:
