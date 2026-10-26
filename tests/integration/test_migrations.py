@@ -61,6 +61,8 @@ DOMAIN_TABLES = {
     "reading_analysis_preview",
     "reading_analysis_excerpt",
     "reading_analysis_candidate",
+    "reading_asset_typed",
+    "reading_analysis_decision",
 }
 
 
@@ -407,8 +409,35 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "ix_reading_analysis_candidate_manifest",
             "ix_reading_analysis_candidate_paper",
         } <= candidate_indexes
+        assert {column["name"] for column in inspector.get_columns("reading_asset_typed")} == {
+            "asset_id",
+            "revision",
+            "content_json",
+        }
+        assert {
+            column["name"] for column in inspector.get_columns("reading_analysis_decision")
+        } == {
+            "id",
+            "candidate_id",
+            "decision",
+            "asset_id",
+            "asset_revision",
+            "paper_id",
+            "kind",
+            "statement_hash",
+            "note",
+            "decided_at",
+        }
+        decision_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_decision")
+        }
+        assert {
+            "uq_reading_analysis_decision_candidate",
+            "ix_reading_analysis_decision_memory",
+            "ix_reading_analysis_decision_asset",
+        } <= decision_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0029"
+        assert current == "0030"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1505,3 +1534,117 @@ def test_0029_derived_copy_rebuild_and_candidate_roundtrip(sqlite_engine: Engine
 
     _upgrade(sqlite_engine, "0029")
     assert derived_rows() == before
+
+
+def test_0030_asset_rebuild_and_decisions_roundtrip(sqlite_engine: Engine) -> None:
+    """资产三表经重建逐行不变；typed/decision 随升级可用；降级有守卫。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+    from papersteward.reading.insights.assets import create_asset
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    _upgrade(sqlite_engine, "0029")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with session_scope(factory) as session:
+        seed_paper(session, "d-paper", first_seen_at=at)
+        from test_reading_insight_projection import seed_archive, system_content
+
+        seed_archive(
+            session,
+            "d-paper",
+            archived_at=at,
+            content=system_content(title="决定种子", completed_at=at),
+            rating_col=4,
+            ratings=[(at, 4, None)],
+        )
+        create_asset(
+            session,
+            AssetCreateInput.model_validate(
+                {
+                    "kind": "problem",
+                    "title": "旧资产标题",
+                    "body": "旧资产正文",
+                    "sources": [{"paper_id": "d-paper", "rating_at": at}],
+                    "idempotency_key": "d-asset-key",
+                }
+            ),
+            now=at,
+        )
+
+    def asset_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name} ORDER BY 1")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                )
+            }
+
+    before = asset_state()
+    assert before["reading_asset"], "种子资产行必须存在"
+
+    _upgrade(sqlite_engine, "0030")
+    assert asset_state() == before, "三表重建必须逐行保留"
+
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at)"
+                " VALUES ('m1', 'method', 'm-key', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at,"
+                " title, body, applicability, status) VALUES ('m1', 1, :at,"
+                " '方法卡', '关键做法正文', NULL, 'active')"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_typed (asset_id, revision, content_json)"
+                ' VALUES (\'m1\', 1, \'{"problem": "P", "approach": "A"}\')'
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_decision (id, candidate_id, decision,"
+                " asset_id, asset_revision, paper_id, kind, statement_hash, note,"
+                " decided_at) VALUES ('dec1', 'c1', 'confirmed', 'm1', 1,"
+                " 'd-paper', 'method', 'a'*64, NULL, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "UPDATE reading_analysis_candidate SET verification = 'confirmed'"
+                " WHERE id = 'x'"  # 无行，占位保证 UPDATE 语法可见性
+            )
+        )
+
+    # 降级守卫：新 kind 资产存在即拒绝
+    with pytest.raises(RuntimeError, match="0030"):
+        _downgrade(sqlite_engine, "0029")
+
+    # 清掉新类型与决定 → 可降级且旧数据保留
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_decision"))
+        connection.execute(text("DELETE FROM reading_asset_typed"))
+        connection.execute(text("DELETE FROM reading_asset WHERE kind = 'method'"))
+    _downgrade(sqlite_engine, "0029")
+    assert asset_state() == before
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_asset_typed" not in tables
+    assert "reading_analysis_decision" not in tables
+
+    _upgrade(sqlite_engine, "0030")
+    assert asset_state() == before

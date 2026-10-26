@@ -15,6 +15,7 @@ from papersteward.storage.mappers import (
 )
 from papersteward.storage.models import (
     ReadingAnalysisCandidateRow,
+    ReadingAnalysisDecisionRow,
     ReadingAnalysisExcerptRow,
     ReadingAnalysisGrantRow,
     ReadingAnalysisManifestRow,
@@ -23,6 +24,7 @@ from papersteward.storage.models import (
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
+    ReadingAssetTypedRow,
     ReadingDerivedCopyRow,
     ReadingReportContextRow,
     ReadingReportRow,
@@ -433,10 +435,70 @@ class ReadingAnalysisCandidateRepository(_Repository):
         )
 
 
+class ReadingAssetTypedRepository(_Repository):
+    """方法卡/证据组的类型化版本内容；随资产版本级联，旧版本无行即无内容。"""
+
+    def put(self, asset_id: str, revision: int, content_json: dict[str, Any]) -> None:
+        self._session.add(
+            ReadingAssetTypedRow(asset_id=asset_id, revision=revision, content_json=content_json)
+        )
+        self._flush()
+
+    def get(self, asset_id: str, revision: int) -> ReadingAssetTypedRow | None:
+        return self._session.get(ReadingAssetTypedRow, {"asset_id": asset_id, "revision": revision})
+
+    def for_asset(self, asset_id: str) -> dict[int, dict[str, Any]]:
+        return {
+            row.revision: dict(row.content_json or {})
+            for row in self._session.scalars(
+                select(ReadingAssetTypedRow).where(ReadingAssetTypedRow.asset_id == asset_id)
+            ).all()
+        }
+
+
+class ReadingAnalysisDecisionRepository(_Repository):
+    """候选的用户决定；只追加，候选唯一（重复确认只生成一次）。"""
+
+    def add(self, row: ReadingAnalysisDecisionRow) -> ReadingAnalysisDecisionRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def find_by_candidate(self, candidate_id: str) -> ReadingAnalysisDecisionRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisDecisionRow).where(
+                ReadingAnalysisDecisionRow.candidate_id == candidate_id
+            )
+        ).first()
+
+    def dismissed_statement_hashes(self, paper_id: str, kind: str) -> set[str]:
+        """某论文某类型已被忽略的陈述哈希集合（拒绝记忆持久）。"""
+        rows = self._session.scalars(
+            select(ReadingAnalysisDecisionRow.statement_hash).where(
+                ReadingAnalysisDecisionRow.decision == "dismissed",
+                ReadingAnalysisDecisionRow.paper_id == paper_id,
+                ReadingAnalysisDecisionRow.kind == kind,
+            )
+        ).all()
+        return set(rows)
+
+    def by_asset(self, asset_id: str) -> list[ReadingAnalysisDecisionRow]:
+        """以某资产为决定目标的记录（确认生成/合并追加），按时间排序。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisDecisionRow)
+                .where(ReadingAnalysisDecisionRow.asset_id == asset_id)
+                .order_by(ReadingAnalysisDecisionRow.decided_at)
+            ).all()
+        )
+
+
 __all__ = [
     "ReadingAnalysisCandidateRepository",
+    "ReadingAnalysisDecisionRepository",
     "ReadingAnalysisExcerptRepository",
     "ReadingAnalysisGrantRepository",
+    "ReadingAssetTypedRepository",
     "ReadingAnalysisManifestRepository",
     "ReadingAnalysisPreviewRepository",
     "ReadingAnalysisRevokeRepository",

@@ -688,7 +688,10 @@ class ReadingAssetRow(Base):
 
     __tablename__ = "reading_asset"
     __table_args__ = (
-        CheckConstraint("kind IN ('harvest', 'problem')", name="asset_kind_allowed"),
+        CheckConstraint(
+            "kind IN ('harvest', 'problem', 'method', 'evidence')",
+            name="asset_kind_allowed",
+        ),
         Index("uq_reading_asset_idempotency", "idempotency_key", unique=True),
     )
 
@@ -1057,8 +1060,8 @@ class ReadingAnalysisExcerptRow(Base):
 class ReadingAnalysisCandidateRow(Base):
     """单篇分析候选（R2-03）：收获/问题/方法，带来源、性质与核对状态。
 
-    ``verification`` 恒为 ``pending_user``——模型不能给自己生成已确认状态；
-    用户确认/修订/合并是后续批次的用户决定。``source_refs_json`` 记录所引
+    ``verification`` 只能由用户决定流程从 ``pending_user`` 推进（模型不能
+    给自己生成已确认状态）；决定历史在 ``reading_analysis_decision``。``source_refs_json`` 记录所引
     材料的类别/目标/版本锚点（与清单一致），``stale`` 表示落库时源版本已
     漂移（不假装基于最新材料）。无外键：Run 行不删除，候选去留由用户
     决定流程处理。
@@ -1095,6 +1098,65 @@ class ReadingAnalysisCandidateRow(Base):
     verification: Mapped[str] = mapped_column(String(16), nullable=False, default="pending_user")
     stale: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAssetTypedRow(Base):
+    """方法卡/证据组的类型化版本内容；随资产版本级联删除。
+
+    结构化字段与自由正文分列存储（不把方法 JSON 硬塞进 body）；
+    旧版本无对应行即无类型化内容，不原地升级。
+    """
+
+    __tablename__ = "reading_asset_typed"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["asset_id", "revision"],
+            ["reading_asset_revision.asset_id", "reading_asset_revision.revision"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class ReadingAnalysisDecisionRow(Base):
+    """候选的用户决定（R2-04）：确认/忽略/合并，可回看、不删候选行。
+
+    ``candidate_id`` 唯一——重复确认只生成一次；``statement_hash`` 供
+    「拒绝记忆持久」（再次分析时同陈述不重复弹出，改措辞的新候选仍展示）。
+    ``asset_id``/``asset_revision`` 指向确认生成的资产或合并追加的版本。
+    """
+
+    __tablename__ = "reading_analysis_decision"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('confirmed', 'dismissed', 'merged')",
+            name="candidate_decision_allowed",
+        ),
+        Index("uq_reading_analysis_decision_candidate", "candidate_id", unique=True),
+        Index(
+            "ix_reading_analysis_decision_memory",
+            "paper_id",
+            "kind",
+            "statement_hash",
+        ),
+        Index("ix_reading_analysis_decision_asset", "asset_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    asset_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    paper_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    statement_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 
