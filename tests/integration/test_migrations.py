@@ -54,6 +54,7 @@ DOMAIN_TABLES = {
     "reading_asset_source",
     "reading_write_receipt",
     "reading_derived_copy",
+    "reading_structured_feedback",
 }
 
 
@@ -317,12 +318,36 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
         } <= derived_indexes
         asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
         assert "uq_reading_asset_idempotency" in asset_indexes
+        assert {
+            column["name"] for column in inspector.get_columns("reading_structured_feedback")
+        } == {
+            "paper_id",
+            "revision",
+            "recorded_at",
+            "rating_at",
+            "value_sources_json",
+            "limited_reasons_json",
+            "context_note",
+            "applicability",
+            "takeaway",
+            "question",
+            "usage_result",
+            "vocabulary_version",
+            "idempotency_key",
+        }
+        structured_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_structured_feedback")
+        }
+        assert "uq_reading_structured_feedback_key" in structured_indexes
+        assert inspector.get_pk_constraint("reading_structured_feedback")[
+            "constrained_columns"
+        ] == ["paper_id", "revision"]
         assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
             "asset_id",
             "revision",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0026"
+        assert current == "0027"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1080,3 +1105,93 @@ def test_0026_derived_copy_backfill_registers_private_fields(sqlite_engine: Engi
     with session_scope(factory) as session:
         count = session.scalar(select(func.count()).select_from(ReadingDerivedCopyRow))
     assert count == len(expected)
+
+
+def test_0027_receipt_rebuild_preserves_rows_and_extends_operations(
+    sqlite_engine: Engine,
+) -> None:
+    """回执表重建逐行保留既有回执；新 CHECK 接受结构化操作码，降级移除。"""
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from conftest import activate_workspace
+    from papersteward.reading.insights.contracts import ReadTimeDeclaration
+    from papersteward.reading.insights.timeline import record_reading_time
+
+    _upgrade(sqlite_engine, "0026")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    with session_scope(factory) as session:
+        seed_paper(session, "sf-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "sf-paper",
+            archived_at=at,
+            content=system_content(title="结构化种子论文", completed_at=at),
+        )
+        record_reading_time(
+            session,
+            "sf-paper",
+            ReadTimeDeclaration(precision="day", day=at.date()),
+            now=at,
+            expected_revision=0,
+            idempotency_key="sf-time-key",
+        )
+
+    def receipts() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT idempotency_key, operation, target_id, request_hash,"
+                    " result_json, created_at FROM reading_write_receipt"
+                    " ORDER BY idempotency_key"
+                )
+            ).all()
+        return [tuple(row) for row in rows]
+
+    before = receipts()
+    assert before, "种子写入应产生既有操作码回执行"
+
+    # 0026 的 CHECK 拒绝新操作码（验证扩展确实由本迁移引入）。
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_write_receipt (id, idempotency_key, operation,"
+                " target_id, request_hash, result_json, created_at) VALUES ("
+                "'rej', 'newop-key', 'structured_feedback.revise', 'sf-paper',"
+                " NULL, NULL, '2026-10-21 08:00:00.000000')"
+            )
+        )
+
+    _upgrade(sqlite_engine, "0027")
+    assert receipts() == before, "回执表重建必须逐行保留既有数据"
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_write_receipt (id, idempotency_key, operation,"
+                " target_id, request_hash, result_json, created_at) VALUES ("
+                "'acc', 'sf-key-1', 'structured_feedback.revise', 'sf-paper',"
+                " 'aabbccdd', NULL, '2026-10-21 08:00:00.000000')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_structured_feedback (paper_id, revision, recorded_at,"
+                " rating_at, value_sources_json, limited_reasons_json, context_note,"
+                " applicability, takeaway, question, usage_result, vocabulary_version,"
+                " idempotency_key) VALUES ("
+                "'sf-paper', 1, '2026-10-21 08:00:00.000000', NULL, '[\"aids_understanding\"]',"
+                " '[]', NULL, NULL, '学到了X', NULL, NULL, 'reading-feedback.vocab/1', 'sf-key-1')"
+            )
+        )
+
+    _downgrade(sqlite_engine, "0026")
+    assert receipts() == before, "降级移除新操作码回执，旧回执原样保留"
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_structured_feedback" not in tables
+
+    _upgrade(sqlite_engine, "0027")
+    assert receipts() == before, "再升级不恢复已删除的数据"

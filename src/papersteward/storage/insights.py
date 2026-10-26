@@ -20,6 +20,7 @@ from papersteward.storage.models import (
     ReadingDerivedCopyRow,
     ReadingReportContextRow,
     ReadingReportRow,
+    ReadingStructuredFeedbackRow,
     ReadingTimeRevisionRow,
     ReadingWriteReceiptRow,
 )
@@ -192,10 +193,45 @@ class ReadingDerivedCopyRepository(_Repository):
         )
 
 
+class ReadingStructuredFeedbackRepository(_Repository):
+    """结构化阅读理由版本；只追加与按论文读取，不提供 update/delete。"""
+
+    def add(self, row: ReadingStructuredFeedbackRow) -> ReadingStructuredFeedbackRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingStructuredFeedbackRow]:
+        statement = (
+            select(ReadingStructuredFeedbackRow)
+            .where(ReadingStructuredFeedbackRow.paper_id == paper_id)
+            .order_by(ReadingStructuredFeedbackRow.revision)
+        )
+        return list(self._session.scalars(statement).all())
+
+    def list_for_papers(
+        self, paper_ids: Collection[str]
+    ) -> dict[str, list[ReadingStructuredFeedbackRow]]:
+        """批量按论文取全部版本；每篇内部按 revision 升序，与逐篇版一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(ReadingStructuredFeedbackRow)
+            .where(ReadingStructuredFeedbackRow.paper_id.in_(ids))
+            .order_by(ReadingStructuredFeedbackRow.paper_id, ReadingStructuredFeedbackRow.revision)
+        ).all()
+        by_paper: dict[str, list[ReadingStructuredFeedbackRow]] = {}
+        for row in rows:
+            by_paper.setdefault(row.paper_id, []).append(row)
+        return by_paper
+
+
 __all__ = [
     "ReadingAssetRepository",
     "ReadingDerivedCopyRepository",
     "ReadingReportRepository",
+    "ReadingStructuredFeedbackRepository",
     "ReadingTimeRevisionRepository",
     "ReadingWriteReceiptRepository",
 ]

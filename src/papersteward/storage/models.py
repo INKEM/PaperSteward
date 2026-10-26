@@ -841,7 +841,8 @@ class ReadingWriteReceiptRow(Base):
     __tablename__ = "reading_write_receipt"
     __table_args__ = (
         CheckConstraint(
-            "operation IN ('reading_time.record', 'asset.create', 'asset.revise', 'asset.status')",
+            "operation IN ('reading_time.record', 'asset.create', 'asset.revise', 'asset.status',"
+            " 'structured_feedback.revise')",
             name="receipt_operation_allowed",
         ),
         Index("uq_reading_write_receipt_key", "idempotency_key", unique=True),
@@ -899,6 +900,36 @@ class ReadingDerivedCopyRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class ReadingStructuredFeedbackRow(Base):
+    """结构化阅读理由版本；只追加，不写评分/备注/归档。
+
+    理由码与自由文本只决定写入结果，哈希进回执；``rating_at`` 指向具体评分
+    版本（``rating.created_at``），后续评分修订不移动该关联。``(paper_id,
+    revision)`` 主键提供乐观并发兜底，幂等键唯一索引支撑重放。
+    """
+
+    __tablename__ = "reading_structured_feedback"
+    __table_args__ = (Index("uq_reading_structured_feedback_key", "idempotency_key", unique=True),)
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    rating_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    value_sources_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    limited_reasons_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applicability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    takeaway: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vocabulary_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
 class LLMCacheRow(Base):
