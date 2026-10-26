@@ -188,6 +188,136 @@ class NoteFeedbackChange(InsightsModel):
 FeedbackChange = Annotated[ScoreFeedbackChange | NoteFeedbackChange, Field(discriminator="kind")]
 
 
+# —— 结构化阅读理由：版本化理由码词表；码是存储与报告形态，文案仅用于展示 ———
+
+STRUCTURED_FEEDBACK_VOCABULARY = "reading-feedback.vocab/1"
+
+ValueSourceCode = Literal[
+    "method_reusable",
+    "aids_understanding",
+    "changed_understanding",
+    "provides_arguments",
+    "research_ideas",
+    "usable_now",
+]
+LimitedReasonCode = Literal[
+    "task_mismatch",
+    "already_known",
+    "evidence_doubtful",
+    "conditions_unmet",
+    "not_yet_clear",
+]
+
+VALUE_SOURCE_CODES: tuple[str, ...] = (
+    "method_reusable",
+    "aids_understanding",
+    "changed_understanding",
+    "provides_arguments",
+    "research_ideas",
+    "usable_now",
+)
+LIMITED_REASON_CODES: tuple[str, ...] = (
+    "task_mismatch",
+    "already_known",
+    "evidence_doubtful",
+    "conditions_unmet",
+    "not_yet_clear",
+)
+VALUE_SOURCE_LABELS: dict[str, str] = {
+    "method_reusable": "方法可复用",
+    "aids_understanding": "帮助理解",
+    "changed_understanding": "改变认识",
+    "provides_arguments": "提供论据",
+    "research_ideas": "带来研究想法",
+    "usable_now": "可用于当前任务",
+}
+LIMITED_REASON_LABELS: dict[str, str] = {
+    "task_mismatch": "当前任务不适合",
+    "already_known": "内容已知",
+    "evidence_doubtful": "证据存疑",
+    "conditions_unmet": "适用条件不满足",
+    "not_yet_clear": "暂时看不懂",
+}
+
+
+class StructuredFeedbackInput(InsightsModel):
+    """结构化阅读理由的全量修订；expected_revision 防并发，幂等键走写入回执。
+
+    全部维度留空是一次显式清除；文本首尾空白已剥离，空理由不补成中立。
+    """
+
+    expected_revision: int = Field(ge=0, strict=True)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    rating_at: AwareDatetime | None = None
+    value_sources: tuple[ValueSourceCode, ...] = ()
+    limited_reasons: tuple[LimitedReasonCode, ...] = ()
+    context_note: str | None = Field(default=None, max_length=2000)
+    applicability: str | None = Field(default=None, max_length=2000)
+    takeaway: str | None = Field(default=None, max_length=2000)
+    question: str | None = Field(default=None, max_length=2000)
+    usage_result: str | None = Field(default=None, max_length=2000)
+
+
+class StructuredFeedbackVersion(InsightsModel):
+    """截止前有效的一个结构化理由版本；不含自由文本原文（隐私边界）。"""
+
+    revision: int
+    recorded_at: AwareDatetime
+    rating_at: AwareDatetime | None = None
+    value_sources: list[str] = Field(default_factory=list)
+    limited_reasons: list[str] = Field(default_factory=list)
+    has_context_note: bool = False
+    has_applicability: bool = False
+    has_takeaway: bool = False
+    has_question: bool = False
+    has_usage_result: bool = False
+    vocabulary_version: str = STRUCTURED_FEEDBACK_VOCABULARY
+
+
+class StructuredFeedbackChange(InsightsModel):
+    """相邻版本的一次理由修订；只含码与变化标记，可直接冻结进报告。"""
+
+    kind: Literal["structured"] = "structured"
+    paper_id: str
+    recorded_at: AwareDatetime
+    added_value_sources: list[str] = Field(default_factory=list)
+    removed_value_sources: list[str] = Field(default_factory=list)
+    added_limited_reasons: list[str] = Field(default_factory=list)
+    removed_limited_reasons: list[str] = Field(default_factory=list)
+    context_changed: bool = False
+    free_text_changed: bool = False
+    link_changed: bool = False
+    cleared: bool = False
+
+
+class StructuredFeedbackRevisionDetail(InsightsModel):
+    """某个理由版本的完整内容；自由文本属私人材料，仅属主读取路径返回。"""
+
+    revision: int
+    recorded_at: AwareDatetime
+    rating_at: AwareDatetime | None = None
+    rating_exists: bool = False
+    rating_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    rating_has_note: bool = False
+    value_sources: list[str] = Field(default_factory=list)
+    limited_reasons: list[str] = Field(default_factory=list)
+    context_note: str | None = None
+    applicability: str | None = None
+    takeaway: str | None = None
+    question: str | None = None
+    usage_result: str | None = None
+    vocabulary_version: str = STRUCTURED_FEEDBACK_VOCABULARY
+
+
+class StructuredFeedbackView(InsightsModel):
+    """一篇归档的结构化理由现状；current_revision=0 表示从未填写。"""
+
+    paper_id: str
+    current_revision: int = Field(ge=0)
+    latest: StructuredFeedbackRevisionDetail | None = None
+    history: list[StructuredFeedbackRevisionDetail] = Field(default_factory=list)
+
+
 class PaperProjection(InsightsModel):
     """单篇归档在知识截止前的事实；元数据只取冻结值，缺失即未知。"""
 
@@ -206,6 +336,8 @@ class PaperProjection(InsightsModel):
     taxonomy_version: str | None = None
     feedback: list[FeedbackVersion] = Field(default_factory=list)
     changes: list[FeedbackChange] = Field(default_factory=list)
+    structured_feedback: list[StructuredFeedbackVersion] = Field(default_factory=list)
+    structured_changes: list[StructuredFeedbackChange] = Field(default_factory=list)
     archive_hash: str | None = None
     reading_revision: int = 0
 
@@ -248,6 +380,24 @@ class FeedbackChangeStats(InsightsModel):
     papers_affected: int = Field(default=0, ge=0)
 
 
+class StructuredFeedbackCoverageStats(InsightsModel):
+    """结构化理由覆盖；只统计显式填写的维度，空理由不补成中立。"""
+
+    total: int = Field(default=0, ge=0)
+    covered: int = Field(default=0, ge=0)
+    value_sources: int = Field(default=0, ge=0)
+    limited_reasons: int = Field(default=0, ge=0)
+    context: int = Field(default=0, ge=0)
+    free_text: int = Field(default=0, ge=0)
+
+
+class StructuredFeedbackChangeStats(InsightsModel):
+    """本期结构化理由修订次数与涉及篇数；初始记录不算修订。"""
+
+    events: int = Field(default=0, ge=0)
+    papers_affected: int = Field(default=0, ge=0)
+
+
 class CountEntry(InsightsModel):
     """分布表的一个分组；主题分布以 (code, taxonomy_version) 互斥分组。"""
 
@@ -276,6 +426,15 @@ class InsightMetrics(InsightsModel):
     backfill_coverage: CoverageStats
     score_distribution: ScoreDistribution
     feedback_changes: FeedbackChangeStats
+    # 结构化理由：覆盖只数显式填写维度；默认值保证旧报告 content_json 可解析。
+    structured_coverage: StructuredFeedbackCoverageStats = Field(
+        default_factory=lambda: StructuredFeedbackCoverageStats(
+            total=0, covered=0, value_sources=0, limited_reasons=0, context=0, free_text=0
+        )
+    )
+    structured_change_stats: StructuredFeedbackChangeStats = Field(
+        default_factory=StructuredFeedbackChangeStats
+    )
     # 资产整理活动：版本数=操作数，去重资产数=不同资产；不增加已读篇数。
     asset_events: int = Field(default=0, ge=0)
     asset_assets: int = Field(default=0, ge=0)
@@ -295,6 +454,7 @@ class InsightOverview(InsightsModel):
     readings: list[PaperProjection] = Field(default_factory=list)
     backfills: list[PaperProjection] = Field(default_factory=list)
     changes: list[FeedbackChange] = Field(default_factory=list)
+    structured_changes: list[StructuredFeedbackChange] = Field(default_factory=list)
     unassigned: list[PaperProjection] = Field(default_factory=list)
 
 
@@ -339,6 +499,8 @@ class ReportPaper(InsightsModel):
     secondary_tags: list[str] = Field(default_factory=list)
     taxonomy_version: str | None = None
     feedback: list[ReportFeedbackVersion] = Field(default_factory=list)
+    # 结构化理由只含版本化码与有无标记，无私人原文，投影与报告共用同一契约。
+    structured_feedback: list[StructuredFeedbackVersion] = Field(default_factory=list)
 
 
 class ReportAssetRef(InsightsModel):
@@ -362,6 +524,7 @@ class InsightReportContent(InsightsModel):
     readings: list[ReportPaper] = Field(default_factory=list)
     backfills: list[ReportPaper] = Field(default_factory=list)
     changes: list[ReportChange] = Field(default_factory=list)
+    structured_changes: list[StructuredFeedbackChange] = Field(default_factory=list)
     unassigned: list[ReportPaper] = Field(default_factory=list)
     assets: list["ReportAssetRef"] = Field(default_factory=list)
 

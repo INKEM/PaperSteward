@@ -29,6 +29,7 @@ __all__ = [
     "ASSET_REVISE",
     "ASSET_STATUS",
     "READING_TIME_RECORD",
+    "STRUCTURED_FEEDBACK_REVISE",
     "PendingReceipt",
     "ReplayResult",
     "asset_content_payload",
@@ -37,12 +38,14 @@ __all__ = [
     "open_keyed_write",
     "reading_time_payload",
     "request_hash",
+    "structured_feedback_payload",
 ]
 
 READING_TIME_RECORD = "reading_time.record"
 ASSET_CREATE = "asset.create"
 ASSET_REVISE = "asset.revise"
 ASSET_STATUS = "asset.status"
+STRUCTURED_FEEDBACK_REVISE = "structured_feedback.revise"
 
 
 def request_hash(operation: str, target_id: str, payload: dict[str, Any]) -> str:
@@ -83,6 +86,32 @@ def asset_content_payload(
     if kind is not None:
         payload = {"kind": kind, **payload}
     return payload
+
+
+def structured_feedback_payload(
+    *,
+    paper_id: str,
+    rating_at: str | None,
+    value_sources: Iterable[str],
+    limited_reasons: Iterable[str],
+    context_note: str | None,
+    applicability: str | None,
+    takeaway: str | None,
+    question: str | None,
+    usage_result: str | None,
+) -> dict[str, Any]:
+    """结构化理由的语义载荷；码表排序去重，``rating_at`` 为 UTC ISO 文本。"""
+    return {
+        "paper_id": paper_id,
+        "rating_at": rating_at or None,
+        "value_sources": sorted(set(value_sources)),
+        "limited_reasons": sorted(set(limited_reasons)),
+        "context_note": context_note,
+        "applicability": applicability,
+        "takeaway": takeaway,
+        "question": question,
+        "usage_result": usage_result,
+    }
 
 
 @dataclass(frozen=True)

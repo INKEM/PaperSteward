@@ -98,3 +98,56 @@ def test_reading_time_precision_values_participate():
     assert day != unknown
     # 日期用 ISO 文本表达，date 与等价字符串生成同一载荷。
     assert reading_time_payload(paper_id="p1", precision="day", day="2026-10-01", month=None) == day
+
+
+def test_structured_feedback_codes_are_order_insensitive_and_deduplicated():
+    from papersteward.reading.insights.idempotency import (
+        STRUCTURED_FEEDBACK_REVISE,
+        structured_feedback_payload,
+    )
+
+    base = structured_feedback_payload(
+        paper_id="p1",
+        rating_at="2026-10-20T02:00:00+00:00",
+        value_sources=["usable_now", "method_reusable", "method_reusable"],
+        limited_reasons=["already_known"],
+        context_note=None,
+        applicability=None,
+        takeaway=None,
+        question=None,
+        usage_result=None,
+    )
+    reordered = structured_feedback_payload(
+        paper_id="p1",
+        rating_at="2026-10-20T02:00:00+00:00",
+        value_sources=["method_reusable", "usable_now"],
+        limited_reasons=["already_known"],
+        context_note=None,
+        applicability=None,
+        takeaway=None,
+        question=None,
+        usage_result=None,
+    )
+    assert base == reordered
+    assert base["value_sources"] == ["method_reusable", "usable_now"]
+    assert base["limited_reasons"] == ["already_known"]
+    # 空 rating_at 与 None 等价；哈希绑定操作与目标。
+    assert (
+        structured_feedback_payload(
+            paper_id="p1",
+            rating_at=None,
+            value_sources=["usable_now"],
+            limited_reasons=[],
+            context_note=None,
+            applicability=None,
+            takeaway=None,
+            question=None,
+            usage_result=None,
+        )["rating_at"]
+        is None
+    )
+    assert request_hash(STRUCTURED_FEEDBACK_REVISE, "p1", base) != request_hash(
+        READING_TIME_RECORD,
+        "p1",
+        reading_time_payload(paper_id="p1", precision="day", day="2026-10-01", month=None),
+    )
