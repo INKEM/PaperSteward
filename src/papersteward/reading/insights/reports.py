@@ -369,9 +369,13 @@ def list_reports(session: Session, *, limit: int, offset: int) -> dict[str, Any]
 
 
 def delete_report(session: Session, report_id: str) -> None:
-    """只删除报告快照；归档、评分与阅读时间声明不受影响。"""
+    """只删除报告快照；归档、评分与阅读时间声明不受影响。
+
+    派生副本登记随报告显式清理（登记表外键已随 0029 重建移除，语义不变）。
+    """
     if not ReadingReportRepository(session).delete(report_id):
         raise NotFoundError("报告不存在")
+    ReadingDerivedCopyRepository(session).delete_for_target("report", report_id)
 
 
 def list_series_reports(

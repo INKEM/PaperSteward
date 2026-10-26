@@ -14,6 +14,7 @@ from papersteward.storage.mappers import (
     reading_time_revision_to_row,
 )
 from papersteward.storage.models import (
+    ReadingAnalysisCandidateRow,
     ReadingAnalysisExcerptRow,
     ReadingAnalysisGrantRow,
     ReadingAnalysisManifestRow,
@@ -197,6 +198,19 @@ class ReadingDerivedCopyRepository(_Repository):
             ).all()
         )
 
+    def delete_for_target(self, derived_kind: str, derived_id: str) -> int:
+        """清空某派生对象的登记行；报告删除的显式级联（外键已随重建移除）。"""
+        rows = self._session.scalars(
+            select(ReadingDerivedCopyRow).where(
+                ReadingDerivedCopyRow.derived_kind == derived_kind,
+                ReadingDerivedCopyRow.derived_id == derived_id,
+            )
+        ).all()
+        for row in rows:
+            self._session.delete(row)
+        self._flush()
+        return len(rows)
+
 
 class ReadingStructuredFeedbackRepository(_Repository):
     """结构化阅读理由版本；只追加与按论文读取，不提供 update/delete。"""
@@ -371,7 +385,56 @@ class ReadingAnalysisExcerptRepository(_Repository):
         return True
 
 
+class ReadingAnalysisCandidateRepository(_Repository):
+    """分析候选；只追加与按运行/清单/论文查询，去留由后续用户决定流程处理。"""
+
+    def add_many(
+        self, rows: list[ReadingAnalysisCandidateRow]
+    ) -> list[ReadingAnalysisCandidateRow]:
+        for row in rows:
+            self._session.add(row)
+        self._flush()
+        return rows
+
+    def by_run(self, run_id: str) -> list[ReadingAnalysisCandidateRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(ReadingAnalysisCandidateRow.run_id == run_id)
+                .order_by(
+                    ReadingAnalysisCandidateRow.paper_id, ReadingAnalysisCandidateRow.created_at
+                )
+            ).all()
+        )
+
+    def by_manifest_paper(
+        self, manifest_hash: str, paper_id: str
+    ) -> list[ReadingAnalysisCandidateRow]:
+        """同清单同篇的历史候选（runner 用它跳过已完成篇目）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(
+                    ReadingAnalysisCandidateRow.manifest_hash == manifest_hash,
+                    ReadingAnalysisCandidateRow.paper_id == paper_id,
+                    ReadingAnalysisCandidateRow.stale == 0,
+                )
+                .order_by(ReadingAnalysisCandidateRow.created_at)
+            ).all()
+        )
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingAnalysisCandidateRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(ReadingAnalysisCandidateRow.paper_id == paper_id)
+                .order_by(ReadingAnalysisCandidateRow.created_at)
+            ).all()
+        )
+
+
 __all__ = [
+    "ReadingAnalysisCandidateRepository",
     "ReadingAnalysisExcerptRepository",
     "ReadingAnalysisGrantRepository",
     "ReadingAnalysisManifestRepository",

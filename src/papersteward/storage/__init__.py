@@ -10,6 +10,7 @@ from papersteward.storage.db import (
     utc_now,
 )
 from papersteward.storage.insights import (
+    ReadingAnalysisCandidateRepository,
     ReadingAnalysisExcerptRepository,
     ReadingAnalysisGrantRepository,
     ReadingAnalysisManifestRepository,
@@ -66,6 +67,7 @@ __all__ = [
     "RatingRepository",
     "ReadingAssetRepository",
     "ReadingDerivedCopyRepository",
+    "ReadingAnalysisCandidateRepository",
     "ReadingAnalysisExcerptRepository",
     "ReadingAnalysisGrantRepository",
     "ReadingAnalysisManifestRepository",

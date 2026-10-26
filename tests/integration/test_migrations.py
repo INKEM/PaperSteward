@@ -60,6 +60,7 @@ DOMAIN_TABLES = {
     "reading_analysis_manifest",
     "reading_analysis_preview",
     "reading_analysis_excerpt",
+    "reading_analysis_candidate",
 }
 
 
@@ -376,8 +377,38 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             index["name"] for index in inspector.get_indexes("reading_analysis_excerpt")
         }
         assert "uq_reading_analysis_excerpt" in excerpt_indexes
+        assert {
+            column["name"] for column in inspector.get_columns("reading_analysis_candidate")
+        } == {
+            "id",
+            "run_id",
+            "manifest_id",
+            "manifest_hash",
+            "grant_id",
+            "model_config_version",
+            "paper_id",
+            "kind",
+            "nature",
+            "statement",
+            "conditions",
+            "limitations",
+            "quote",
+            "quote_source_id",
+            "source_refs_json",
+            "verification",
+            "stale",
+            "created_at",
+        }
+        candidate_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_candidate")
+        }
+        assert {
+            "ix_reading_analysis_candidate_run",
+            "ix_reading_analysis_candidate_manifest",
+            "ix_reading_analysis_candidate_paper",
+        } <= candidate_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0028"
+        assert current == "0029"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1370,3 +1401,107 @@ def test_0028_analysis_tables_roundtrip_with_data(sqlite_engine: Engine) -> None
 
     _upgrade(sqlite_engine, "0028")
     assert all(not rows for rows in analysis_state().values())
+
+
+def test_0029_derived_copy_rebuild_and_candidate_roundtrip(sqlite_engine: Engine) -> None:
+    """登记行经重建逐行不变；候选随升级可用；降级遇候选登记明确拒绝。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+
+    _upgrade(sqlite_engine, "0028")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with session_scope(factory) as session:
+        seed_paper(session, "cand-paper", first_seen_at=at)
+        from papersteward.storage.delivery import content_hash
+        from papersteward.storage.models import ReadingReportRow
+
+        frozen = {"contract": "reading-insights.report/1", "metrics": {}}
+        session.add(
+            ReadingReportRow(
+                id="rep1",
+                report_kind="week",
+                period_label="2026-W43",
+                period_start=None,
+                period_end=None,
+                timezone="Asia/Shanghai",
+                review_mode="as_recorded",
+                knowledge_cutoff=at,
+                generated_at=at,
+                contract="reading-insights.report/1",
+                input_fingerprint=content_hash({"fixture": "rep1"}),
+                content_json=frozen,
+                content_hash=content_hash(frozen),
+                run_id="rep1",
+            )
+        )
+        session.flush()
+        connection = session.connection()
+        # 既有报告登记行（旧 source_kind/field_kind 组合）
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d1', 'asset', 'a1', 2, 'report', 'rep1', 'title', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    def derived_rows() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT id, source_kind, source_id, source_revision, derived_kind,"
+                    " derived_id, field_kind FROM reading_derived_copy"
+                    " ORDER BY id"
+                )
+            ).fetchall()
+        return [tuple(row) for row in rows]
+
+    before = derived_rows()
+    assert before == [("d1", "asset", "a1", 2, "report", "rep1", "title")]
+
+    _upgrade(sqlite_engine, "0029")
+    assert derived_rows() == before, "重建必须逐行保留既有登记"
+
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_candidate (id, run_id, manifest_id,"
+                " manifest_hash, grant_id, model_config_version, paper_id, kind,"
+                " nature, statement, conditions, limitations, quote, quote_source_id,"
+                " source_refs_json, verification, stale, created_at) VALUES ("
+                "'c1', 'run-1', 'm1', 'a'*64, 'g1', 'v1', 'cand-paper', 'harvest',"
+                " 'model_inference', '候选陈述', NULL, NULL, NULL, NULL, '[]',"
+                " 'pending_user', 0, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d2', 'paper', 'cand-paper', NULL, 'candidate', 'c1',"
+                " 'statement', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    # 降级遇候选登记明确拒绝；清掉候选与登记后可降级且旧登记保留。
+    with pytest.raises(RuntimeError, match="0029"):
+        _downgrade(sqlite_engine, "0028")
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id = 'd2'"))
+        connection.execute(text("DELETE FROM reading_analysis_candidate WHERE id = 'c1'"))
+    _downgrade(sqlite_engine, "0028")
+    assert derived_rows() == before
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_analysis_candidate" not in tables
+
+    _upgrade(sqlite_engine, "0029")
+    assert derived_rows() == before

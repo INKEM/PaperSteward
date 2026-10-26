@@ -860,19 +860,24 @@ class ReadingWriteReceiptRow(Base):
 
 
 class ReadingDerivedCopyRow(Base):
-    """私人派生副本登记：来源（资产版本/报告）到含其内容的持久对象。
+    """私人派生副本登记：来源（论文材料/资产版本/报告）到含其内容的持久对象。
 
     只登记 ID 与字段类别，不保存私人原文；按来源版本可找出全部副本，
-    供删除预览与后续授权撤回复用。目标侧外键级联：报告删除即清登记；
-    来源侧无外键——资产删除后其副本仍留在报告中，登记必须保留。
+    供删除预览与授权撤回复用。``derived_id`` 无外键（同一列需指向报告或
+    分析候选两张父表）：报告删除由 ``delete_report`` 在同事务显式清登记，
+    候选删除由后续批次的用户决定流程负责；来源侧无外键——来源删除后
+    登记保留供定位残留副本。
     """
 
     __tablename__ = "reading_derived_copy"
     __table_args__ = (
-        CheckConstraint("source_kind IN ('asset', 'report')", name="derived_source_allowed"),
-        CheckConstraint("derived_kind IN ('report')", name="derived_target_allowed"),
         CheckConstraint(
-            "field_kind IN ('title', 'body', 'sanitized')", name="derived_field_allowed"
+            "source_kind IN ('asset', 'report', 'paper')", name="derived_source_allowed"
+        ),
+        CheckConstraint("derived_kind IN ('report', 'candidate')", name="derived_target_allowed"),
+        CheckConstraint(
+            "field_kind IN ('title', 'body', 'sanitized', 'statement', 'quote')",
+            name="derived_field_allowed",
         ),
         Index("ix_reading_derived_copy_source", "source_kind", "source_id", "source_revision"),
         Index("ix_reading_derived_copy_target", "derived_kind", "derived_id"),
@@ -893,9 +898,7 @@ class ReadingDerivedCopyRow(Base):
     source_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     derived_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    derived_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("reading_report.id", ondelete="CASCADE"), nullable=False
-    )
+    derived_id: Mapped[str] = mapped_column(String(64), nullable=False)
     field_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -1047,6 +1050,57 @@ class ReadingAnalysisExcerptRow(Base):
     source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisCandidateRow(Base):
+    """单篇分析候选（R2-03）：收获/问题/方法，带来源、性质与核对状态。
+
+    ``verification`` 恒为 ``pending_user``——模型不能给自己生成已确认状态；
+    用户确认/修订/合并是后续批次的用户决定。``source_refs_json`` 记录所引
+    材料的类别/目标/版本锚点（与清单一致），``stale`` 表示落库时源版本已
+    漂移（不假装基于最新材料）。无外键：Run 行不删除，候选去留由用户
+    决定流程处理。
+    """
+
+    __tablename__ = "reading_analysis_candidate"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('harvest', 'question', 'method')", name="candidate_kind_allowed"
+        ),
+        CheckConstraint(
+            "nature IN ('paper_statement', 'user_expression', 'model_inference')",
+            name="candidate_nature_allowed",
+        ),
+        CheckConstraint(
+            "verification IN ('pending_user')", name="candidate_verification_allowed"
+        ),
+        Index("ix_reading_analysis_candidate_run", "run_id"),
+        Index("ix_reading_analysis_candidate_manifest", "manifest_hash", "paper_id"),
+        Index("ix_reading_analysis_candidate_paper", "paper_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    paper_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    nature: Mapped[str] = mapped_column(String(24), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    limitations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quote_source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_refs_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    verification: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending_user"
+    )
+    stale: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 
