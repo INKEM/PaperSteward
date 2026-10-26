@@ -8,7 +8,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import delete, inspect, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -53,6 +53,7 @@ DOMAIN_TABLES = {
     "reading_asset_revision",
     "reading_asset_source",
     "reading_write_receipt",
+    "reading_derived_copy",
 }
 
 
@@ -298,6 +299,22 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             index["name"] for index in inspector.get_indexes("reading_write_receipt")
         }
         assert "uq_reading_write_receipt_key" in receipt_indexes
+        assert {column["name"] for column in inspector.get_columns("reading_derived_copy")} == {
+            "id",
+            "source_kind",
+            "source_id",
+            "source_revision",
+            "derived_kind",
+            "derived_id",
+            "field_kind",
+            "created_at",
+        }
+        derived_indexes = {index["name"] for index in inspector.get_indexes("reading_derived_copy")}
+        assert {
+            "ix_reading_derived_copy_source",
+            "ix_reading_derived_copy_target",
+            "uq_reading_derived_copy_entry",
+        } <= derived_indexes
         asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
         assert "uq_reading_asset_idempotency" in asset_indexes
         assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
@@ -305,7 +322,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "revision",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0025"
+        assert current == "0026"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -963,3 +980,103 @@ def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) ->
             sources=[("receipt-paper", as_utc(at).isoformat())],
         ),
     )
+
+
+def test_0026_derived_copy_backfill_registers_private_fields(sqlite_engine: Engine) -> None:
+    """既有报告的私人字段按冻结正文登记；旧报告缺版本记 None，往返不改业务行。"""
+    from papersteward.storage.delivery import content_hash
+    from papersteward.storage.models import ReadingDerivedCopyRow, ReadingReportRow
+
+    _upgrade(sqlite_engine, "0025")
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    frozen = {
+        "contract": "reading-insights.report/1",
+        "metrics": {},
+        "readings": [],
+        "backfills": [],
+        "unassigned": [],
+        "changes": [],
+        "assets": [
+            {
+                "asset_id": "copy-asset",
+                "title": "私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": "私人正文",
+                "revision": 3,
+                "source_paper_ids": ["copy-paper"],
+                "cross_topic": False,
+            },
+            {
+                # 旧报告形态：无 revision、无正文副本。
+                "asset_id": "copy-asset",
+                "title": "私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": None,
+                "source_paper_ids": ["copy-paper"],
+                "cross_topic": False,
+            },
+        ],
+    }
+    with session_scope(factory) as session:
+        for key in ("copy-report-a", "copy-report-b"):
+            session.add(
+                ReadingReportRow(
+                    id=key,
+                    report_kind="week",
+                    period_label="测试周",
+                    period_start=None,
+                    period_end=None,
+                    timezone="Asia/Shanghai",
+                    review_mode="as_recorded",
+                    knowledge_cutoff=at,
+                    generated_at=at,
+                    contract="reading-insights.report/1",
+                    input_fingerprint=content_hash({"fixture": key}),
+                    content_json=frozen,
+                    content_hash=content_hash(frozen),
+                    run_id=key,
+                )
+            )
+
+    def derived_rows() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT source_kind, source_id, source_revision, derived_kind,"
+                    " derived_id, field_kind FROM reading_derived_copy"
+                    " ORDER BY derived_id, source_revision, field_kind"
+                )
+            ).all()
+
+    def business_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in ("reading_report", "reading_asset", "reading_write_receipt")
+            }
+
+    before = business_state()
+    _upgrade(sqlite_engine, "0026")
+    expected = [
+        # SQLite ASC 排序中 NULL 在最前。
+        ("asset", "copy-asset", None, "report", "copy-report-a", "title"),
+        ("asset", "copy-asset", 3, "report", "copy-report-a", "body"),
+        ("asset", "copy-asset", 3, "report", "copy-report-a", "title"),
+        ("asset", "copy-asset", None, "report", "copy-report-b", "title"),
+        ("asset", "copy-asset", 3, "report", "copy-report-b", "body"),
+        ("asset", "copy-asset", 3, "report", "copy-report-b", "title"),
+    ]
+    assert derived_rows() == expected
+    assert business_state() == before
+
+    _downgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    _upgrade(sqlite_engine, "0026")
+    assert business_state() == before
+    assert derived_rows() == expected
+    with session_scope(factory) as session:
+        count = session.scalar(select(func.count()).select_from(ReadingDerivedCopyRow))
+    assert count == len(expected)

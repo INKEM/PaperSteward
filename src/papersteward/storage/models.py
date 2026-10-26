@@ -858,6 +858,49 @@ class ReadingWriteReceiptRow(Base):
     )
 
 
+class ReadingDerivedCopyRow(Base):
+    """私人派生副本登记：来源（资产版本/报告）到含其内容的持久对象。
+
+    只登记 ID 与字段类别，不保存私人原文；按来源版本可找出全部副本，
+    供删除预览与后续授权撤回复用。目标侧外键级联：报告删除即清登记；
+    来源侧无外键——资产删除后其副本仍留在报告中，登记必须保留。
+    """
+
+    __tablename__ = "reading_derived_copy"
+    __table_args__ = (
+        CheckConstraint("source_kind IN ('asset', 'report')", name="derived_source_allowed"),
+        CheckConstraint("derived_kind IN ('report')", name="derived_target_allowed"),
+        CheckConstraint(
+            "field_kind IN ('title', 'body', 'sanitized')", name="derived_field_allowed"
+        ),
+        Index("ix_reading_derived_copy_source", "source_kind", "source_id", "source_revision"),
+        Index("ix_reading_derived_copy_target", "derived_kind", "derived_id"),
+        Index(
+            "uq_reading_derived_copy_entry",
+            "source_kind",
+            "source_id",
+            "source_revision",
+            "derived_kind",
+            "derived_id",
+            "field_kind",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    derived_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    derived_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_report.id", ondelete="CASCADE"), nullable=False
+    )
+    field_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class LLMCacheRow(Base):
     """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
 

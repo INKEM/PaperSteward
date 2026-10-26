@@ -17,6 +17,7 @@ from papersteward.storage.models import (
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
+    ReadingDerivedCopyRow,
     ReadingReportContextRow,
     ReadingReportRow,
     ReadingTimeRevisionRow,
@@ -156,8 +157,44 @@ class ReadingWriteReceiptRepository(_Repository):
         self._flush()
 
 
+class ReadingDerivedCopyRepository(_Repository):
+    """私人派生副本登记；只追加与按来源/目标查询，报告删除级联清理。"""
+
+    def add_many(self, rows: list[ReadingDerivedCopyRow]) -> None:
+        for row in rows:
+            self._session.add(row)
+        self._flush()
+
+    def for_source(self, source_kind: str, source_id: str) -> list[ReadingDerivedCopyRow]:
+        """某来源（资产版本）的全部登记行；按派生对象与字段类别排序。"""
+        return list(
+            self._session.scalars(
+                select(ReadingDerivedCopyRow)
+                .where(
+                    ReadingDerivedCopyRow.source_kind == source_kind,
+                    ReadingDerivedCopyRow.source_id == source_id,
+                )
+                .order_by(
+                    ReadingDerivedCopyRow.derived_id,
+                    ReadingDerivedCopyRow.field_kind,
+                )
+            ).all()
+        )
+
+    def lineage_for_report(self, report_id: str) -> list[ReadingDerivedCopyRow]:
+        """以某报告为派生目标的登记行（含 sanitized 谱系与私人字段）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingDerivedCopyRow)
+                .where(ReadingDerivedCopyRow.derived_id == report_id)
+                .order_by(ReadingDerivedCopyRow.source_kind, ReadingDerivedCopyRow.source_id)
+            ).all()
+        )
+
+
 __all__ = [
     "ReadingAssetRepository",
+    "ReadingDerivedCopyRepository",
     "ReadingReportRepository",
     "ReadingTimeRevisionRepository",
     "ReadingWriteReceiptRepository",

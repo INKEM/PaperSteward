@@ -11,6 +11,7 @@ from papersteward.storage.db import (
 )
 from papersteward.storage.insights import (
     ReadingAssetRepository,
+    ReadingDerivedCopyRepository,
     ReadingReportRepository,
     ReadingTimeRevisionRepository,
     ReadingWriteReceiptRepository,
@@ -58,6 +59,7 @@ __all__ = [
     "ProfileRepository",
     "RatingRepository",
     "ReadingAssetRepository",
+    "ReadingDerivedCopyRepository",
     "ReadingReportRepository",
     "ReadingTimeRevisionRepository",
     "ReadingWriteReceiptRepository",
