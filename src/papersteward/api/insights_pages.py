@@ -548,7 +548,14 @@ def _overview_body(
             overview.backfills,
             "本期进入归档的外部已读论文；与阅读量可能重叠，不能相加",
         ),
-        "changes": ("反馈修订", overview.changes, "本期发生的实际修订；初始归档不算修订"),
+        "changes": (
+            "反馈修订",
+            sorted(
+                [*overview.changes, *overview.structured_changes],
+                key=lambda change: change.recorded_at,
+            ),
+            "本期发生的实际修订；初始归档与初始理由记录不算修订",
+        ),
         "unassigned": ("未定阅读日期", overview.unassigned, "截至截止时刻阅读时间未定的归档库存"),
     }
     for name in _SECTIONS:
@@ -667,6 +674,15 @@ def _metrics_table(metrics: InsightMetrics) -> str:
         else "暂无"
     )
     changes = metrics.feedback_changes
+    structured = metrics.structured_coverage
+    structured_text = (
+        f"已填理由 {structured.covered}/{structured.total}（价值来源 {structured.value_sources}"
+        f" · 价值有限 {structured.limited_reasons} · 语境 {structured.context}"
+        f" · 收获疑问 {structured.free_text}）"
+        if structured.total
+        else "暂无"
+    )
+    structured_changes = metrics.structured_change_stats
     rows = [
         (
             "本期阅读（独立文献）",
@@ -684,6 +700,16 @@ def _metrics_table(metrics: InsightMetrics) -> str:
             f"评分 {changes.score_events} 次 · 备注 {changes.note_events} 次"
             f" · 涉及 {changes.papers_affected} 篇",
             "非初始修订的实际变化",
+        ),
+        (
+            "结构化理由覆盖",
+            structured_text,
+            "只数显式填写的维度；空理由不补成中立",
+        ),
+        (
+            "结构化理由修订",
+            f"{structured_changes.events} 次 · 涉及 {structured_changes.papers_affected} 篇",
+            "初始记录不算修订；清除保留历史",
         ),
         (
             "资产整理活动",
@@ -852,20 +878,48 @@ def _changes_table(changes: list[Any]) -> str:
         '<th scope="col">变化</th><th scope="col">文献</th></tr></thead><tbody>'
     )
     for change in changes:
-        kind_label = "评分" if change.kind == "score" else "备注"
-        empty = "未评分" if change.kind == "score" else "（已清空）"
-        old = empty if change.old is None else str(change.old)
-        new = empty if change.new is None else str(change.new)
+        if getattr(change, "kind", None) == "structured":
+            kind_label = "理由"
+            text = _structured_change_summary(change)
+        else:
+            kind_label = "评分" if change.kind == "score" else "备注"
+            empty = "未评分" if change.kind == "score" else "（已清空）"
+            old = empty if change.old is None else str(change.old)
+            new = empty if change.new is None else str(change.new)
+            text = f"{old} → {new}"
         body += (
             "<tr>"
             f'<th scope="row">{escape(change.recorded_at.isoformat())}</th>'
             f'<td data-label="类型">{kind_label}</td>'
-            f'<td data-label="变化">{escape(old)} → {escape(new)}</td>'
+            f'<td data-label="变化">{escape(text)}</td>'
             '<td data-label="文献"><a href="/ui/papers/'
             f'{escape(change.paper_id)}">{escape(change.paper_id)}</a></td>'
             "</tr>"
         )
     return body + "</tbody></table>"
+
+
+def _structured_change_summary(change: Any) -> str:
+    """结构化理由修订的一行摘要；码用版本化文案，不携带自由文本。"""
+    parts = [
+        f"{sign}{labels.get(code, code)}"
+        for codes, sign, labels in (
+            (change.added_value_sources, "+", VALUE_SOURCE_LABELS),
+            (change.removed_value_sources, "−", VALUE_SOURCE_LABELS),
+            (change.added_limited_reasons, "+", LIMITED_REASON_LABELS),
+            (change.removed_limited_reasons, "−", LIMITED_REASON_LABELS),
+        )
+        for code in codes
+    ]
+    if change.context_changed:
+        parts.append("语境变更")
+    if change.free_text_changed:
+        parts.append("文字变更")
+    if change.link_changed:
+        parts.append("关联评分变更")
+    if change.cleared:
+        parts.append("全部清除")
+    return " · ".join(parts) if parts else "内容调整"
 
 
 # —— 报告页面：列表 / 冻结详情 / 版本比较 / 删除 ——————————————————————
@@ -1116,6 +1170,13 @@ def _report_detail_body(
     )
     body += f"<h2>反馈修订（{len(detail.content.changes)}）</h2>"
     body += _report_changes_table(list(detail.content.changes))
+    body += f"<h2>结构化理由修订（{len(detail.content.structured_changes)}）</h2>"
+    if detail.content.structured_changes:
+        body += _changes_table(
+            sorted(detail.content.structured_changes, key=lambda change: change.recorded_at)
+        )
+    else:
+        body += '<p class="muted">无</p>'
     body += f"<h2>未定阅读日期（{len(detail.content.unassigned)}）</h2>"
     body += (
         _papers_table(

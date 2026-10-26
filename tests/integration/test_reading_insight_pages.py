@@ -462,3 +462,55 @@ def test_structured_form_links_rating_version(client, migrated_engine):
     detail = client.get(f"/ui/papers/{paper_id}")
     # 导入论文有初始评分（4 分）：关联下拉应列出该评分版本。
     assert "不关联具体评分" in detail.text
+
+
+def test_overview_shows_structured_coverage_and_revisions(client, migrated_engine):
+    """事实回顾新增结构化反馈覆盖与修改记录；空理由不补成中立。"""
+    activate(client)
+    paper_id = _import_paper(client, "概览结构化论文")
+    # 阅读时间明确才进入阅读样本集合（覆盖分母与评分覆盖同一口径）；
+    # 概览默认查今天所在周（NOW2 在上海为 2026-10-26），阅读日须在本周内。
+    assert (
+        _post_read_time(client, paper_id, {"precision": "day", "day": "2026-10-26"}).status_code
+        == 200
+    )
+    first = _post_sf(
+        client,
+        paper_id,
+        {"idempotency_key": "sf-ov-1", "vs_method_reusable": "1"},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        f"/ui/reading-insights/papers/{paper_id}/feedback-context",
+        data={
+            "expected_revision": "1",
+            "idempotency_key": "sf-ov-2",
+            "vs_method_reusable": "1",
+            "vs_aids_understanding": "1",
+        },
+        headers=HEADERS,
+    )
+    assert second.status_code == 200
+    page = client.get("/ui/reading-insights?kind=week")
+    assert page.status_code == 200
+    # 覆盖与修订两行指标；修订清单含理由事件（+帮助理解）。
+    assert "结构化理由覆盖" in page.text
+    assert "已填理由 1/1" in page.text
+    assert "结构化理由修订" in page.text
+    assert "1 次 · 涉及 1 篇" in page.text
+    assert "类型" in page.text and "理由" in page.text
+    assert "+帮助理解" in page.text
+
+
+def test_overview_without_structured_feedback_keeps_zero_counts(client, migrated_engine):
+    """没有结构化理由时显示 0/total，不推导、不显示中立。"""
+    activate(client)
+    paper_id = _import_paper(client, "概览无理由论文")
+    assert (
+        _post_read_time(client, paper_id, {"precision": "day", "day": "2026-10-26"}).status_code
+        == 200
+    )
+    page = client.get("/ui/reading-insights?kind=week")
+    assert page.status_code == 200
+    assert "已填理由 0/1" in page.text
+    assert "0 次 · 涉及 0 篇" in page.text
