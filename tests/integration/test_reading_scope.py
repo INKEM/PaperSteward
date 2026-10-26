@@ -127,6 +127,7 @@ def test_asset_version_sources_do_not_drift_and_mixed_assets_count_once(insights
             mixed.asset_id,
             AssetRevisionInput(
                 expected_revision=1,
+                idempotency_key="scope-mixed-rev",
                 title="转入T02",
                 body="别的主题正文",
                 status="open",
@@ -285,6 +286,7 @@ def test_later_asset_sources_do_not_change_historical_activity(insights_factory)
             original.asset_id,
             AssetRevisionInput(
                 expected_revision=1,
+                idempotency_key="scope-history-rev",
                 title="周期后来源改变",
                 body="后来正文",
                 status="open",

@@ -43,6 +43,7 @@ INSIGHT_TABLES = (
     "reading_asset",
     "reading_asset_revision",
     "reading_asset_source",
+    "reading_write_receipt",
 )
 
 
@@ -73,7 +74,12 @@ def release_data(client):
             now=PAST,
         )
         change_status(
-            session, asset.asset_id, "resolved", now=PAST + timedelta(hours=1), expected_revision=1
+            session,
+            asset.asset_id,
+            "resolved",
+            now=PAST + timedelta(hours=1),
+            expected_revision=1,
+            idempotency_key="release-status",
         )
     submit_review(client, "release-report", period="all", anchor_date=None)
     run = wait(client.app.state.ui_flows, "release-report")

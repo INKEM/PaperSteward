@@ -462,14 +462,19 @@ class AssetCreateInput(InsightsModel):
 
 
 class AssetRevisionInput(InsightsModel):
-    """全量内容修订；expected_revision 做乐观并发校验。"""
+    """全量内容修订；幂等键绑定完整请求，expected_revision 做乐观并发校验。
+
+    ``sources`` 为空（省略/None）表示保留当前版本的来源集合原样
+    （含归档哈希与反馈版本）；显式给出列表即整体替换，至少保留一条。
+    """
 
     expected_revision: int = Field(ge=1, strict=True)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     title: str = Field(min_length=1, max_length=256)
     body: str = Field(min_length=1, max_length=20000)
     applicability: str | None = Field(default=None, max_length=2000)
     status: AssetStatus
-    sources: list[AssetSourceInput] = Field(min_length=1, max_length=20)
+    sources: list[AssetSourceInput] | None = Field(default=None, min_length=1, max_length=20)
 
 
 class AssetSourceRef(InsightsModel):

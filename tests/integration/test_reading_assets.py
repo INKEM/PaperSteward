@@ -1,6 +1,7 @@
 """手工资产的创建、修订、状态、筛选、删除与报告接入验证（R1-05）。"""
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -90,6 +91,7 @@ def create_input(**overrides: object) -> AssetCreateInput:
 def revision_input(expected: int, **overrides: object) -> AssetRevisionInput:
     payload: dict[str, object] = {
         "expected_revision": expected,
+        "idempotency_key": overrides.pop("idempotency_key", f"asset-rev-{uuid4().hex[:12]}"),
         "title": "一个方法问题（修订）",
         "body": "补充了对照设置的细节。",
         "status": "open",
@@ -157,18 +159,164 @@ def test_revision_conflict_keeps_old_versions_and_sources(client, migrated_engin
         assert sorted(source.paper_id for source in new_sources) == ["as-p1", "as-p2"]
 
 
+def test_same_key_different_content_conflicts(client, migrated_engine):
+    """F04：同键不同标题/来源/内容必须明确冲突，不得静默重放旧资产。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        with pytest.raises(InvariantViolation):
+            create_asset(
+                session,
+                create_input(title="另一个标题"),
+                now=NOW5,
+            )
+        with pytest.raises(InvariantViolation):
+            create_asset(
+                session,
+                create_input(sources=[{"paper_id": "as-p2"}]),
+                now=NOW5,
+            )
+        assert len(session.scalars(select(ReadingAssetRow)).all()) == 1
+        assert view.revision.revision == 1
+
+
+def test_revision_retry_after_lost_response_replays_original(client, migrated_engine):
+    """F04：修订成功响应丢失后的原样重试重放原结果，不再误报版本冲突。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, idempotency_key="rev-lost-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.revision == 2
+        # 响应丢失后的重试：同键同载荷（expected_revision 已过期）→ 重放。
+        replay = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, idempotency_key="rev-lost-key"),
+            now=datetime(2026, 10, 27, 4, tzinfo=UTC),
+        )
+        assert replay.revision.revision == 2
+        assert replay.revision.title == revised.revision.title
+        current = get_asset_view(session, view.asset_id)
+        assert current.revision.revision == 2  # 不产生新版本
+
+
+def test_revision_conflict_does_not_consume_key(client, migrated_engine):
+    """版本冲突可修正后重试：同键换正确的 expected_revision 再提交成功。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        asset_id = view.asset_id
+    with session_scope(factory) as session, pytest.raises(ConflictError) as excinfo:
+        append_revision(
+            session,
+            asset_id,
+            revision_input(expected=2, idempotency_key="fixable-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+    assert excinfo.value.details == {"current_revision": 1}
+    with session_scope(factory) as session:
+        revised = append_revision(
+            session,
+            asset_id,
+            revision_input(expected=1, idempotency_key="fixable-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.revision == 2
+
+
+def test_sources_omitted_preserves_feedback_reference(client, migrated_engine):
+    """F05：修订省略来源时保留原样的 paper_id + archive_hash + rating_at。"""
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, sources=None, idempotency_key="keep-source-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.title == "一个方法问题（修订）"
+        assert [s.paper_id for s in revised.revision.sources] == ["as-p1"]
+        assert revised.revision.sources[0].rating_at == done
+        assert revised.revision.sources[0].archive_hash != ""
+
+
+def test_sources_explicit_replacement_adds_and_removes(client, migrated_engine):
+    """显式给出来源列表即整体替换：增删都按提交内容生效。"""
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, sources=[{"paper_id": "as-p2"}], idempotency_key="swap-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert [s.paper_id for s in revised.revision.sources] == ["as-p2"]
+        # 旧版本来源仍在库，不被新版本替代。
+        from papersteward.storage.insights import ReadingAssetRepository
+
+        old = ReadingAssetRepository(session).sources(view.asset_id, 1)
+        assert [s.paper_id for s in old] == ["as-p1"]
+        assert old[0].rating_at is not None
+
+
 def test_status_transitions_per_kind(client, migrated_engine):
     activate(client)
     seed_two_archives(client)
     factory = create_session_factory(client.app.state.engine)
     with session_scope(factory) as session:
         view = create_asset(session, create_input(), now=NOW5)
-        view = change_status(session, view.asset_id, "resolved", now=NOW5, expected_revision=1)
+        view = change_status(
+            session,
+            view.asset_id,
+            "resolved",
+            now=NOW5,
+            expected_revision=1,
+            idempotency_key="status-st-1",
+        )
         assert view.revision.status == "resolved"
-        view = change_status(session, view.asset_id, "open", now=NOW5, expected_revision=2)
+        view = change_status(
+            session,
+            view.asset_id,
+            "open",
+            now=NOW5,
+            expected_revision=2,
+            idempotency_key="status-st-2",
+        )
         assert view.revision.status == "open"
         with pytest.raises(DomainValidationError):
-            change_status(session, view.asset_id, "active", now=NOW5, expected_revision=3)
+            change_status(
+                session,
+                view.asset_id,
+                "active",
+                now=NOW5,
+                expected_revision=3,
+                idempotency_key="status-st-3",
+            )
     with session_scope(factory) as session:
         harvest = create_asset(
             session,
@@ -177,8 +325,22 @@ def test_status_transitions_per_kind(client, migrated_engine):
         )
         assert harvest.revision.status == "active"
         with pytest.raises(DomainValidationError):
-            change_status(session, harvest.asset_id, "open", now=NOW5, expected_revision=1)
-        view = change_status(session, harvest.asset_id, "archived", now=NOW5, expected_revision=1)
+            change_status(
+                session,
+                harvest.asset_id,
+                "open",
+                now=NOW5,
+                expected_revision=1,
+                idempotency_key="status-h-open",
+            )
+        view = change_status(
+            session,
+            harvest.asset_id,
+            "archived",
+            now=NOW5,
+            expected_revision=1,
+            idempotency_key="status-h-arch",
+        )
         assert view.revision.status == "archived"
 
 

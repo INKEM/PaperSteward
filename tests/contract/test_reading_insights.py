@@ -537,18 +537,35 @@ def test_asset_revision_input_strictness():
 
     payload = {
         "expected_revision": 1,
+        "idempotency_key": "rev-key",
         "title": "t",
         "body": "b",
         "status": "resolved",
         "sources": [{"paper_id": "p"}],
     }
-    assert AssetRevisionInput.model_validate(payload).status == "resolved"
+    validated = AssetRevisionInput.model_validate(payload)
+    assert validated.status == "resolved"
+    # sources 省略即保留当前来源集合（R2-00B）。
+    assert (
+        AssetRevisionInput.model_validate(
+            {k: v for k, v in payload.items() if k != "sources"}
+        ).sources
+        is None
+    )
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "expected_revision": "1"})
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "status": "bogus"})
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "sources": []})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate(
+            {k: v for k, v in payload.items() if k != "idempotency_key"}
+        )
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "idempotency_key": "has space"})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "surprise": 1})
 
 
 def test_report_content_defaults_are_backward_compatible():

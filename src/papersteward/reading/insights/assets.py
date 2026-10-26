@@ -1,11 +1,13 @@
 """手工资产（收获/问题）的创建、修订、状态与删除；只引用已读归档。
 
-语义（阶段计划 §5.3/§6 R1-05）：
+语义（阶段计划 §5.3/§6 R1-05、R2-00B）：
 - 版本只追加；每次修订提交全量内容 + ``expected_revision`` 乐观并发，
-  来源集合随版本整体替换，旧版本与当时来源原样保留。
+  旧版本与当时来源原样保留。修订请求省略来源时保留当前来源集合原样
+  （含归档哈希与反馈版本），显式给出列表才整体替换。
 - 来源只信服务端：逐个校验归档快照存在并复制其内容哈希；
   客户端传来的任何来源内容或确认状态不采信。
-- 幂等键相同提交重试不重复创建；kind 对应的合法状态在服务层校验。
+- 幂等键绑定操作、目标与规范化请求哈希：同键同请求重放原结果，
+  不同请求明确冲突；回执与业务写入同一事务，失败回滚后键不被消耗。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from papersteward.core.errors import DomainValidationError, InvariantViolation
@@ -26,6 +29,16 @@ from papersteward.reading.insights.contracts import (
     AssetSourceInput,
     AssetSourceRef,
     AssetView,
+)
+from papersteward.reading.insights.idempotency import (
+    ASSET_CREATE,
+    ASSET_REVISE,
+    ASSET_STATUS,
+    ReplayResult,
+    asset_content_payload,
+    complete_keyed_write,
+    discard_keyed_write,
+    open_keyed_write,
 )
 from papersteward.reading.insights.reports import delete_report, list_reports, read_report
 from papersteward.storage.insights import ReadingAssetRepository
@@ -47,14 +60,31 @@ _KIND_LABELS = {"harvest": "收获", "problem": "问题"}
 
 
 def create_asset(session: Session, spec: AssetCreateInput, *, now: datetime) -> AssetView:
-    """创建资产；幂等键相同重放原视图，不同内容拒绝。"""
+    """创建资产；同键同请求重放原视图，不同请求明确冲突。"""
     repository = ReadingAssetRepository(session)
-    existing = repository.get_by_idempotency(spec.idempotency_key)
-    if existing is not None:
-        if existing.kind != spec.kind:
-            raise InvariantViolation("asset.request_id", "请求ID已用于不同类型的资产")
-        return get_asset_view(session, existing.id)
+    # 来源校验先于回执：非法输入不消耗幂等键。
     resolved = _resolve_sources(session, spec.sources)
+    outcome = open_keyed_write(
+        session,
+        operation=ASSET_CREATE,
+        target_id="",
+        key=spec.idempotency_key,
+        payload=asset_content_payload(
+            spec.kind,
+            title=spec.title,
+            body=spec.body,
+            applicability=spec.applicability,
+            sources=_request_sources(spec.sources),
+        ),
+        now=as_utc(now),
+    )
+    if isinstance(outcome, ReplayResult):
+        if outcome.result is not None:
+            return AssetView.model_validate(outcome.result)
+        legacy = repository.get_by_idempotency(spec.idempotency_key)
+        if legacy is None:
+            raise InvariantViolation("asset.request_id", "无法定位该请求ID对应的资产，请更换后重试")
+        return get_asset_view(session, legacy.id)
     asset_id = uuid4().hex
     repository.create(
         ReadingAssetRow(
@@ -74,38 +104,16 @@ def create_asset(session: Session, spec: AssetCreateInput, *, now: datetime) -> 
         ),
         _source_rows(asset_id, 1, resolved),
     )
-    return get_asset_view(session, asset_id)
+    view = get_asset_view(session, asset_id)
+    complete_keyed_write(outcome, target_id=asset_id, result=view.model_dump(mode="json"))
+    return view
 
 
 def append_revision(
     session: Session, asset_id: str, spec: AssetRevisionInput, *, now: datetime
 ) -> AssetView:
-    """追加全量内容版本；expected_revision 不一致即冲突。"""
-    repository = ReadingAssetRepository(session)
-    asset = repository.get_asset(asset_id)
-    if asset is None:
-        raise NotFoundError("资产不存在")
-    current = repository.max_revision(asset_id)
-    if spec.expected_revision != current:
-        raise ConflictError(
-            "资产已被其他页面更新，请基于最新版本重试",
-            details={"current_revision": current},
-        )
-    _check_status(asset.kind, spec.status)
-    resolved = _resolve_sources(session, spec.sources)
-    repository.add_revision(
-        ReadingAssetRevisionRow(
-            asset_id=asset_id,
-            revision=current + 1,
-            recorded_at=now,
-            title=spec.title,
-            body=spec.body,
-            applicability=spec.applicability,
-            status=spec.status,
-        ),
-        _source_rows(asset_id, current + 1, resolved),
-    )
-    return get_asset_view(session, asset_id)
+    """追加全量内容版本；同键同请求重放原结果，不同请求明确冲突。"""
+    return _append_revision(session, asset_id, spec, operation=ASSET_REVISE, now=now)
 
 
 def change_status(
@@ -115,6 +123,7 @@ def change_status(
     *,
     now: datetime,
     expected_revision: int,
+    idempotency_key: str,
 ) -> AssetView:
     """只改状态的便捷修订（问题解决/重开、归档）；内容与来源沿用当前版本。"""
     view = get_asset_view(session, asset_id)
@@ -122,17 +131,88 @@ def change_status(
     spec = AssetRevisionInput.model_validate(
         {
             "expected_revision": expected_revision,
+            "idempotency_key": idempotency_key,
             "title": current.title,
             "body": current.body,
             "applicability": current.applicability,
             "status": status,
-            "sources": [
-                {"paper_id": source.paper_id, "rating_at": source.rating_at}
-                for source in current.sources
-            ],
+            "sources": None,
         }
     )
-    return append_revision(session, asset_id, spec, now=now)
+    return _append_revision(session, asset_id, spec, operation=ASSET_STATUS, now=now)
+
+
+def _append_revision(
+    session: Session,
+    asset_id: str,
+    spec: AssetRevisionInput,
+    *,
+    operation: str,
+    now: datetime,
+) -> AssetView:
+    """修订核心：回执先于版本检查（重试重放），来源省略即保留当前集合。"""
+    repository = ReadingAssetRepository(session)
+    asset = repository.get_asset(asset_id)
+    if asset is None:
+        raise NotFoundError("资产不存在")
+    current = repository.max_revision(asset_id)
+    _check_status(asset.kind, spec.status)
+    resolved = (
+        _preserved_sources(repository, asset_id, current)
+        if spec.sources is None
+        else _resolve_sources(session, spec.sources)
+    )
+    outcome = open_keyed_write(
+        session,
+        operation=operation,
+        target_id=asset_id,
+        key=spec.idempotency_key,
+        payload=asset_content_payload(
+            None,
+            title=spec.title,
+            body=spec.body,
+            applicability=spec.applicability,
+            sources=[
+                (paper_id, as_utc(rating_at).isoformat() if rating_at else None)
+                for paper_id, _, rating_at in resolved
+            ],
+        ),
+        now=as_utc(now),
+    )
+    if isinstance(outcome, ReplayResult):
+        if outcome.result is not None:
+            return AssetView.model_validate(outcome.result)
+        return get_asset_view(session, asset_id)
+    if spec.expected_revision != current:
+        # 版本冲突可修正后重试：显式移除回执，不依赖调用方回滚也不消耗键。
+        discard_keyed_write(outcome)
+        raise ConflictError(
+            "资产已被其他页面更新，请基于最新版本重试",
+            details={"current_revision": current},
+        )
+    try:
+        repository.add_revision(
+            ReadingAssetRevisionRow(
+                asset_id=asset_id,
+                revision=current + 1,
+                recorded_at=now,
+                title=spec.title,
+                body=spec.body,
+                applicability=spec.applicability,
+                status=spec.status,
+            ),
+            _source_rows(asset_id, current + 1, resolved),
+        )
+    except IntegrityError:
+        # 真并发下复合主键兜底触发：先回滚解除会话失败状态，转为可恢复冲突。
+        session.rollback()
+        raise ConflictError(
+            "资产正被其他请求同时修订，请基于最新版本重试",
+            details={"current_revision": current},
+        ) from None
+    view = get_asset_view(session, asset_id)
+    complete_keyed_write(outcome, result=view.model_dump(mode="json"))
+    return view
 
 
 def get_asset_view(session: Session, asset_id: str) -> AssetView:
@@ -267,6 +347,36 @@ def _reports_with_asset(session: Session, asset_id: str) -> tuple[list[str], lis
         else:
             referenced.append(detail.report_id)
     return with_body, referenced
+
+
+def _request_sources(sources: Sequence[AssetSourceInput]) -> list[tuple[str, str | None]]:
+    """把请求来源转成哈希输入；paper_id 去重保留首个，与 _resolve_sources 一致。"""
+    seen: set[str] = set()
+    pairs: list[tuple[str, str | None]] = []
+    for source in sources:
+        if source.paper_id in seen:
+            continue
+        seen.add(source.paper_id)
+        pairs.append(
+            (
+                source.paper_id,
+                as_utc(source.rating_at).isoformat() if source.rating_at else None,
+            )
+        )
+    return pairs
+
+
+def _preserved_sources(
+    repository: ReadingAssetRepository, asset_id: str, revision: int
+) -> list[tuple[str, str, datetime | None]]:
+    """保留当前版本的来源原样：paper_id + archive_hash + rating_at 不重解析。"""
+    rows = repository.sources(asset_id, revision)
+    if not rows:
+        raise DomainValidationError("asset.sources", "当前版本没有可保留的来源，请显式提供")
+    return [
+        (row.paper_id, row.archive_hash, as_utc(row.rating_at) if row.rating_at else None)
+        for row in rows
+    ]
 
 
 def _resolve_sources(

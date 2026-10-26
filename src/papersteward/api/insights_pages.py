@@ -44,6 +44,7 @@ from papersteward.reading.insights.contracts import (
 from papersteward.reading.insights.timeline import record_reading_time
 from papersteward.storage.onboarding import ensure_active, get_onboarding
 from papersteward.storage.repositories import PaperRepository, TaxonomyRepository
+from papersteward.storage.tx import write_tx
 
 router = APIRouter(prefix="/ui/reading-insights", include_in_schema=False)
 
@@ -165,7 +166,7 @@ async def record_read_time(paper_id: str, request: Request, session: SessionDep)
             "month": form.get("month", ""),
         }
         body = _parse_form(form)
-        with session.begin():
+        with write_tx(session):
             record_reading_time(
                 session,
                 paper_id,
@@ -1183,7 +1184,7 @@ async def create_asset_page(request: Request, session: SessionDep) -> Response:
         form = await form_fields(request)
         values = dict(form)
         body = _parse_asset_create(form)
-        with session.begin():
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = create_asset(session, body, now=utc_now())
         source_paper = form.get("source_paper") or ""
@@ -1313,13 +1314,14 @@ def _asset_detail_body(
             f"{escape(source.paper_id)}</a>{rating}</li>"
         )
     body += "</ul>"
-    # 修订表单：全量内容 + 预期版本；冲突时保留草稿由查询参数带回。
+    # 修订表单：全量内容 + 预期版本 + 幂等键；冲突时保留草稿由查询参数带回。
     body += (
         "<h2>修订</h2>"
         '<form method="post" action="'
         + url
         + '/revisions" class="stacked-form">'
         + hidden("expected_revision", str(revision.revision))
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
         + '<label>标题<input name="title" required maxlength="256" value="'
         + escape(draft.get("title", revision.title))
         + '"></label>'
@@ -1351,6 +1353,7 @@ def _asset_detail_body(
             + '/status" class="inline">'
             + hidden("status", target)
             + hidden("expected_revision", str(revision.revision))
+            + hidden("idempotency_key", uuid4().hex)
             + f"<button>标记为{_asset_status_text(target)}</button></form>"
         )
     if view.history:
@@ -1399,9 +1402,10 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
             "applicability": form.get("applicability", ""),
             "status": form.get("status", ""),
             "sources": form.get("sources", ""),
+            "idempotency_key": form.get("idempotency_key", ""),
         }
         body = _parse_asset_revision(form)
-        with session.begin():
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = append_revision(session, asset_id, body, now=utc_now())
         return RedirectResponse(f"/ui/reading-insights/assets/{asset_id}", status_code=303)
@@ -1444,6 +1448,7 @@ def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
     return AssetRevisionInput.model_validate(
         {
             "expected_revision": expected,
+            "idempotency_key": form.get("idempotency_key") or uuid4().hex,
             "title": form.get("title", ""),
             "body": form.get("body", ""),
             "applicability": form.get("applicability") or None,
@@ -1463,7 +1468,7 @@ async def asset_status_page(request: Request, asset_id: str, session: SessionDep
             expected = int(form.get("expected_revision") or "0")
         except ValueError as exc:
             raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
-        with session.begin():
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             change_status(
                 session,
@@ -1471,6 +1476,7 @@ async def asset_status_page(request: Request, asset_id: str, session: SessionDep
                 form.get("status", ""),
                 now=utc_now(),
                 expected_revision=expected,
+                idempotency_key=form.get("idempotency_key") or uuid4().hex,
             )
     except (DomainError, AppError, ValidationError) as exc:
         return failure(exc, back=f"/ui/reading-insights/assets/{asset_id}")
@@ -1486,7 +1492,7 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
         form = await form_fields(request)
         if form.get("confirmation") != "删除资产":
             raise InvalidRequestError("请输入「删除资产」以确认删除")
-        with session.begin():
+        with write_tx(session):
             preview = delete_preview(session, asset_id)
             removable = set(preview["reports_with_body"])
             also = [rid for rid in removable if form.get(f"also_{rid}")]

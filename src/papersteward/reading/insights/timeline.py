@@ -11,6 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from papersteward.core.entities import ReadingTimeRevision
@@ -23,6 +24,14 @@ from papersteward.reading.insights.contracts import (
     ReadTimeDeclaration,
     ReadTimeRevision,
     ReadTimeView,
+)
+from papersteward.reading.insights.idempotency import (
+    READING_TIME_RECORD,
+    ReplayResult,
+    complete_keyed_write,
+    discard_keyed_write,
+    open_keyed_write,
+    reading_time_payload,
 )
 from papersteward.storage.insights import ReadingTimeRevisionRepository
 from papersteward.storage.mappers import as_utc
@@ -43,42 +52,69 @@ def record_reading_time(
     expected_revision: int | None,
     idempotency_key: str | None = None,
 ) -> ReadTimeView:
-    """追加一条阅读时间声明；返回写入后的完整视图。
+    """追加一条阅读时间声明；同键同请求重放原结果，不同请求明确冲突。
 
-    ``expected_revision`` 为 ``None`` 时跳过乐观校验（导入路径，归档刚建立）；
-    幂等键命中且输入一致时原样返回现状，不产生新版本。
+    ``expected_revision`` 为 ``None`` 时跳过乐观校验（导入路径，归档刚建立）。
+    回执先于版本检查：响应丢失后的原样重试（expected_revision 已过期）命中
+    重放而非误报冲突；回执与版本行同事务提交，任何失败回滚后键不被消耗。
     """
     ensure_active(session, action="reading_time.record")
     if _snapshot(session, paper_id) is None:
         raise NotFoundError("归档不存在")
-    repository = ReadingTimeRevisionRepository(session)
+    # 确定性校验先于回执：非法输入不消耗幂等键。
+    _validate_range(session, declaration, now=now)
     key = idempotency_key or uuid4().hex
-    existing = repository.find_by_idempotency_key(key)
-    if existing is not None:
-        if not _same_declaration(existing, declaration):
-            raise InvariantViolation("reading_time.request_id", "请求ID已用于不同阅读时间")
+    payload = reading_time_payload(
+        paper_id=paper_id,
+        precision=declaration.precision.value,
+        day=declaration.day.isoformat() if declaration.day else None,
+        month=declaration.month,
+    )
+    outcome = open_keyed_write(
+        session,
+        operation=READING_TIME_RECORD,
+        target_id=paper_id,
+        key=key,
+        payload=payload,
+        now=as_utc(now),
+    )
+    if isinstance(outcome, ReplayResult):
+        if outcome.result is not None:
+            return ReadTimeView.model_validate(outcome.result)
         return read_time_view(session, paper_id)
+    repository = ReadingTimeRevisionRepository(session)
     current = _current_revision(session, paper_id)
     if expected_revision is not None and current != expected_revision:
+        # 版本冲突可修正后重试：显式移除回执，不依赖调用方回滚也不消耗键。
+        discard_keyed_write(outcome)
         raise ConflictError(
             "阅读时间已被其他页面更新，请基于最新版本重试",
             details={"current_revision": current},
         )
-    _validate_range(session, declaration, now=now)
     revision = current + 1
-    repository.add(
-        ReadingTimeRevision(
-            paper_id=paper_id,
-            revision=revision,
-            recorded_at=as_utc(now),
-            precision=declaration.precision,
-            basis=ReadingTimeBasis.DECLARED,
-            idempotency_key=key,
-            day=declaration.day,
-            month=declaration.month,
+    try:
+        repository.add(
+            ReadingTimeRevision(
+                paper_id=paper_id,
+                revision=revision,
+                recorded_at=as_utc(now),
+                precision=declaration.precision,
+                basis=ReadingTimeBasis.DECLARED,
+                idempotency_key=key,
+                day=declaration.day,
+                month=declaration.month,
+            )
         )
-    )
-    return read_time_view(session, paper_id)
+    except IntegrityError:
+        # 版本行已有此键但回执缺失（无法证明原请求内容），按冲突处理；
+        # 先回滚解除会话失败状态，本次请求的回执与写入一并放弃。
+        session.rollback()
+        raise InvariantViolation(
+            "reading_time.request_id", "请求ID已用于不同阅读时间，请更换后重试"
+        ) from None
+    view = read_time_view(session, paper_id)
+    complete_keyed_write(outcome, result=view.model_dump(mode="json"))
+    return view
 
 
 def read_time_view(session: Session, paper_id: str) -> ReadTimeView:
@@ -169,14 +205,6 @@ def _validate_range(session: Session, declaration: ReadTimeDeclaration, *, now: 
                 "阅读月份不能晚于当前月份",
                 details={"field": "month", "current": f"{today.year:04d}-{today.month:02d}"},
             )
-
-
-def _same_declaration(revision: ReadingTimeRevision, declaration: ReadTimeDeclaration) -> bool:
-    return (
-        revision.precision is declaration.precision
-        and revision.day == declaration.day
-        and revision.month == declaration.month
-    )
 
 
 def _snapshot(session: Session, paper_id: str) -> ArchiveSnapshotRow | None:

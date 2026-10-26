@@ -8,7 +8,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import delete, inspect, select, text
+from sqlalchemy import delete, inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -661,36 +661,67 @@ def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: 
     factory = create_session_factory(sqlite_engine)
     from test_reading_insight_projection import seed_archive, seed_paper, system_content
 
-    from papersteward.reading.insights.assets import create_asset
-    from papersteward.reading.insights.contracts import AssetCreateInput, ReadTimeDeclaration
-    from papersteward.reading.insights.timeline import record_reading_time
+    from papersteward.storage.models import (
+        ReadingAssetRevisionRow,
+        ReadingAssetRow,
+        ReadingAssetSourceRow,
+        ReadingTimeRevisionRow,
+    )
 
     at = NOW_MIGRATIONS - timedelta(hours=2)
+    from papersteward.storage.delivery import content_hash as _content_hash
+
+    legacy_content = system_content(title="旧冻结论文", completed_at=at)
     with session_scope(factory) as session:
         seed_paper(session, "legacy-paper", first_seen_at=at)
         seed_archive(
             session,
             "legacy-paper",
             archived_at=at,
-            content=system_content(title="旧冻结论文", completed_at=at),
+            content=legacy_content,
         )
-        create_asset(
-            session,
-            AssetCreateInput(
+        # 直接写旧行形态（无回执），模拟旧版本代码的产物。
+        session.add(
+            ReadingAssetRow(
+                id="legacy-asset-row",
                 kind="problem",
+                idempotency_key="legacy-asset",
+                created_at=at,
+            )
+        )
+        session.flush()
+        session.add(
+            ReadingAssetRevisionRow(
+                asset_id="legacy-asset-row",
+                revision=1,
+                recorded_at=at,
                 title="旧私人标题",
                 body="旧私人正文",
-                sources=[{"paper_id": "legacy-paper"}],
-                idempotency_key="legacy-asset",
-            ),
-            now=at,
+                applicability=None,
+                status="open",
+            )
         )
-        record_reading_time(
-            session,
-            "legacy-paper",
-            ReadTimeDeclaration(precision="day", day=at.date()),
-            now=at,
-            expected_revision=0,
+        session.add(
+            ReadingAssetSourceRow(
+                id="legacy-src-1",
+                asset_id="legacy-asset-row",
+                revision=1,
+                paper_id="legacy-paper",
+                archive_hash=_content_hash(legacy_content),
+                rating_at=None,
+            )
+        )
+        session.add(
+            ReadingTimeRevisionRow(
+                paper_id="legacy-paper",
+                revision=1,
+                recorded_at=at,
+                precision="day",
+                declared_date=at.date(),
+                declared_month=None,
+                basis="declared",
+                idempotency_key="legacy-time",
+            )
         )
 
     def related_state():
@@ -804,7 +835,7 @@ def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: 
 
 
 def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) -> None:
-    """既有幂等键从存储行恢复请求哈希；result_json 留空，业务行在往返中原样保留。"""
+    """既有键回填的请求哈希必须与服务写入时的哈希一致；业务行在往返中原样保留。"""
     from test_reading_insight_projection import seed_archive, seed_paper, system_content
 
     from conftest import activate_workspace
@@ -820,10 +851,9 @@ def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) ->
     )
     from papersteward.reading.insights.timeline import record_reading_time
     from papersteward.storage.mappers import as_utc
-    from papersteward.storage.models import ReadingWriteReceiptRow
     from papersteward.storage.repositories import RatingRepository
 
-    _upgrade(sqlite_engine, "0024")
+    _upgrade(sqlite_engine)
     activate_workspace(sqlite_engine)
     factory = create_session_factory(sqlite_engine)
 
@@ -859,6 +889,24 @@ def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) ->
             idempotency_key="receipt-time-key",
         )
 
+    def receipts() -> dict[str, dict]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT idempotency_key, operation, target_id, request_hash, result_json"
+                    " FROM reading_write_receipt"
+                )
+            ).all()
+        return {
+            row.idempotency_key: {
+                "operation": row.operation,
+                "target_id": row.target_id,
+                "request_hash": row.request_hash,
+                "result_json": row.result_json,
+            }
+            for row in rows
+        }
+
     def business_state() -> dict:
         with sqlite_engine.connect() as connection:
             return {
@@ -871,8 +919,40 @@ def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) ->
                 )
             }
 
+    written = receipts()
     before = business_state()
-    expected_asset_hash = request_hash(
+    _downgrade(sqlite_engine, "0024")
+    assert business_state() == before
+    _upgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    recovered = receipts()
+    # 回填恢复的哈希与降级前服务写入的哈希完全一致：同一规范化口径。
+    assert recovered == {
+        "receipt-time-key": {
+            "operation": "reading_time.record",
+            "target_id": "receipt-paper",
+            "request_hash": written["receipt-time-key"]["request_hash"],
+            "result_json": None,
+        },
+        "receipt-asset-key": {
+            "operation": "asset.create",
+            "target_id": "",
+            "request_hash": written["receipt-asset-key"]["request_hash"],
+            "result_json": None,
+        },
+    }
+    # 哈希可由共享规范化函数从存储行重现。
+    assert recovered["receipt-time-key"]["request_hash"] == request_hash(
+        READING_TIME_RECORD,
+        "receipt-paper",
+        reading_time_payload(
+            paper_id="receipt-paper",
+            precision="day",
+            day=at.date().isoformat(),
+            month=None,
+        ),
+    )
+    assert recovered["receipt-asset-key"]["request_hash"] == request_hash(
         ASSET_CREATE,
         "",
         asset_content_payload(
@@ -883,48 +963,3 @@ def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) ->
             sources=[("receipt-paper", as_utc(at).isoformat())],
         ),
     )
-    expected_time_hash = request_hash(
-        READING_TIME_RECORD,
-        "receipt-paper",
-        reading_time_payload(
-            paper_id="receipt-paper",
-            precision="day",
-            day=at.date().isoformat(),
-            month=None,
-        ),
-    )
-    _upgrade(sqlite_engine, "0025")
-    assert business_state() == before
-    with session_scope(factory) as session:
-        asset_receipt = session.scalars(
-            select(ReadingWriteReceiptRow).where(
-                ReadingWriteReceiptRow.idempotency_key == "receipt-asset-key"
-            )
-        ).one()
-        assert asset_receipt.operation == ASSET_CREATE
-        assert asset_receipt.target_id == ""
-        assert asset_receipt.request_hash == expected_asset_hash
-        assert asset_receipt.result_json is None
-        time_receipt = session.scalars(
-            select(ReadingWriteReceiptRow).where(
-                ReadingWriteReceiptRow.idempotency_key == "receipt-time-key"
-            )
-        ).one()
-        assert time_receipt.operation == READING_TIME_RECORD
-        assert time_receipt.target_id == "receipt-paper"
-        assert time_receipt.request_hash == expected_time_hash
-
-    _downgrade(sqlite_engine, "0024")
-    assert business_state() == before
-    _upgrade(sqlite_engine, "0025")
-    assert business_state() == before
-    with sqlite_engine.connect() as connection:
-        hashes = dict(
-            connection.execute(
-                text("SELECT idempotency_key, request_hash FROM reading_write_receipt")
-            ).all()
-        )
-    assert hashes == {
-        "receipt-asset-key": expected_asset_hash,
-        "receipt-time-key": expected_time_hash,
-    }

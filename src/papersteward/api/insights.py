@@ -43,6 +43,7 @@ from papersteward.reading.insights.timeline import (
 )
 from papersteward.storage.onboarding import ensure_active
 from papersteward.storage.repositories import TaxonomyRepository
+from papersteward.storage.tx import write_tx
 
 router = APIRouter(prefix="/reading-insights", tags=["reading-insights"])
 
@@ -60,7 +61,7 @@ def get_read_time(paper_id: str, session: SessionDep) -> Any:
     summary="补记或更正阅读时间",
 )
 def post_read_time(paper_id: str, body: ReadTimeInput, session: SessionDep) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         return record_reading_time(
             session,
             paper_id,
@@ -313,7 +314,7 @@ def get_assets(
     summary="创建手工资产",
 )
 def post_asset(body: AssetCreateInput, session: SessionDep) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         ensure_active(session, action="reading_insights.assets")
         return create_asset(session, body, now=utc_now())
 
@@ -339,7 +340,7 @@ def get_assets_for_paper(paper_id: str, session: SessionDep) -> Any:
     summary="带预期版本追加资产修订",
 )
 def post_asset_revision(asset_id: str, body: AssetRevisionInput, session: SessionDep) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         ensure_active(session, action="reading_insights.assets")
         return append_revision(session, asset_id, body, now=utc_now())
 
@@ -357,7 +358,7 @@ def delete_asset_route(
     session: SessionDep,
     also_report_ids: list[str] | None = None,
 ) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         ensure_active(session, action="reading_insights.assets")
         removed = delete_asset(session, asset_id, also_report_ids=also_report_ids or ())
         return {"deleted": True, "removed_reports": removed}

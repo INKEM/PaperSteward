@@ -13,6 +13,7 @@ from papersteward.storage.insights import (
     ReadingAssetRepository,
     ReadingReportRepository,
     ReadingTimeRevisionRepository,
+    ReadingWriteReceiptRepository,
 )
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import (
@@ -59,6 +60,7 @@ __all__ = [
     "ReadingAssetRepository",
     "ReadingReportRepository",
     "ReadingTimeRevisionRepository",
+    "ReadingWriteReceiptRepository",
     "ReviewRepository",
     "RunRepository",
     "RunRow",
