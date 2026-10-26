@@ -960,6 +960,7 @@ def _detail_article(
     notice_role: str = "status",
     note_draft: str | None = None,
     read_time_draft: dict[str, str] | None = None,
+    structured_draft: dict[str, str] | None = None,
 ) -> str:
     """详情页正文（UXR-09）：详情路由与详情上下文的动作响应共用同一渲染，
     反馈完成后内容保留、仅反馈区切换；notice 插在正文最前（成功或错误提示）。"""
@@ -1020,6 +1021,14 @@ def _detail_article(
                     + "</li>"
                 )
             body += "</ul></details>"
+        from papersteward.api.insights_pages import structured_feedback_block
+        from papersteward.reading.insights.structured_feedback import structured_feedback_view
+
+        body += structured_feedback_block(
+            structured_feedback_view(session, paper_id),
+            record.revision_history,
+            draft=structured_draft,
+        )
         body += read_time_block(view, draft=read_time_draft)
         from papersteward.api.insights_pages import asset_section
 

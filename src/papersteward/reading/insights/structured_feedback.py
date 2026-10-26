@@ -123,7 +123,9 @@ def revise_structured_feedback(
 
 
 def structured_feedback_view(session: Session, paper_id: str) -> StructuredFeedbackView:
-    """当前结构化理由视图；从未填写时 current_revision=0、latest 为空。"""
+    """当前结构化理由视图；归档不存在按 404 语义，从未填写时 latest 为空。"""
+    if session.get(ArchiveSnapshotRow, paper_id) is None:
+        raise NotFoundError("归档不存在")
     rows = ReadingStructuredFeedbackRepository(session).list_for_paper(paper_id)
     if not rows:
         return StructuredFeedbackView(paper_id=paper_id, current_revision=0)

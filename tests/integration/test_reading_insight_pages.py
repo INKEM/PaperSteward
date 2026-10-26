@@ -361,3 +361,104 @@ def test_archive_page_links_to_overview(client, migrated_engine):
     archive = client.get("/ui/archive")
     assert 'href="/ui/reading-insights"' in archive.text
     assert "阅读回顾" in archive.text
+
+
+# —— 结构化理由（R2-01）：折叠表单、保存/清除与输入保留 ——————————————————
+
+
+def _post_sf(client, paper_id: str, data: dict[str, str]):
+    return client.post(
+        f"/ui/reading-insights/papers/{paper_id}/feedback-context",
+        data={"expected_revision": "0", "idempotency_key": "sf-page-key", **data},
+        headers=HEADERS,
+    )
+
+
+def test_detail_shows_optional_structured_block(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化块论文")
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert detail.status_code == 200
+    assert "结构化理由（可选）" in detail.text
+    assert "尚未填写" in detail.text
+    assert "填写或修订理由" in detail.text
+    # 常用选项平铺，其余维度折叠；说明不填不影响评分与备注。
+    assert "方法可复用" in detail.text and "帮助理解" in detail.text
+    assert "价值有限的原因" in detail.text
+    assert "不填不影响评分与备注" in detail.text
+
+
+def test_structured_form_success_updates_detail(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化保存论文")
+    response = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-save-1",
+            "vs_method_reusable": "1",
+            "vs_aids_understanding": "1",
+            "lr_already_known": "1",
+            "takeaway": "学到了评估协议",
+            "context_note": "用于当前综述任务",
+        },
+    )
+    assert response.status_code == 200
+    assert "已记录结构化理由" in response.text
+    assert "方法可复用" in response.text
+    assert "理由修订记录" in response.text  # 版本列表含初始记录；统计侧不把它算修订
+    detail = client.get(f"/ui/papers/{paper_id}")
+    # 码表按字典序存储：aids_understanding 在 method_reusable 之前。
+    assert "当前：帮助理解 · 方法可复用 · 内容已知 · 有语境 · 有收获" in detail.text
+    assert "版本 1" in detail.text
+
+
+def test_structured_form_conflict_preserves_input(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化冲突论文")
+    first = _post_sf(client, paper_id, {"idempotency_key": "sf-c-1", "vs_usable_now": "1"})
+    assert first.status_code == 200
+    stale = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-c-2",
+            "expected_revision": "0",
+            "vs_method_reusable": "1",
+            "takeaway": "过期前提",
+        },
+    )
+    assert stale.status_code == 409
+    assert "已保留你的输入" in stale.text
+    assert 'name="vs_method_reusable" value="1" checked' in stale.text
+    assert "过期前提" in stale.text
+
+
+def test_structured_form_clear_keeps_history(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化清除论文")
+    first = _post_sf(client, paper_id, {"idempotency_key": "sf-cl-1", "vs_usable_now": "1"})
+    assert first.status_code == 200
+    cleared = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-cl-2",
+            "expected_revision": "1",
+            "action": "clear",
+        },
+    )
+    assert cleared.status_code == 200
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert "（已清除，历史保留）" in detail.text
+    assert "理由修订记录" in detail.text
+    # 表单回填清除后的状态：复选框不再勾选。
+    assert 'name="vs_usable_now" value="1" checked' not in detail.text
+
+
+def test_structured_form_links_rating_version(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化关联评分论文")
+    detail = client.get(f"/ui/papers/{paper_id}")
+    # 导入论文有初始评分（4 分）：关联下拉应列出该评分版本。
+    assert "不关联具体评分" in detail.text

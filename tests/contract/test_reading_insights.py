@@ -213,6 +213,8 @@ def test_minimal_projection_json_is_frozen():
                     }
                 ],
                 "changes": [],
+                "structured_feedback": [],
+                "structured_changes": [],
                 "archive_hash": None,
                 "reading_revision": 0,
             }
@@ -386,6 +388,15 @@ def test_minimal_overview_json_is_frozen():
                 "unrated": 0,
             },
             "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "structured_coverage": {
+                "total": 1,
+                "covered": 0,
+                "value_sources": 0,
+                "limited_reasons": 0,
+                "context": 0,
+                "free_text": 0,
+            },
+            "structured_change_stats": {"events": 0, "papers_affected": 0},
             "asset_events": 0,
             "asset_assets": 0,
             "reading_modes": [
@@ -407,6 +418,7 @@ def test_minimal_overview_json_is_frozen():
         "assets": [],
         "backfills": [],
         "changes": [],
+        "structured_changes": [],
         "unassigned": [],
     }
 

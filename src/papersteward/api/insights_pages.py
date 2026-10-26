@@ -27,6 +27,10 @@ from papersteward.core.enums import ReadingTimeBasis, TimePrecision
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError
 from papersteward.reading.insights.contracts import (
+    LIMITED_REASON_CODES,
+    LIMITED_REASON_LABELS,
+    VALUE_SOURCE_CODES,
+    VALUE_SOURCE_LABELS,
     AssetCreateInput,
     AssetRevisionInput,
     AssetView,
@@ -40,6 +44,12 @@ from papersteward.reading.insights.contracts import (
     ReportChange,
     ReportDetail,
     ReviewMode,
+    StructuredFeedbackInput,
+    StructuredFeedbackRevisionDetail,
+    StructuredFeedbackView,
+)
+from papersteward.reading.insights.structured_feedback import (
+    revise_structured_feedback,
 )
 from papersteward.reading.insights.timeline import record_reading_time
 from papersteward.storage.onboarding import ensure_active, get_onboarding
@@ -209,6 +219,223 @@ async def record_read_time(paper_id: str, request: Request, session: SessionDep)
     except (ValueError, UnicodeError):
         return HTMLResponse(
             '<article><p role="alert">日期格式无效，表单须为UTF-8。</p></article>',
+            status_code=422,
+            headers=HEADERS,
+        )
+
+
+# —— 结构化阅读理由（R2-01）：常用选项平铺，其余折叠；全部可选 ——————————
+
+_SF_TEXT_FIELDS = ("context_note", "applicability", "takeaway", "question", "usage_result")
+_SF_TEXT_LABELS = {
+    "context_note": "任务或专题说明（这篇为什么对你有用）",
+    "applicability": "阶段性适用范围",
+    "takeaway": "一句收获",
+    "question": "疑问",
+    "usage_result": "实际使用结果",
+}
+_VALUE_SOURCE_OPTIONS = [(code, VALUE_SOURCE_LABELS[code]) for code in VALUE_SOURCE_CODES]
+_LIMITED_REASON_OPTIONS = [(code, LIMITED_REASON_LABELS[code]) for code in LIMITED_REASON_CODES]
+
+
+def _structured_summary(detail: StructuredFeedbackRevisionDetail) -> str:
+    """单个版本的一行摘要；码用版本化文案，文本只表达有无，不回显原文。"""
+    labels = [VALUE_SOURCE_LABELS.get(code, code) for code in detail.value_sources]
+    labels += [LIMITED_REASON_LABELS.get(code, code) for code in detail.limited_reasons]
+    if detail.context_note or detail.applicability:
+        labels.append("有语境")
+    if detail.takeaway:
+        labels.append("有收获")
+    if detail.question:
+        labels.append("有疑问")
+    if detail.usage_result:
+        labels.append("有使用结果")
+    return " · ".join(labels) if labels else "（已清除，历史保留）"
+
+
+def _checkbox(name: str, label: str, *, checked: bool) -> str:
+    mark = " checked" if checked else ""
+    return (
+        f'<label class="check"><input type="checkbox" name="{escape(name)}" value="1"{mark}>'
+        f" {escape(label)}</label>"
+    )
+
+
+def structured_feedback_block(
+    view: StructuredFeedbackView,
+    rating_history: list[dict[str, Any]],
+    *,
+    draft: dict[str, str] | None = None,
+) -> str:
+    """详情页的结构化理由块：当前摘要、折叠表单（含清除）与修订历史。"""
+    draft = draft or {}
+    url = f"/ui/reading-insights/papers/{view.paper_id}/feedback-context"
+    values: dict[str, str] = {}
+    if draft:
+        values = draft
+    elif view.latest is not None:
+        latest = view.latest
+        for code in latest.value_sources:
+            values[f"vs_{code}"] = "1"
+        for code in latest.limited_reasons:
+            values[f"lr_{code}"] = "1"
+        if latest.rating_at is not None:
+            values["rating_at"] = latest.rating_at.isoformat()
+        for field in _SF_TEXT_FIELDS:
+            text = getattr(latest, field)
+            if text:
+                values[field] = text
+    source_boxes = "".join(
+        _checkbox(f"vs_{code}", label, checked=bool(values.get(f"vs_{code}")))
+        for code, label in _VALUE_SOURCE_OPTIONS
+    )
+    reason_boxes = "".join(
+        _checkbox(f"lr_{code}", label, checked=bool(values.get(f"lr_{code}")))
+        for code, label in _LIMITED_REASON_OPTIONS
+    )
+    context_inputs = "".join(
+        f'<label>{escape(_SF_TEXT_LABELS[field])}<textarea name="{field}" rows="2" '
+        f'maxlength="2000">{escape(values.get(field, ""))}</textarea></label>'
+        for field in ("context_note", "applicability")
+    )
+    free_text_inputs = "".join(
+        f'<label>{escape(_SF_TEXT_LABELS[field])}<textarea name="{field}" rows="2" '
+        f'maxlength="2000">{escape(values.get(field, ""))}</textarea></label>'
+        for field in ("takeaway", "question", "usage_result")
+    )
+    rating_options: list[tuple[str, str]] = [("", "不关联具体评分")]
+    for revision in rating_history:
+        created = str(revision.get("created_at", ""))
+        if not created:
+            continue
+        score = revision.get("score")
+        rating_options.append((created, f"{created} · 评分 {'未评分' if score is None else score}"))
+    rating_select = (
+        "<label>关联评分版本（可选，理由绑定这条评分而非最新评分）"
+        '<select name="rating_at">'
+        + select_options(rating_options, selected=values.get("rating_at") or None)
+        + "</select></label>"
+    )
+    if view.latest is None:
+        current = "<p>尚未填写。此表单完全可选，不填不影响评分与备注；自由文本属私人材料。</p>"
+    else:
+        current = (
+            f"<p>当前：{escape(_structured_summary(view.latest))}"
+            f" · 版本 {view.current_revision}</p>"
+        )
+    form_details = (
+        '<details class="structured-form"'
+        f"{' open' if draft else ''}><summary>填写或修订理由</summary>"
+        f'<form method="post" action="{url}" class="stacked-form" '
+        f'hx-post="{url}" hx-target="closest article" hx-swap="outerHTML" '
+        'hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
+        + hidden("expected_revision", view.current_revision)
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
+        + "<fieldset><legend>价值来源</legend>"
+        + source_boxes
+        + "</fieldset>"
+        + "<details><summary>价值有限的原因</summary>"
+        + f"<fieldset><legend>价值有限的原因</legend>{reason_boxes}</fieldset></details>"
+        + "<details><summary>语境与适用范围</summary>"
+        + context_inputs
+        + "</details>"
+        + "<details><summary>收获、疑问与使用结果</summary>"
+        + free_text_inputs
+        + "</details>"
+        + rating_select
+        + '<button type="submit">保存理由</button>'
+        + '<button type="submit" name="action" value="clear">清除全部理由</button>'
+        + "</form></details>"
+    )
+    history = ""
+    if view.history:
+        items = "".join(
+            f"<li>{escape(item.recorded_at.isoformat())} · 版本 {item.revision} · "
+            f"{escape(_structured_summary(item))}</li>"
+            for item in view.history
+        )
+        history = f"<details><summary>理由修订记录</summary><ul>{items}</ul></details>"
+    return (
+        "<h2>结构化理由（可选）</h2>"
+        + current
+        + "<p>用少量选项说明价值与语境；跳过即不填，清除会保留修订历史。</p>"
+        + form_details
+        + history
+    )
+
+
+def _parse_sf_form(form: dict[str, str]) -> StructuredFeedbackInput:
+    try:
+        expected = int(form.get("expected_revision") or "0")
+    except ValueError as exc:
+        raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
+    key = form.get("idempotency_key") or uuid4().hex
+    if form.get("action") == "clear":
+        # 显式清除：忽略其余字段，全空修订保留历史。
+        return StructuredFeedbackInput(expected_revision=expected, idempotency_key=key)
+    payload: dict[str, object] = {
+        "expected_revision": expected,
+        "idempotency_key": key,
+        "value_sources": [code for code in VALUE_SOURCE_CODES if form.get(f"vs_{code}")],
+        "limited_reasons": [code for code in LIMITED_REASON_CODES if form.get(f"lr_{code}")],
+    }
+    rating_raw = (form.get("rating_at") or "").strip()
+    if rating_raw:
+        payload["rating_at"] = rating_raw
+    for field in _SF_TEXT_FIELDS:
+        value = form.get(field)
+        if value:
+            payload[field] = value
+    return StructuredFeedbackInput.model_validate(payload)
+
+
+@router.post("/papers/{paper_id}/feedback-context")
+async def revise_feedback_context(
+    paper_id: str, request: Request, session: SessionDep
+) -> HTMLResponse:
+    from papersteward.api.pages import _detail_article
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        body = _parse_sf_form(form)
+        with write_tx(session):
+            revise_structured_feedback(session, paper_id, body, now=utc_now())
+        paper = PaperRepository(session).get(paper_id)
+        return HTMLResponse(
+            _detail_article(session, paper_id, paper=paper, notice="已记录结构化理由。"),
+            headers=HEADERS,
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查理由内容。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            article = _detail_article(
+                session,
+                paper_id,
+                notice=f"{message}（已保留你的输入，可修正后重试）",
+                notice_role="alert",
+                structured_draft=draft,
+            )
+            return HTMLResponse(article, status_code=status_code, headers=HEADERS)
+        except (DomainError, AppError):
+            return HTMLResponse(
+                f'<article><p role="alert">{escape(message)}</p></article>',
+                status_code=status_code,
+                headers=HEADERS,
+            )
+    except (ValueError, UnicodeError):
+        return HTMLResponse(
+            '<article><p role="alert">表单格式无效，请刷新页面后重试。</p></article>',
             status_code=422,
             headers=HEADERS,
         )

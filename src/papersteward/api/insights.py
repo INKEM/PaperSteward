@@ -37,6 +37,12 @@ from papersteward.reading.insights.contracts import (
     ReadTimeInput,
     ReadTimeView,
     ReviewMode,
+    StructuredFeedbackInput,
+    StructuredFeedbackView,
+)
+from papersteward.reading.insights.structured_feedback import (
+    revise_structured_feedback,
+    structured_feedback_view,
 )
 from papersteward.reading.insights.timeline import (
     read_time_view,
@@ -72,6 +78,27 @@ def post_read_time(paper_id: str, body: ReadTimeInput, session: SessionDep) -> A
             expected_revision=body.expected_revision,
             idempotency_key=body.idempotency_key,
         )
+
+
+@router.get(
+    "/papers/{paper_id}/feedback-context",
+    response_model=StructuredFeedbackView,
+    summary="查看结构化阅读理由",
+)
+def get_feedback_context(paper_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        return structured_feedback_view(session, paper_id)
+
+
+@router.post(
+    "/papers/{paper_id}/feedback-context",
+    response_model=StructuredFeedbackView,
+    status_code=status.HTTP_201_CREATED,
+    summary="记录、修订或清除结构化阅读理由",
+)
+def post_feedback_context(paper_id: str, body: StructuredFeedbackInput, session: SessionDep) -> Any:
+    with domain_errors(), write_tx(session):
+        return revise_structured_feedback(session, paper_id, body, now=utc_now())
 
 
 def parse_overview_query(

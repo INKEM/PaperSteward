@@ -460,3 +460,75 @@ def test_projection_selects_structured_versions_by_knowledge_cutoff(insights_fac
             ["aids_understanding"]
         ]
         assert all(c.recorded_at < COLLECTED for c in target.structured_changes)
+
+
+def test_json_api_feedback_context_roundtrip(client, migrated_engine):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        seed_archived(session, "sf-api", ratings=((T_DONE, 4, "初读"),))
+
+    empty = client.get("/reading-insights/papers/sf-api/feedback-context")
+    assert empty.status_code == 200
+    assert empty.json()["current_revision"] == 0
+    assert empty.json()["latest"] is None
+
+    created = client.post(
+        "/reading-insights/papers/sf-api/feedback-context",
+        json={
+            "expected_revision": 0,
+            "idempotency_key": "api-sf-1",
+            "rating_at": "2026-10-20T02:00:00Z",
+            "value_sources": ["method_reusable"],
+            "takeaway": "收获文本",
+        },
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["current_revision"] == 1
+    assert body["latest"]["value_sources"] == ["method_reusable"]
+    assert body["latest"]["rating_exists"] is True
+    assert body["latest"]["rating_score"] == 4
+
+    conflict = client.post(
+        "/reading-insights/papers/sf-api/feedback-context",
+        json={
+            "expected_revision": 0,
+            "idempotency_key": "api-sf-2",
+            "value_sources": ["usable_now"],
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["details"] == {"current_revision": 1}
+
+    replay = client.post(
+        "/reading-insights/papers/sf-api/feedback-context",
+        json={
+            "expected_revision": 0,
+            "idempotency_key": "api-sf-1",
+            "rating_at": "2026-10-20T02:00:00Z",
+            "value_sources": ["method_reusable"],
+            "takeaway": "收获文本",
+        },
+    )
+    assert replay.status_code == 201
+    assert replay.json()["current_revision"] == 1
+
+    strict = client.post(
+        "/reading-insights/papers/sf-api/feedback-context",
+        json={"expected_revision": 1, "idempotency_key": "k", "surprise": 1},
+    )
+    assert strict.status_code == 422
+
+    bad_code = client.post(
+        "/reading-insights/papers/sf-api/feedback-context",
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "k2",
+            "value_sources": ["not_a_code"],
+        },
+    )
+    assert bad_code.status_code == 422
+
+    missing = client.get("/reading-insights/papers/nope/feedback-context")
+    assert missing.status_code == 404
