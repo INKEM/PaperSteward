@@ -781,6 +781,19 @@ class ReadingReportRow(Base):
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class ReadingReportContextRow(Base):
+    """报告的独立范围、规范化请求和有效输入清单；不依赖运行记录存续。"""
+
+    __tablename__ = "reading_report_context"
+    __table_args__ = (Index("ix_reading_report_context_series", "series_key"),)
+
+    report_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_report.id", ondelete="CASCADE"), primary_key=True
+    )
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    series_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class ReadingTimeRevisionRow(Base):
     """阅读时间声明版本；只追加，不改归档快照/评分/事件。
 

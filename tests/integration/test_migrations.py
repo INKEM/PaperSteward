@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import inspect, text
+from sqlalchemy import delete, inspect, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -48,6 +48,7 @@ DOMAIN_TABLES = {
     "view_config",
     "reading_time_revision",
     "reading_report",
+    "reading_report_context",
     "reading_asset",
     "reading_asset_revision",
     "reading_asset_source",
@@ -248,6 +249,14 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "content_hash",
             "run_id",
         }
+        assert {column["name"] for column in inspector.get_columns("reading_report_context")} == {
+            "report_id",
+            "context_json",
+            "series_key",
+        }
+        assert "ix_reading_report_context_series" in {
+            index["name"] for index in inspector.get_indexes("reading_report_context")
+        }
         report_indexes = {index["name"] for index in inspector.get_indexes("reading_report")}
         assert {
             "uq_reading_report_run",
@@ -282,7 +291,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "revision",
         ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0023"
+        assert current == "0024"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -616,3 +625,165 @@ def test_migrated_schema_enforces_unique_primary_tag(sqlite_engine: Engine) -> N
                 assigned_by=AssignedBy.USER,
             )
         )
+
+
+def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: Engine) -> None:
+    """旧请求只恢复有证据的字段；无运行记录的主题不默认为全部，往返不改正文。"""
+    from papersteward.core.entities import Run
+    from papersteward.jobs.ui_flow import ReviewParams
+    from papersteward.reading.insights.reports import (
+        prepare_report,
+        read_report,
+        report_input_status,
+    )
+    from papersteward.storage.delivery import content_hash
+    from papersteward.storage.models import ReadingReportContextRow, ReadingReportRow, RunRow
+    from papersteward.storage.repositories import RunRepository
+
+    _upgrade(sqlite_engine, "0023")
+    from conftest import activate_workspace
+
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from papersteward.reading.insights.assets import create_asset
+    from papersteward.reading.insights.contracts import AssetCreateInput, ReadTimeDeclaration
+    from papersteward.reading.insights.timeline import record_reading_time
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    with session_scope(factory) as session:
+        seed_paper(session, "legacy-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "legacy-paper",
+            archived_at=at,
+            content=system_content(title="旧冻结论文", completed_at=at),
+        )
+        create_asset(
+            session,
+            AssetCreateInput(
+                kind="problem",
+                title="旧私人标题",
+                body="旧私人正文",
+                sources=[{"paper_id": "legacy-paper"}],
+                idempotency_key="legacy-asset",
+            ),
+            now=at,
+        )
+        record_reading_time(
+            session,
+            "legacy-paper",
+            ReadTimeDeclaration(precision="day", day=at.date()),
+            now=at,
+            expected_revision=0,
+        )
+
+    def related_state():
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                    "reading_time_revision",
+                )
+            }
+
+    before = related_state()
+    assert all(before.values())
+    with session_scope(factory) as session:
+        prepared = prepare_report(
+            session,
+            ReviewParams(period="week", anchor_date=date(2026, 10, 22)),
+            collected_at=NOW_MIGRATIONS,
+        )
+    frozen = prepared.content.model_dump(mode="json")
+    for ref in frozen["assets"]:
+        for field in ("revision", "source_paper_ids", "cross_topic"):
+            ref.pop(field, None)
+    assert frozen["assets"][0]["title"] == "旧私人标题"
+    frozen_hash = content_hash(frozen)
+    requests = {
+        "explicit": {
+            "review": {
+                "period": "week",
+                "anchor_date": "2026-10-22",
+                "mode": "as_recorded",
+                "tag": "tv-test::T01",
+                "asset_bodies": False,
+            }
+        },
+        "omitted": {
+            "review": {"period": "week", "anchor_date": "2026-10-22", "mode": "as_recorded"}
+        },
+        "all": {
+            "review": {
+                "period": "week",
+                "anchor_date": "2026-10-22",
+                "mode": "as_recorded",
+                "tag": None,
+            }
+        },
+    }
+    with session_scope(factory) as session:
+        for key in ("explicit", "omitted", "all", "missing-run"):
+            if key in requests:
+                RunRepository(session).add(
+                    Run(
+                        id=key,
+                        run_type="ui.review",
+                        started_at=NOW_MIGRATIONS,
+                        stats_json={"request": requests[key]},
+                    )
+                )
+            session.add(
+                ReadingReportRow(
+                    id=key,
+                    report_kind="week",
+                    period_label=prepared.period.label,
+                    period_start=prepared.period.start_date,
+                    period_end=prepared.period.end_date_inclusive,
+                    timezone=prepared.period.timezone,
+                    review_mode="as_recorded",
+                    knowledge_cutoff=prepared.knowledge_cutoff,
+                    generated_at=NOW_MIGRATIONS,
+                    contract=frozen["contract"],
+                    input_fingerprint=content_hash({"fixture": key}),
+                    content_json=frozen,
+                    content_hash=frozen_hash,
+                    run_id=key,
+                )
+            )
+    _upgrade(sqlite_engine, "0024")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        explicit = read_report(session, "explicit")
+        assert explicit.context.scope.topic.code == "T01"
+        assert explicit.context.scope.topic.taxonomy_version == "tv-test"
+        assert explicit.context.scope.algorithm_version is None
+        assert explicit.context.status == "legacy_unknown"
+        assert explicit.context.scope.topic_known is True
+        assert read_report(session, "all").context.scope.topic_known is True
+        assert read_report(session, "all").context.scope.topic is None
+        for key in ("omitted", "missing-run"):
+            detail = read_report(session, key)
+            assert detail.context.scope.topic_known is False
+            assert report_input_status(session, detail, now=NOW_MIGRATIONS)["changed"] is None
+        row = session.get(ReadingReportRow, "explicit")
+        assert row.content_json == frozen and row.content_hash == frozen_hash
+        session.execute(delete(RunRow))
+    with session_scope(factory) as session:
+        assert read_report(session, "explicit").context.scope.topic.code == "T01"
+        assert session.get(ReadingReportContextRow, "explicit").series_key is None
+    _downgrade(sqlite_engine, "0023")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        row = session.get(ReadingReportRow, "explicit")
+        assert row.content_json == frozen and row.content_hash == frozen_hash
+    _upgrade(sqlite_engine, "0024")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        assert read_report(session, "explicit").context.scope.topic_known is False
+        assert session.get(ReadingReportRow, "explicit").content_json == frozen

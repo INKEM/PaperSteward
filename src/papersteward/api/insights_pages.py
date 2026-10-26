@@ -311,6 +311,8 @@ def _overview_body(
     body += "<h2>分布</h2>" + _distributions_html(metrics)
     if metrics.period.kind.value == "all":
         body += _all_history_body(session, overview)
+    else:
+        body += _scope_assets_html(overview)
     sections: dict[str, tuple[str, list[Any], str]] = {
         "readings": ("阅读明细", overview.readings, "阅读时间明确属于本期的独立文献"),
         "backfills": (
@@ -393,6 +395,9 @@ def _filter_form(session: SessionDep, current: dict[str, str]) -> str:
             for t in taxonomy.tags
             if t.level.value == "primary"
         ]
+    selected_tag = current.get("tag")
+    if selected_tag and selected_tag not in {value for value, _ in tag_options}:
+        tag_options.append((selected_tag, f"历史标签 {selected_tag}"))
     kind_options = [
         ("week", "本周"),
         ("month", "本月"),
@@ -727,7 +732,7 @@ def reports_page(session: SessionDep, offset: int = 0) -> Response:
 
 @router.get("/reports/{report_id}")
 def report_detail_page(
-    session: SessionDep, report_id: str, compare: str = "", format: str = ""
+    session: SessionDep, report_id: str, compare: str = "", format: str = "", offset: int = 0
 ) -> Response:
     from papersteward.reading.insights.export import export_report
     from papersteward.reading.insights.reports import read_report
@@ -744,14 +749,18 @@ def report_detail_page(
         from fastapi.responses import PlainTextResponse
 
         return PlainTextResponse(export_report(detail, format))  # type: ignore[arg-type]
-    body = _report_detail_body(session, detail)
+    body = _report_detail_body(session, detail, series_offset=max(0, offset))
     if compare and compare != report_id:
         try:
+            from papersteward.reading.insights.reports import ensure_same_series
+
             other = read_report(session, compare)
-        except (DomainError, AppError):
-            other = None
-        if other is not None:
+            ensure_same_series(detail, other)
             body += _compare_html(detail, other)
+        except (DomainError, AppError) as exc:
+            rendered = _page("报告比较", f'<p role="alert">{escape(exc.message)}</p>' + body)
+            rendered.status_code = exc.status_code if isinstance(exc, AppError) else 409
+            return rendered
     return _page(f"阅读回顾报告 · {escape(detail.period_label)}", body, nav="归档")
 
 
@@ -771,7 +780,9 @@ async def delete_report_page(request: Request, report_id: str, session: SessionD
     return RedirectResponse("/ui/reading-insights/reports", status_code=303)
 
 
-def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
+def _report_detail_body(
+    session: SessionDep, detail: ReportDetail, *, series_offset: int = 0
+) -> str:
     """报告详情：全部内容来自保存快照，不重算。"""
     from papersteward.reading.insights.reports import list_series_reports
 
@@ -789,15 +800,31 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     from papersteward.reading.insights.reports import report_input_status
 
     state = report_input_status(session, detail, now=utc_now())
-    message = (
-        "按此报告模式与周期重新检查，相关数据已有变化；可重新保存一版回顾。"
-        if state["changed"]
-        else "按此报告模式与周期重新检查，有效事实未变化。"
-    )
-    body += (
-        f'<p class="notice">{message} 比较截止 '
-        f"{escape(state['compared_cutoff'].isoformat())}。原快照保持不变。</p>"
-    )
+    if state["changed"] is None:
+        body += f'<p class="notice">{escape(state["reason"])}。</p>'
+    else:
+        message = (
+            "按此报告模式与周期重新检查，相关数据已有变化；可重新保存一版回顾。"
+            if state["changed"]
+            else "按此报告模式与周期重新检查，有效事实未变化。"
+        )
+        body += (
+            f'<p class="notice">{message} 比较截止 '
+            f"{escape(state['compared_cutoff'].isoformat())}。原快照保持不变。</p>"
+        )
+    if detail.context is not None:
+        scope = detail.context.scope
+        topic = (
+            "主题范围未知"
+            if not scope.topic_known
+            else (
+                f"{scope.topic.code} · {scope.topic.taxonomy_version or '跨分类版本代码筛选'}"
+                if scope.topic
+                else "全部主题"
+            )
+        )
+        body += f'<p class="muted">范围：{escape(topic)} · '
+        body += escape(scope.algorithm_version or "统计口径未知") + "</p>"
     body += (
         "<p>导出选择："
         f'<a href="/ui/reading-insights/export?report_id={escape(detail.report_id)}">'
@@ -846,12 +873,10 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     )
     body += _report_assets_section(session, detail)
     body += '<p class="muted">查看依据：明细中的文献可点回原归档页核对；报告不含备注原文。</p>'
-    series = [
-        item for item in list_series_reports(session, detail) if item.report_id != detail.report_id
-    ]
+    series = list_series_reports(session, detail, limit=51, offset=series_offset)
     if series:
         body += "<h2>同系列版本</h2><ul>"
-        for item in series:
+        for item in series[:50]:
             body += (
                 f'<li><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
                 f"{escape(item.period_label)}</a> · {escape(item.generated_at.isoformat())} · "
@@ -859,6 +884,13 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
                 f'?compare={escape(item.report_id)}">比较事实差异</a></li>'
             )
         body += "</ul>"
+        body += _pagination(
+            f"/ui/reading-insights/reports/{detail.report_id}",
+            {},
+            offset=series_offset,
+            total=series_offset + len(series),
+            page_size=50,
+        )
     body += (
         "<details><summary>删除此报告</summary>"
         "<p>只删除这份报告快照；归档、评分与阅读时间声明不受影响，已读数不变。</p>"
@@ -893,6 +925,8 @@ def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
             f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
             f"{escape(ref.title)}</a> · {escape(kind_label)} · "
             f"{escape(_asset_status_text(ref.status))}"
+            + (f" · 范围内版本 {ref.revision}" if ref.revision is not None else "")
+            + (" · 跨主题来源" if ref.cross_topic else "")
             + (
                 "<details><summary>保存时的私人正文副本</summary><p>"
                 + escape(ref.body).replace("\n", "<br>")
@@ -1464,8 +1498,6 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
 
 
 def _all_history_body(session: SessionDep, overview: InsightOverview) -> str:
-    from papersteward.reading.insights.assets import list_assets
-
     metrics = overview.metrics
     body = "<h2>全历史数据完整性与来源</h2><p>包含全部归档，不对长期偏好或领域掌握作推断。</p>"
     body += _entry_table(metrics.source_distribution, "来源", key_labels=_SOURCE_LABELS)
@@ -1474,19 +1506,24 @@ def _all_history_body(session: SessionDep, overview: InsightOverview) -> str:
         "阅读日期精度",
         key_labels={"day": "具体日期", "month": "仅知月份", "unknown": "未知"},
     )
-    listing = list_assets(session, limit=10, offset=0)
-    body += f"<h2>当前手工资产（{listing['total']}）</h2><ul>"
-    for item in listing["items"]:
-        revision = item["revision"]
-        body += (
-            f'<li><a href="/ui/reading-insights/assets/{escape(item["asset_id"])}">'
-            f"{escape(revision['title'])}</a> · "
-            f"{escape(_asset_status_text(revision['status']))}</li>"
-        )
-    body += '</ul><p><a href="/ui/reading-insights/assets">查找全部资产</a> · '
+    body += _scope_assets_html(overview)
+    body += '<p><a href="/ui/reading-insights/assets">查找全部资产</a> · '
     today = utc_now().astimezone(ZoneInfo(metrics.period.timezone)).date()
     period_query = urlencode(
         {"kind": "custom", "start_date": today.replace(day=1), "end_date": today}
     )
     body += f'<a href="/ui/reading-insights?{escape(period_query)}">按阅读时期找回记录</a></p>'
     return body
+
+
+def _scope_assets_html(overview: InsightOverview) -> str:
+    body = f"<h2>当前手工资产（{len(overview.assets)}）</h2>"
+    body += '<p class="muted">以本范围内活动发生时的来源版本归属，跨主题资产只计一次。'
+    body += "全库库存仅供说明，不触发专题新版本。</p><ul>"
+    for ref in overview.assets[:10]:
+        body += (
+            f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
+            f"{escape(ref.title)}</a> · {escape(_asset_status_text(ref.status))} · "
+            f"范围内版本 {ref.revision}" + (" · 跨主题来源" if ref.cross_topic else "") + "</li>"
+        )
+    return body + "</ul>"

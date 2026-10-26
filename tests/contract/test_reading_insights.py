@@ -213,6 +213,8 @@ def test_minimal_projection_json_is_frozen():
                     }
                 ],
                 "changes": [],
+                "archive_hash": None,
+                "reading_revision": 0,
             }
         ],
     }
@@ -402,6 +404,7 @@ def test_minimal_overview_json_is_frozen():
             ],
         },
         "readings": [overview.model_dump(mode="json")["readings"][0]],
+        "assets": [],
         "backfills": [],
         "changes": [],
         "unassigned": [],

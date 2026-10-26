@@ -245,7 +245,7 @@ def test_insights_same_ids_use_current_workspace(ws_client):
     from papersteward.jobs.ui_flow import ReviewParams
     from papersteward.reading.insights.reports import prepare_report, save_report
     from papersteward.storage.delivery import content_hash
-    from papersteward.storage.insights import ReadingAssetRepository
+    from papersteward.storage.insights import ReadingAssetRepository, ReadingReportRepository
     from papersteward.storage.models import (
         ReadingAssetRevisionRow,
         ReadingAssetRow,
@@ -298,7 +298,16 @@ def test_insights_same_ids_use_current_workspace(ws_client):
                 )
             )
             row = save_report(session, prepared, run_id="same-run", now=utc_now())
+            # 报告身份在生产中不可变；样例改名时显式重建相应上下文以保持外键有效。
+            from papersteward.storage.models import ReadingReportContextRow
+
+            context_row = session.get(ReadingReportContextRow, row.id)
+            context_payload, context_series = context_row.context_json, context_row.series_key
+            session.delete(context_row)
+            session.flush()
             row.id = "same-report"
+            session.flush()
+            ReadingReportRepository(session).save_context(row.id, context_payload, context_series)
             RunRepository(session).transition(
                 "same-run", RunStatus.SUCCEEDED, finished_at=utc_now()
             )

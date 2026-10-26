@@ -16,10 +16,13 @@ from test_reading_insight_aggregate import (
 
 from papersteward.reading.insights.aggregate import build_overview
 from papersteward.reading.insights.contracts import (
+    AnalysisScope,
+    EffectiveInputManifest,
     FeedbackVersion,
     InsightPeriodRequest,
     InsightQueryRequest,
     NoteFeedbackChange,
+    ReportContext,
     ReportDetail,
     ReportSummary,
     ReviewMode,
@@ -27,6 +30,7 @@ from papersteward.reading.insights.contracts import (
 )
 from papersteward.reading.insights.export import export_report
 from papersteward.reading.insights.reports import build_report_content, report_fingerprint
+from papersteward.reading.insights.scope import effective_papers, paper_manifest
 
 
 def _query() -> InsightQueryRequest:
@@ -38,22 +42,31 @@ def _query() -> InsightQueryRequest:
     )
 
 
+def _fingerprint(query, period, cutoff, proj):
+    context = ReportContext(
+        status="complete",
+        scope=AnalysisScope(period=period, mode=query.mode, knowledge_cutoff=cutoff),
+        normalized_request=query,
+        include_asset_bodies=False,
+        manifest=EffectiveInputManifest(papers=paper_manifest(effective_papers(proj))),
+    )
+    return report_fingerprint(context)
+
+
 def test_fingerprint_is_deterministic_for_same_inputs():
     proj = projection([paper("a"), paper("b")])
-    assert report_fingerprint(_query(), WEEK, CUTOFF, proj) == report_fingerprint(
-        _query(), WEEK, CUTOFF, proj
-    )
+    assert _fingerprint(_query(), WEEK, CUTOFF, proj) == _fingerprint(_query(), WEEK, CUTOFF, proj)
 
 
 def test_fingerprint_changes_with_cutoff_period_state_and_data():
     proj = projection([paper("a")])
-    base = report_fingerprint(_query(), WEEK, CUTOFF, proj)
+    base = _fingerprint(_query(), WEEK, CUTOFF, proj)
     # 截止变化（如未结束周期以采集时刻为截止）→ 时间语义变化。
     earlier = datetime(2026, 10, 22, 0, 0, tzinfo=UTC)
-    assert report_fingerprint(_query(), WEEK, earlier, proj) != base
+    assert _fingerprint(_query(), WEEK, earlier, proj) != base
     # 数据变化。
     grown = projection([paper("a"), paper("b")])
-    assert report_fingerprint(_query(), WEEK, CUTOFF, grown) != base
+    assert _fingerprint(_query(), WEEK, CUTOFF, grown) != base
 
 
 def test_report_content_strips_private_notes_but_keeps_flags():

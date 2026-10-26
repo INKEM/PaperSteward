@@ -14,24 +14,22 @@ from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
-from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from papersteward.core.errors import InvariantViolation
 from papersteward.errors import InvalidRequestError, NotFoundError
-from papersteward.reading.insights.aggregate import build_overview
 from papersteward.reading.insights.contracts import (
+    FACTS_ALGORITHM,
     REPORT_CONTRACT,
     InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
     InsightReportContent,
-    InsightsProjection,
     NoteFeedbackChange,
     PaperProjection,
-    PeriodKind,
     ReportAssetRef,
     ReportChange,
+    ReportContext,
     ReportDetail,
     ReportFeedbackVersion,
     ReportPaper,
@@ -41,12 +39,16 @@ from papersteward.reading.insights.contracts import (
     ScoreFeedbackChange,
 )
 from papersteward.reading.insights.periods import knowledge_cutoff, resolve_period
-from papersteward.reading.insights.projection import build_projection
+from papersteward.reading.insights.scope import (
+    collect_scope,
+    input_fingerprint,
+    series_key,
+)
 from papersteward.reading.insights.timeline import workspace_timezone
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.insights import ReadingReportRepository
 from papersteward.storage.mappers import as_utc
-from papersteward.storage.models import ReadingAssetRevisionRow, ReadingAssetRow, ReadingReportRow
+from papersteward.storage.models import ReadingReportRow
 from papersteward.storage.repositories import RunRepository
 
 
@@ -83,6 +85,7 @@ class PreparedReport:
     collected_at: datetime
     content: InsightReportContent
     fingerprint: str
+    context: ReportContext
 
 
 def prepare_report(
@@ -123,69 +126,29 @@ def prepare_report(
         if note is not None:
             note("reading")
 
-    # 论文、反馈、日期与资产共享同一个真实 SQLite 读取快照。
-    from papersteward.reading.insights.assets import asset_events
-
-    session.execute(text("BEGIN DEFERRED"))
-    try:
-        projection = build_projection(
-            session, query, collected_at=collected_at, shared_snapshot=True, on_batch=checkpoint
-        )
-        events = asset_events(session, until=cutoff)
-        assets = _asset_refs_at(session, cutoff, include_bodies=include_asset_bodies)
-    finally:
-        session.rollback()
+    selected = collect_scope(
+        session,
+        query,
+        collected_at=collected_at,
+        include_asset_bodies=include_asset_bodies,
+        on_batch=checkpoint,
+    )
     checkpoint()
     if note is not None:
         note("summarizing")
-    overview = build_overview(projection, tag=query.tag, asset_events=events)
-    if period.kind is not PeriodKind.ALL:
-        from papersteward.reading.insights.aggregate import _period_asset_events
-
-        active_ids = {asset_id for asset_id, _ in _period_asset_events(events, period)}
-        assets = [ref for ref in assets if ref.asset_id in active_ids]
-        events = [(asset_id, at) for asset_id, at in events if asset_id in active_ids]
-    content = build_report_content(overview, assets=assets)
-    fingerprint = report_fingerprint(
-        query, period, cutoff, projection, assets=assets, asset_events=events
-    )
     return PreparedReport(
-        query=query,
+        query=selected.context.normalized_request or query,
         period=period,
         knowledge_cutoff=cutoff,
         collected_at=collected_at,
-        content=content,
-        fingerprint=fingerprint,
+        content=build_report_content(selected.overview, assets=selected.overview.assets),
+        fingerprint=input_fingerprint(selected.context),
+        context=selected.context,
     )
 
 
-def report_fingerprint(
-    query: InsightQueryRequest,
-    period: ResolvedPeriod,
-    cutoff: datetime,
-    projection: InsightsProjection,
-    *,
-    assets: Sequence[ReportAssetRef] = (),
-    asset_events: Sequence[tuple[str, datetime]] = (),
-) -> str:
-    """输入指纹：规范化请求 + 时间语义 + 全部参与数据的逐篇摘要。
-
-    截止先用于选取有效版本；「周期已结束」标记变化属于语义变化，
-    必须生成新快照；不含墙钟生成时间，相同输入去重到既有快照。
-    """
-    closed = period.end_utc_exclusive is not None and period.end_utc_exclusive <= cutoff
-    return content_hash(
-        {
-            "contract": REPORT_CONTRACT,
-            "request": query.model_dump(mode="json"),
-            "period_closed": closed,
-            "papers": [paper.model_dump(mode="json") for paper in projection.papers],
-            "assets": [ref.model_dump(mode="json") for ref in assets],
-            "asset_events": sorted(
-                (asset_id, recorded_at.isoformat()) for asset_id, recorded_at in asset_events
-            ),
-        }
-    )
+# 所有调用（含纯逻辑检查）使用同一种清单指纹，不另保留全库／专题两套算法。
+report_fingerprint = input_fingerprint
 
 
 def build_report_content(
@@ -201,28 +164,6 @@ def build_report_content(
         unassigned=[_report_paper(paper) for paper in overview.unassigned],
         assets=list(assets),
     )
-
-
-def _asset_refs_at(
-    session: Session, cutoff: datetime, *, include_bodies: bool
-) -> list[ReportAssetRef]:
-    """快照时刻的资产引用；正文仅在用户显式勾选时保存副本。"""
-    refs: dict[str, ReportAssetRef] = {}
-    rows = session.execute(
-        select(ReadingAssetRevisionRow, ReadingAssetRow)
-        .join(ReadingAssetRow, ReadingAssetRow.id == ReadingAssetRevisionRow.asset_id)
-        .where(ReadingAssetRevisionRow.recorded_at < cutoff)
-        .order_by(ReadingAssetRevisionRow.asset_id, ReadingAssetRevisionRow.revision)
-    )
-    for row, asset in rows:
-        refs[row.asset_id] = ReportAssetRef(
-            asset_id=row.asset_id,
-            title=row.title,
-            kind=asset.kind,
-            status=row.status,
-            body=row.body if include_bodies else None,
-        )
-    return [refs[asset_id] for asset_id in sorted(refs)]
 
 
 def _report_paper(paper: PaperProjection) -> ReportPaper:
@@ -299,6 +240,9 @@ def save_report(
         run_id=run_id,
     )
     repository.add(row)
+    repository.save_context(
+        row.id, prepared.context.model_dump(mode="json"), series_key(prepared.context)
+    )
     return row
 
 
@@ -307,13 +251,16 @@ def read_report(session: Session, report_id: str) -> ReportDetail:
     row = ReadingReportRepository(session).get(report_id)
     if row is None:
         raise NotFoundError("报告不存在")
-    return _row_to_detail(row)
+    if content_hash(row.content_json) != row.content_hash:
+        raise InvariantViolation("reading_report.hash", "报告内容校验失败")
+    return _row_to_detail(row, _context_for_report(session, row))
 
 
 def list_reports(session: Session, *, limit: int, offset: int) -> dict[str, Any]:
     rows, total = ReadingReportRepository(session).list(limit=limit, offset=offset)
+    contexts = ReadingReportRepository(session).contexts_for_reports([row.id for row in rows])
     return {
-        "items": [_row_to_summary(row) for row in rows],
+        "items": [_row_to_summary(row, _parse_context(contexts.get(row.id))) for row in rows],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -327,22 +274,54 @@ def delete_report(session: Session, report_id: str) -> None:
 
 
 def list_series_reports(
-    session: Session, summary: ReportSummary, *, limit: int = 50
+    session: Session, summary: ReportSummary, *, limit: int = 50, offset: int = 0
 ) -> list[ReportSummary]:
-    """同报告系列（同类型+周期+模式）的全部版本，按生成时间倒序。"""
-    items = list_reports(session, limit=limit, offset=0)["items"]
-    return [
-        item
-        for item in items
-        if isinstance(item, ReportSummary)
-        and item.report_kind == summary.report_kind
-        and item.period_start == summary.period_start
-        and item.period_end == summary.period_end
-        and item.mode is summary.mode
-    ]
+    if limit < 1 or offset < 0:
+        raise InvalidRequestError("系列分页参数无效")
+    row = ReadingReportRepository(session).get(summary.report_id)
+    if row is None:
+        raise NotFoundError("报告不存在")
+    context = _context_for_report(session, row)
+    key = series_key(context)
+    if key is None:
+        return []
+    repository = ReadingReportRepository(session)
+    rows = repository.list_series(key, limit=limit, offset=offset)
+    contexts = repository.contexts_for_reports([item.id for item in rows])
+    return [_row_to_summary(item, _parse_context(contexts.get(item.id))) for item in rows]
 
 
-def _row_to_summary(row: ReadingReportRow) -> ReportSummary:
+def ensure_same_series(base: ReportDetail, other: ReportDetail) -> None:
+    a = series_key(base.context) if base.context else None
+    b = series_key(other.context) if other.context else None
+    if a is None or b is None or a != b:
+        raise InvalidRequestError(
+            "这两份报告的周期、主题、时区、模式或统计口径不同或未知，无法比较；请选择同系列版本"
+        )
+
+
+def _parse_context(payload: dict[str, Any] | None) -> ReportContext | None:
+    return ReportContext.model_validate(payload) if payload is not None else None
+
+
+def _context_for_report(session: Session, row: ReadingReportRow) -> ReportContext:
+    context = _parse_context(
+        ReadingReportRepository(session).contexts_for_reports([row.id]).get(row.id)
+    )
+    if context is not None:
+        return context
+    # 兼容手工导入的旧行；GET 不补写。正式库由 0024 一次性保存旁路上下文。
+    from papersteward.reading.insights.legacy_context import legacy_report_context
+
+    run = RunRepository(session).get(row.run_id)
+    return legacy_report_context(
+        row.content_json,
+        run.stats_json.get("request") if run else None,
+        timezone=row.timezone,
+    )
+
+
+def _row_to_summary(row: ReadingReportRow, context: ReportContext | None = None) -> ReportSummary:
     return ReportSummary(
         report_id=row.id,
         report_kind=row.report_kind,
@@ -355,14 +334,15 @@ def _row_to_summary(row: ReadingReportRow) -> ReportSummary:
         generated_at=as_utc(row.generated_at),
         contract=row.contract,
         run_id=row.run_id,
+        context=context,
     )
 
 
-def _row_to_detail(row: ReadingReportRow) -> ReportDetail:
+def _row_to_detail(row: ReadingReportRow, context: ReportContext) -> ReportDetail:
     if content_hash(row.content_json) != row.content_hash:
         raise InvariantViolation("reading_report.hash", "报告内容校验失败")
     content = InsightReportContent.model_validate(row.content_json)
-    return ReportDetail(content=content, **_row_to_summary(row).model_dump())
+    return ReportDetail(content=content, **_row_to_summary(row, context).model_dump())
 
 
 def report_input_status(session: Session, detail: ReportDetail, *, now: datetime) -> dict[str, Any]:
@@ -371,39 +351,36 @@ def report_input_status(session: Session, detail: ReportDetail, *, now: datetime
     当时记录的已结束周期仍用原历史截止；现在重新回顾允许后来更正。
     全库库存的增减不使无关周期报告被误标为变化。
     """
-    from papersteward.jobs.ui_flow import ReviewParams
-
-    run = RunRepository(session).get(detail.run_id)
-    request = run.stats_json.get("request", {}) if run else {}
-    review = request.get("review", {}) if isinstance(request, dict) else {}
-    payload: dict[str, Any] = {
-        "period": detail.report_kind,
-        "mode": detail.mode.value,
-        "tag": review.get("tag") if isinstance(review, dict) else None,
-    }
-    if detail.report_kind in {"week", "month"}:
-        payload["anchor_date"] = detail.period_start
-    elif detail.report_kind == "custom":
-        payload.update(start_date=detail.period_start, end_date=detail.period_end)
-    prepared = prepare_report(
+    context = detail.context
+    if (
+        context is None
+        or context.status != "complete"
+        or context.normalized_request is None
+        or context.scope.algorithm_version != FACTS_ALGORITHM
+    ):
+        return {
+            "changed": None,
+            "status": "unknown",
+            "compared_cutoff": None,
+            "mode": detail.mode,
+            "reason": "旧报告的主题或统计口径无法完整还原，不能判断变化；原快照仍可阅读和导出",
+        }
+    selected = collect_scope(
         session,
-        ReviewParams.model_validate(payload),
+        context.normalized_request,
         collected_at=now,
-        timezone_name=detail.timezone,
-        include_asset_bodies=any(ref.body is not None for ref in detail.content.assets),
+        include_asset_bodies=context.include_asset_bodies is True,
     )
-    period_end = prepared.period.end_utc_exclusive
-    old_closed = period_end is not None and period_end <= detail.knowledge_cutoff
-    new_closed = period_end is not None and period_end <= prepared.knowledge_cutoff
     return {
-        "changed": old_closed != new_closed
-        or _effective_facts(detail.content) != _effective_facts(prepared.content),
-        "compared_cutoff": prepared.knowledge_cutoff,
+        "changed": input_fingerprint(context) != input_fingerprint(selected.context),
+        "status": "known",
+        "compared_cutoff": selected.context.scope.knowledge_cutoff,
         "mode": detail.mode,
     }
 
 
 def _effective_facts(content: InsightReportContent) -> dict[str, Any]:
+    """旧审计探针的事实视图；业务去重和变化提示已统一使用输入清单。"""
     payload = content.model_dump(mode="json")
     for field in (
         "collected_at",

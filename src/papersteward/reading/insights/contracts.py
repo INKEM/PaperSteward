@@ -206,6 +206,8 @@ class PaperProjection(InsightsModel):
     taxonomy_version: str | None = None
     feedback: list[FeedbackVersion] = Field(default_factory=list)
     changes: list[FeedbackChange] = Field(default_factory=list)
+    archive_hash: str | None = None
+    reading_revision: int = 0
 
 
 class InsightsProjection(InsightsModel):
@@ -289,6 +291,7 @@ class InsightOverview(InsightsModel):
     """一次事实概览：指标与四组明细由同一函数产出，计数天然一致。"""
 
     metrics: InsightMetrics
+    assets: list["ReportAssetRef"] = Field(default_factory=list)
     readings: list[PaperProjection] = Field(default_factory=list)
     backfills: list[PaperProjection] = Field(default_factory=list)
     changes: list[FeedbackChange] = Field(default_factory=list)
@@ -346,6 +349,9 @@ class ReportAssetRef(InsightsModel):
     kind: str
     status: str
     body: str | None = None
+    revision: int | None = None
+    source_paper_ids: list[str] = Field(default_factory=list)
+    cross_topic: bool = False
 
 
 class InsightReportContent(InsightsModel):
@@ -357,7 +363,57 @@ class InsightReportContent(InsightsModel):
     backfills: list[ReportPaper] = Field(default_factory=list)
     changes: list[ReportChange] = Field(default_factory=list)
     unassigned: list[ReportPaper] = Field(default_factory=list)
-    assets: list[ReportAssetRef] = Field(default_factory=list)
+    assets: list["ReportAssetRef"] = Field(default_factory=list)
+
+
+FACTS_ALGORITHM = "reading-insights.facts/2"
+
+
+class ScopeTopic(InsightsModel):
+    code: str = Field(min_length=1)
+    # None 仅用于兼容显式提交的旧式 code 筛选，表示跨分类版本匹配该代码。
+    taxonomy_version: str | None = Field(default=None, min_length=1)
+
+
+class AnalysisScope(InsightsModel):
+    """有效范围；截止用于选版本，不作为系列身份或墙钟去重条件。"""
+
+    period: ResolvedPeriod
+    mode: ReviewMode
+    knowledge_cutoff: AwareDatetime
+    topic: ScopeTopic | None = None
+    topic_known: bool = True
+    algorithm_version: str | None = FACTS_ALGORITHM
+    report_contract: str = REPORT_CONTRACT
+
+
+class EffectivePaperInput(InsightsModel):
+    paper_id: str
+    archive_hash: str | None
+    input_hash: str
+
+
+class EffectiveAssetInput(InsightsModel):
+    asset_id: str
+    revision: int
+    recorded_at: AwareDatetime
+    sources: list["AssetSourceRef"]
+    input_hash: str
+
+
+class EffectiveInputManifest(InsightsModel):
+    """只记录范围内有效源版本；不复制私人原文或全库库存。"""
+
+    papers: list[EffectivePaperInput] = Field(default_factory=list)
+    asset_versions: list[EffectiveAssetInput] = Field(default_factory=list)
+
+
+class ReportContext(InsightsModel):
+    status: Literal["complete", "legacy_unknown"]
+    scope: AnalysisScope
+    normalized_request: InsightQueryRequest | None = None
+    include_asset_bodies: bool | None = None
+    manifest: EffectiveInputManifest | None = None
 
 
 class ReportSummary(InsightsModel):
@@ -374,6 +430,7 @@ class ReportSummary(InsightsModel):
     generated_at: AwareDatetime
     contract: str
     run_id: str
+    context: ReportContext | None = None
 
 
 class ReportDetail(ReportSummary):
@@ -428,7 +485,7 @@ class AssetRevisionView(InsightsModel):
     body: str
     applicability: str | None = None
     status: str
-    sources: list[AssetSourceRef] = Field(default_factory=list)
+    sources: list["AssetSourceRef"] = Field(default_factory=list)
 
 
 class AssetRevisionSummary(InsightsModel):

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Collection
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -15,6 +17,7 @@ from papersteward.storage.models import (
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
+    ReadingReportContextRow,
     ReadingReportRow,
     ReadingTimeRevisionRow,
 )
@@ -92,6 +95,43 @@ class ReadingReportRepository(_Repository):
             .limit(limit)
         ).all()
         return list(rows), int(total)
+
+    def save_context(self, report_id: str, payload: dict[str, Any], series_key: str | None) -> None:
+        self._session.add(
+            ReadingReportContextRow(
+                report_id=report_id, context_json=payload, series_key=series_key
+            )
+        )
+        self._flush()
+
+    def contexts_for_reports(self, report_ids: builtins.list[str]) -> dict[str, dict[str, Any]]:
+        if not report_ids:
+            return {}
+        return {
+            row.report_id: row.context_json
+            for row in self._session.scalars(
+                select(ReadingReportContextRow).where(
+                    ReadingReportContextRow.report_id.in_(report_ids)
+                )
+            )
+        }
+
+    def list_series(
+        self, series_key: str, *, limit: int, offset: int
+    ) -> builtins.list[ReadingReportRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingReportRow)
+                .join(
+                    ReadingReportContextRow,
+                    ReadingReportContextRow.report_id == ReadingReportRow.id,
+                )
+                .where(ReadingReportContextRow.series_key == series_key)
+                .order_by(ReadingReportRow.generated_at.desc(), ReadingReportRow.id)
+                .offset(offset)
+                .limit(limit)
+            )
+        )
 
     def delete(self, report_id: str) -> bool:
         row = self._session.get(ReadingReportRow, report_id)

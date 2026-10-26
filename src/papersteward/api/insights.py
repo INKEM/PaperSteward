@@ -141,6 +141,7 @@ def finalize_overview(
     metrics = overview.metrics.model_copy(update={"primary_tags": relabeled})
     return InsightOverview(
         metrics=metrics,
+        assets=overview.assets,
         readings=overview.readings[:detail_limit],
         backfills=overview.backfills[:detail_limit],
         changes=overview.changes[:detail_limit],
@@ -369,3 +370,31 @@ def get_report_input_status(report_id: str, session: SessionDep) -> Any:
     with domain_errors():
         ensure_active(session, action="reading_insights.report")
         return report_input_status(session, read_report(session, report_id), now=utc_now())
+
+
+@router.get("/reports/{report_id}/series", summary="完整系列内分页读取版本")
+def get_report_series(report_id: str, session: SessionDep, limit: int = 50, offset: int = 0) -> Any:
+    from papersteward.reading.insights.reports import list_series_reports
+
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        if not 1 <= limit <= 200 or offset < 0:
+            raise InvalidRequestError("系列分页参数无效")
+        detail = read_report(session, report_id)
+        return {
+            "items": list_series_reports(session, detail, limit=limit, offset=offset),
+            "limit": limit,
+            "offset": offset,
+            "scope_known": detail.context is not None and detail.context.status == "complete",
+        }
+
+
+@router.get("/reports/{report_id}/compare/{other_id}", summary="校验同系列后比较事实")
+def compare_reports(report_id: str, other_id: str, session: SessionDep) -> Any:
+    from papersteward.reading.insights.reports import ensure_same_series
+
+    with domain_errors():
+        ensure_active(session, action="reading_insights.report")
+        detail, other = read_report(session, report_id), read_report(session, other_id)
+        ensure_same_series(detail, other)
+        return {"base": detail.content.metrics, "other": other.content.metrics}

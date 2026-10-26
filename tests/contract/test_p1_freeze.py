@@ -79,6 +79,13 @@ def test_database_table_and_constraint_freeze() -> None:
     }
 
 
+def test_reading_report_context_is_an_explicit_additive_table() -> None:
+    table = Base.metadata.tables["reading_report_context"]
+    assert {column.name for column in table.columns} == {"report_id", "context_json", "series_key"}
+    assert {key.target_fullname for key in table.foreign_keys} == {"reading_report.id"}
+    assert "ix_reading_report_context_series" in {index.name for index in table.indexes}
+
+
 def test_migration_revision_freeze() -> None:
     versions = ROOT / "migrations" / "versions"
     revision_files = sorted(versions.glob("*.py"))

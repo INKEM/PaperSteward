@@ -184,6 +184,8 @@ def _project_batch(
         projections.append(
             PaperProjection(
                 paper_id=row.paper_id,
+                archive_hash=row.content_hash,
+                reading_revision=declared.revision if declared is not None else 0,
                 archived_at=archived_at,
                 source=source,
                 content_available=available,
