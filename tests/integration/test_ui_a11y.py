@@ -77,6 +77,7 @@ PAGES = (
     "/ui/views",
     "/ui/shelves",
     "/ui/archive",
+    "/ui/import",
     "/ui/help",
     "/ui/setup",
     "/ui/settings",

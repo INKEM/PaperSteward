@@ -23,6 +23,7 @@ from papersteward.core.entities import (
     PaperTag,
     Provenance,
     Rating,
+    ReadingTimeRevision,
     ResearchProfile,
     ReviewItem,
     Run,
@@ -44,6 +45,7 @@ from papersteward.core.enums import (
     EventType,
     OaStatus,
     PaperStatus,
+    ReadingTimeBasis,
     ReadMode,
     ReviewResolution,
     ReviewStatus,
@@ -55,6 +57,7 @@ from papersteward.core.enums import (
     SummaryValidationStatus,
     TagLevel,
     TagRole,
+    TimePrecision,
 )
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
@@ -67,6 +70,7 @@ from papersteward.storage.models import (
     PaperRow,
     PaperTagRow,
     RatingRow,
+    ReadingTimeRevisionRow,
     ResearchProfileRow,
     ReviewItemRow,
     RunRow,
@@ -630,6 +634,32 @@ def rating_from_row(row: RatingRow) -> Rating:
     )
 
 
+def reading_time_revision_to_row(revision: ReadingTimeRevision) -> ReadingTimeRevisionRow:
+    return ReadingTimeRevisionRow(
+        paper_id=revision.paper_id,
+        revision=revision.revision,
+        recorded_at=revision.recorded_at,
+        precision=revision.precision.value,
+        declared_date=revision.day,
+        declared_month=revision.month,
+        basis=revision.basis.value,
+        idempotency_key=revision.idempotency_key,
+    )
+
+
+def reading_time_revision_from_row(row: ReadingTimeRevisionRow) -> ReadingTimeRevision:
+    return ReadingTimeRevision(
+        paper_id=row.paper_id,
+        revision=row.revision,
+        recorded_at=as_utc(row.recorded_at),
+        precision=TimePrecision(row.precision),
+        basis=ReadingTimeBasis(row.basis),
+        idempotency_key=row.idempotency_key,
+        day=row.declared_date,
+        month=row.declared_month,
+    )
+
+
 def config_to_row(config: Config) -> ConfigRow:
     return ConfigRow(
         key=config.key,
@@ -867,6 +897,8 @@ __all__ = [
     "profile_to_row",
     "rating_from_row",
     "rating_to_row",
+    "reading_time_revision_from_row",
+    "reading_time_revision_to_row",
     "run_from_row",
     "run_to_row",
     "score_snapshot_from_row",

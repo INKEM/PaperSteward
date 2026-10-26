@@ -3,9 +3,10 @@
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from papersteward.core.enums import ReadMode
+from papersteward.reading.insights.contracts import ReadTimeDeclaration
 from papersteward.scoring.contracts import QueueItem
 
 
@@ -65,12 +66,33 @@ class Action(InputModel):
         return self
 
 
+class ImportReadPaperInput(InputModel):
+    """导入外部已读论文的请求；元数据为用户确认后的内容，服务端再规范化。"""
+
+    title: str = Field(min_length=1, max_length=512)
+    score: int = Field(ge=1, le=5, strict=True)
+    note: str | None = Field(default=None, max_length=10000)
+    authors: list[str] = Field(default_factory=list, max_length=100)
+    venue: str | None = Field(default=None, max_length=512)
+    published_at: AwareDatetime | None = None
+    url: str | None = Field(default=None, max_length=2048)
+    abstract: str | None = Field(default=None, max_length=20000)
+    doi: str | None = Field(default=None, max_length=256)
+    arxiv_id: str | None = Field(default=None, max_length=64)
+    identifier_input: str | None = Field(default=None, max_length=2048)
+    resolve: dict[str, Any] | None = None
+    primary_tag: str | None = Field(default=None, max_length=64)
+    # 选填阅读时间；缺省时导入归档保持“阅读时间未知”，不产生日期记录。
+    read_time: ReadTimeDeclaration | None = None
+
+
 class ArchiveRecord(InputModel):
     paper_id: str
     archived_at: datetime
-    primary_tag: str
+    # 导入归档可能无主标签/归属桶；既有 done 归档仍必有值。
+    primary_tag: str | None
     secondary_tags: list[str]
-    filing_bucket_id: str
+    filing_bucket_id: str | None
     content_hash: str
     content: dict[str, Any]
     initial_score: int | None

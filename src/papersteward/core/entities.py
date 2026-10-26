@@ -27,6 +27,7 @@ from papersteward.core.enums import (
     EventType,
     OaStatus,
     PaperStatus,
+    ReadingTimeBasis,
     ReadMode,
     ReviewResolution,
     ReviewStatus,
@@ -38,6 +39,7 @@ from papersteward.core.enums import (
     SummaryValidationStatus,
     TagLevel,
     TagRole,
+    TimePrecision,
 )
 from papersteward.core.errors import DomainValidationError
 
@@ -1013,6 +1015,62 @@ class Rating:
         )
 
 
+_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingTimeRevision:
+    """阅读时间声明的一个版本；只追加，不修改归档/评分/事件。"""
+
+    paper_id: str
+    revision: int
+    recorded_at: datetime
+    precision: TimePrecision
+    basis: ReadingTimeBasis
+    idempotency_key: str
+    day: date | None = None
+    month: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paper_id", _require_text(self.paper_id, "reading_time.paper_id"))
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 1
+        ):
+            raise DomainValidationError("reading_time.revision", "必须是正整数")
+        object.__setattr__(
+            self,
+            "recorded_at",
+            _require_aware(self.recorded_at, "reading_time.recorded_at"),
+        )
+        if not isinstance(self.precision, TimePrecision):
+            raise DomainValidationError("reading_time.precision", "必须是 TimePrecision")
+        if not isinstance(self.basis, ReadingTimeBasis):
+            raise DomainValidationError("reading_time.basis", "必须是 ReadingTimeBasis")
+        object.__setattr__(
+            self,
+            "idempotency_key",
+            _require_text(self.idempotency_key, "reading_time.idempotency_key"),
+        )
+        if self.day is not None and not isinstance(self.day, date):
+            raise DomainValidationError("reading_time.day", "必须是 date 或 null")
+        if self.month is not None and not _MONTH_PATTERN.fullmatch(self.month):
+            raise DomainValidationError("reading_time.month", "必须是 YYYY-MM 或 null")
+        if self.precision is TimePrecision.DAY:
+            if self.day is None or self.month is not None:
+                raise DomainValidationError(
+                    "reading_time.precision", "日精度必须提供 day 且不得提供 month"
+                )
+        elif self.precision is TimePrecision.MONTH:
+            if self.month is None or self.day is not None:
+                raise DomainValidationError(
+                    "reading_time.precision", "月精度必须提供 month 且不得提供 day"
+                )
+        elif self.day is not None or self.month is not None:
+            raise DomainValidationError("reading_time.precision", "未知精度不得提供 day 或 month")
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """版本化配置；具体 YAML 校验在 P1-S4 实现。"""
@@ -1220,8 +1278,9 @@ class ArchiveSnapshot:
 
     paper_id: str
     archived_at: datetime
-    primary_tag: str
-    filing_bucket_id: str
+    # 导入归档允许无主标签/归属桶；既有 done 归档仍必有值。
+    primary_tag: str | None
+    filing_bucket_id: str | None
     profile_version: str
     taxonomy_version: str
     config_version: str
@@ -1244,12 +1303,12 @@ class ArchiveSnapshot:
             _require_aware(self.archived_at, "archive.archived_at"),
         )
         object.__setattr__(
-            self, "primary_tag", _require_text(self.primary_tag, "archive.primary_tag")
+            self, "primary_tag", _optional_text(self.primary_tag, "archive.primary_tag")
         )
         object.__setattr__(
             self,
             "filing_bucket_id",
-            _require_text(self.filing_bucket_id, "archive.filing_bucket_id"),
+            _optional_text(self.filing_bucket_id, "archive.filing_bucket_id"),
         )
         object.__setattr__(
             self,
@@ -1278,7 +1337,31 @@ class ArchiveSnapshot:
             object.__setattr__(self, "priority", _require_score(self.priority, "archive.priority"))
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveImportInput:
+    """导入已读论文的归档输入；纯手填时 identifier_input 与 resolve 为空。"""
+
+    identifier_input: str | None = None
+    resolve: Mapping[str, Any] | None = None
+    primary_tag: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "identifier_input",
+            _optional_text(self.identifier_input, "archive_import.identifier_input"),
+        )
+        if self.resolve is not None:
+            object.__setattr__(
+                self, "resolve", _require_mapping(self.resolve, "archive_import.resolve")
+            )
+        object.__setattr__(
+            self, "primary_tag", _optional_text(self.primary_tag, "archive_import.primary_tag")
+        )
+
+
 __all__ = [
+    "ArchiveImportInput",
     "ArchiveSnapshot",
     "Bucket",
     "Config",

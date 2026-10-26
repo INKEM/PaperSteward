@@ -32,7 +32,7 @@ def test_start_explicit_workspace_migrates_and_uses_same_engine(tmp_path, monkey
     assert not unrelated.exists()
     engine = create_db_engine(calls[0])
     try:
-        assert get_migration_status(engine).current == "0019"
+        assert get_migration_status(engine).current == "0023"
         assert "paper" in inspect(engine).get_table_names()
     finally:
         engine.dispose()

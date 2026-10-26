@@ -190,3 +190,53 @@ def test_non_retryable_provider_error_is_not_retried() -> None:
 
     assert provider.calls == 1
     assert caught.value.usage.calls == 1
+
+
+def test_overlong_secondary_tag_name_is_trimmed_not_failed() -> None:
+    """模型把副标签名写成超长短语：截断到 64 字符直接通过，不触发修复/失败。"""
+    import json
+
+    payload = json.loads(VALID)
+    long_name = "a very descriptive label that the model wrote as a full sentence " + "x" * 40
+    assert len(long_name) > 64
+    payload["secondary_tags"] = [
+        {"facet": "method", "name": long_name, "confidence": 0.8},
+        {"facet": "task", "name": "正常标签", "confidence": 0.7},
+    ]
+    provider = FakeLLM([json.dumps(payload, ensure_ascii=False)], model_id="fake-llm")
+    result = _gateway(provider).complete_json("classification", VARIABLES)
+    assert provider.call_count == 1  # 未走修复
+    assert result.usage.repairs == 0
+    names = [tag.name for tag in ClassificationOutput.model_validate(result.data).secondary_tags]
+    assert names[0] == long_name[:64].rstrip() and len(names[0]) == 64
+    assert names[1] == "正常标签"
+
+
+def test_trim_deduplicates_colliding_secondary_tags() -> None:
+    """截断后 facet+name 撞重的副标签保留首个（schema 要求唯一）。"""
+    import json
+
+    payload = json.loads(VALID)
+    stem = "shared prefix " + "y" * 60
+    payload["secondary_tags"] = [
+        {"facet": "method", "name": stem + "AAA", "confidence": 0.8},
+        {"facet": "method", "name": stem + "BBB", "confidence": 0.7},
+    ]
+    provider = FakeLLM([json.dumps(payload, ensure_ascii=False)], model_id="fake-llm")
+    result = _gateway(provider).complete_json("classification", VARIABLES)
+    tags = ClassificationOutput.model_validate(result.data).secondary_tags
+    assert len(tags) == 1
+
+
+def test_other_schema_violations_still_strict_after_trim() -> None:
+    """白名单之外的违规（如非法 facet）仍走修复-失败路径，不被截断掩盖。"""
+    import json
+
+    payload = json.loads(VALID)
+    payload["secondary_tags"] = [{"facet": "not-a-facet", "name": "x", "confidence": 0.8}]
+    provider = FakeLLM(
+        [json.dumps(payload, ensure_ascii=False), json.dumps(payload, ensure_ascii=False)],
+        model_id="fake-llm",
+    )
+    with pytest.raises(LLMValidationError):
+        _gateway(provider).complete_json("classification", VARIABLES)

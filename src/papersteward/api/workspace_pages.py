@@ -281,11 +281,16 @@ def delete_workspace_preview(request: Request, workspace_id: str) -> HTMLRespons
         body = (
             "<article><h2>删除工作区</h2><p>将删除工作区「"
             f"{escape(info.name)}"
-            "」的全部数据：论文、阅读反馈、归档、研究档案、分类标签与运行记录。"
+            "」的全部数据：论文、阅读反馈、归档、阅读日期修订、回顾报告、手工资产及全部修订、研究档案、分类标签与运行记录。"
             "删除前会把整个工作区目录移动到数据目录的 backups/ 下（deleted- 前缀），"
             "需要时可手动移回恢复。</p>"
             f"<p>其中有 {counts.get('paper', 0)} 篇论文、{counts.get('rating', 0)} 条阅读反馈、"
             f"{counts.get('intake_material', 0)} 份研究材料。</p>"
+            f"<p>阅读日期修订 {counts.get('reading_time_revision', 0)} 条、"
+            f"回顾报告 {counts.get('reading_report', 0)} 份、"
+            f"手工资产 {counts.get('reading_asset', 0)} 个、"
+            f"资产修订 {counts.get('reading_asset_revision', 0)} 条、"
+            f"来源引用 {counts.get('reading_asset_source', 0)} 条。</p>"
         )
         if current.info.id == workspace_id:
             body += '<p class="muted">这是当前正在使用的工作区，删除后会回到默认工作区。</p>'

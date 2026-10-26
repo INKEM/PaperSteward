@@ -23,6 +23,20 @@ function showNetworkAlert(message) {
   alert.focus();
 }
 
+// 采集参数浮层：点击面板外收起（summary 内的点击交给原生 toggle）。
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  for (const details of document.querySelectorAll(".collect-params[open]")) {
+    if (!details.contains(event.target)) details.removeAttribute("open");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const details of document.querySelectorAll(".collect-params[open]")) {
+    details.removeAttribute("open");
+  }
+});
+
 // 模型连接表单：不提交表单，用表单当前值即时测试连通性。
 document.addEventListener("click", async (event) => {
   const button = event.target;
@@ -136,4 +150,19 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
   if (typeof form.requestSubmit === "function") form.requestSubmit();
   else form.submit();
+});
+
+// 阅读回顾切换周期时，不提交另一个周期遗留的日期字段。
+function syncInsightPeriod(form) {
+  const kind = form.elements.namedItem("kind")?.value;
+  for (const field of ["anchor_date", "start_date", "end_date"]) {
+    const input = form.elements.namedItem(field);
+    if (!input) continue;
+    input.disabled = field === "anchor_date" ? !["week", "month"].includes(kind) : kind !== "custom";
+  }
+}
+document.querySelectorAll("form[data-insight-period]").forEach(syncInsightPeriod);
+document.addEventListener("change", (event) => {
+  const form = event.target.closest?.("form[data-insight-period]");
+  if (form) syncInsightPeriod(form);
 });

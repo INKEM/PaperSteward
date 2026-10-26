@@ -1,0 +1,49 @@
+[
+  {
+    "paper_id": "imp1",
+    "archived_at": "2026-10-24T00:00:00Z",
+    "primary_tag": null,
+    "secondary_tags": [],
+    "filing_bucket_id": null,
+    "content_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "content": {
+      "origin": "import",
+      "identifier_input": "10.0000/imported",
+      "resolve": null,
+      "metadata": {
+        "paper_id": "imp1",
+        "title": "Imported {Paper}: 系统外已读",
+        "authors": [
+          "C Author"
+        ],
+        "venue": null,
+        "published_at": "2025-06-01",
+        "abstract": null,
+        "doi": "10.0000/imported",
+        "arxiv_id": null,
+        "url": "https://example.org/imported",
+        "pdf_url": null
+      },
+      "tags": [],
+      "initial_feedback": {
+        "score": 3,
+        "note": "读过了"
+      }
+    },
+    "initial_score": 3,
+    "initial_note": "读过了",
+    "score": 4,
+    "note": "修订后的备注",
+    "revision_history": [
+      {
+        "score": 3,
+        "note": "读过了"
+      },
+      {
+        "score": 4,
+        "note": "修订后的备注"
+      }
+    ],
+    "content_available": true
+  }
+]

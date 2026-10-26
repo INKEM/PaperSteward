@@ -4,7 +4,7 @@ from datetime import date
 from html import escape
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,7 @@ from papersteward.api.html import page as _page
 from papersteward.api.html import pagination as _pagination
 from papersteward.api.workflow_pages import dashboard, queue_stats_line
 from papersteward.core.entities import Enrichment, Paper, Summary, Taxonomy, ViewConfig, utc_now
-from papersteward.core.enums import PaperStatus, RunStatus
+from papersteward.core.enums import STATUS_LABELS, PaperStatus, RunStatus
 from papersteward.core.errors import DomainError
 from papersteward.delivery.contracts import Action, DigestCard
 from papersteward.delivery.render import safe_url
@@ -80,6 +80,13 @@ def help_page() -> HTMLResponse:
         "每 2 秒更新，任务结束自动刷新。运行页保留失败阶段与重试入口。"
         "合格论文会直接进入长期队列；排名是当前列表中的名次，评分是推荐参考；"
         "阅读容量只提供建议，不隐藏论文。任务运行时请等待完成后再提交。</p></article>"
+        "<article><h2>导入已读论文</h2><p>归档页右上角「导入已读论文」：粘贴 DOI、arXiv ID "
+        "或论文链接（可留空），自动补全后确认，或直接手动填写；附 1–5 评分与可选备注，"
+        "导入即进入归档并带「导入」标记，之后挖掘不会再重复处理它。"
+        "评分参与阅读偏好画像与挖掘规划。</p>"
+        "<p>两点预期行为：一次导入大量同一主标签的论文，会在接下来几周内压低该标签的挖掘补给"
+        "（读过就不必再挖）；导入时不选标签，则不参与这个补给节奏。"
+        "重复导入已在库中的论文会被拦截，提示里可直达详情页修订评分与备注。</p></article>"
         "<article><h2>常见状态</h2><p>没有候选：检查模型连接，先手动挖掘，再到阅读队列查看。"
         "队列为空：调整检索词再次挖掘。采集失败：检查来源/网络/检索词，原有数据保留。</p>"
         "<p>本地单用户工具，请使用默认 127.0.0.1 地址。"
@@ -197,7 +204,10 @@ def _paper_links(
         ("代码", enrichment.signals.code_url if enrichment else None),
     ):
         if url := safe_url(raw):
-            body += f'<a class="source" rel="noreferrer" href="{escape(url)}">{label}</a> '
+            body += (
+                f'<a class="source" target="_blank" rel="noreferrer" '
+                f'href="{escape(url)}">{label}</a> '
+            )
     return body + "</p>"
 
 
@@ -310,7 +320,10 @@ def _card(
         ("代码", enrichment.signals.code_url if enrichment else None),
     ):
         if url := safe_url(raw):
-            meta.append(f'<a class="source" rel="noreferrer" href="{escape(url)}">{label_text}</a>')
+            meta.append(
+                f'<a class="source" target="_blank" rel="noreferrer" '
+                f'href="{escape(url)}">{label_text}</a>'
+            )
     meta.append(f"<span>评分于 {item.score_date}</span>")
     body += f'<p class="card-meta">{" · ".join(meta)}</p>'
     body += f'<blockquote class="card-summary">{escape(item.summary_100)}</blockquote>'
@@ -331,23 +344,6 @@ def _card(
     return body + "</article>"
 
 
-STATUS_LABELS = {
-    "discovered": "已发现",
-    "deduped": "已去重",
-    "screened": "已筛选",
-    "enriched": "已归纳",
-    "summarized": "已概括",
-    "classified": "已归类",
-    "scored": "已评分",
-    "queued": "队列中",
-    "reading": "阅读中",
-    "done": "已完成",
-    "archived": "已归档",
-    "rejected": "不感兴趣",
-    "shelved": "特殊桶",
-    "pushed": "已推送",
-}
-
 TIER_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
 
@@ -367,7 +363,10 @@ def _shelf_inner(item: ShelfItem) -> str:
     if meta:
         body += f'<p class="muted">{escape(" · ".join(meta))}</p>'
     if url := safe_url(item.paper.url):
-        body += f'<p><a class="source" rel="noreferrer" href="{escape(url)}">原文</a></p>'
+        body += (
+            f'<p><a class="source" target="_blank" rel="noreferrer" '
+            f'href="{escape(url)}">原文</a></p>'
+        )
     if item.nomination is not None:
         body += f"<p>{escape(item.nomination.reason)}</p>"
     if item.needs_assessment:
@@ -905,7 +904,13 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
 
 
 @router.get("/papers/{paper_id}")
-def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
+def detail(
+    paper_id: str,
+    session: SessionDep,
+    imported: str = "",
+    asset_created: str = "",
+    return_to: str = "",
+) -> HTMLResponse:
     try:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
@@ -917,7 +922,28 @@ def detail(paper_id: str, session: SessionDep) -> HTMLResponse:
             nav_key = "探索收藏"
         else:
             nav_key = "阅读队列"
-        return _page(paper.title, _detail_article(session, paper_id, paper=paper), nav=nav_key)
+        notice = "已导入这篇已读论文并完成归档；评分与备注可在下方修订。" if imported else ""
+        if asset_created:
+            notice = "已保存这条资产；它关联了本篇文献。"
+        context_link = ""
+        try:
+            target = urlsplit(return_to)
+        except ValueError:
+            target = urlsplit("")
+        if (
+            not target.scheme
+            and not target.netloc
+            and (
+                target.path == "/ui/reading-insights"
+                or target.path.startswith("/ui/reading-insights/")
+            )
+        ):
+            context_link = f'<p><a href="{escape(return_to)}">返回刚才的阅读回顾</a></p>'
+        return _page(
+            paper.title,
+            context_link + _detail_article(session, paper_id, paper=paper, notice=notice),
+            nav=nav_key,
+        )
     except (DomainError, AppError) as exc:
         rendered = _page("文献详情", f'<p role="alert">{escape(exc.message)}</p>')
         if isinstance(exc, NotFoundError):
@@ -933,6 +959,7 @@ def _detail_article(
     notice: str = "",
     notice_role: str = "status",
     note_draft: str | None = None,
+    read_time_draft: dict[str, str] | None = None,
 ) -> str:
     """详情页正文（UXR-09）：详情路由与详情上下文的动作响应共用同一渲染，
     反馈完成后内容保留、仅反馈区切换；notice 插在正文最前（成功或错误提示）。"""
@@ -948,18 +975,29 @@ def _detail_article(
         from papersteward.api.score_render import score_explanation
 
         summary_data = record.content.get("summary", {})
+        # 导入归档带「导入」徽标；判定来自 content_json.origin（§3.7）。
+        origin_badge = (
+            ' <span class="tag">导入</span>' if record.content.get("origin") == "import" else ""
+        )
         body = (
-            notice_html
-            + '<p class="back-link"><a href="/ui/archive">← 返回归档</a></p>'
-            + '<p class="success">已完成归档</p>'
+            notice_html + '<p class="back-link"><a href="/ui/archive">← 返回归档</a> · '
+            '<a href="/ui/reading-insights">阅读回顾</a></p>'
+            + f'<p class="success">已完成归档{origin_badge}</p>'
         )
         body += _paper_links(session, paper_id)
         body += _model_summary_figure(str(summary_data.get("summary_100", "历史概括不可用")))
         body += _summary_slots(summary_data)
         body += _source_material(summary_data, paper)
         rating_label = record.score if record.score is not None else "未评分"
+        from papersteward.api.insights_pages import read_time_block, reading_time_label
+        from papersteward.reading.insights.timeline import read_time_view, workspace_timezone
+
+        view = read_time_view(session, paper_id)
+        archive_day = record.archived_at.astimezone(workspace_timezone(session)).date()
+        # 阅读时间与归档时间分开呈现（§3.1）：导入归档未声明时如实显示「未记录」。
         body += (
-            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 完成于 {record.archived_at.date()}</p>"
+            f"<h2>我的阅读反馈</h2><p>评分：{rating_label} · 归档于 {archive_day} · "
+            f"阅读时间 {escape(reading_time_label(view))}</p>"
         )
         saved_note = note_draft if note_draft is not None else record.note
         body += "<p>" + escape(saved_note or "暂无备注") + "</p>"
@@ -982,6 +1020,10 @@ def _detail_article(
                     + "</li>"
                 )
             body += "</ul></details>"
+        body += read_time_block(view, draft=read_time_draft)
+        from papersteward.api.insights_pages import asset_section
+
+        body += asset_section(session, paper_id)
         score_data = record.content.get("score")
         if isinstance(score_data, dict):
             # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。
@@ -1144,7 +1186,7 @@ def archive(
             else:
                 body += (
                     '<p class="muted">归档还没有内容。在队列中读完论文并点「完成并归档」后，'
-                    "会出现在这里。</p>"
+                    '会出现在这里；系统外已读的论文也可以<a href="/ui/import">直接导入</a>。</p>'
                 )
         for record in page["items"]:
             metadata = record.content.get("metadata", {})
@@ -1153,14 +1195,28 @@ def archive(
             mode_label = {"deep": "精读", "skim": "粗读"}.get(str(reading.get("actual_mode")))
             machine_score = (record.content.get("score") or {}).get("scores", {}).get("P")
             # UXR-18：标签用名称；个人评分与机器推荐参考分明确区分。
-            tag_name = tag_names.get(record.primary_tag, record.primary_tag)
+            # 导入归档可能无主标签，此时不渲染标签项。
+            tag_name = (
+                tag_names.get(record.primary_tag, record.primary_tag)
+                if record.primary_tag
+                else None
+            )
             personal = f"我的评分 {record.score}/5" if record.score is not None else "未评分"
-            meta = [escape(str(tag_name)), personal]
+            meta = [] if tag_name is None else [escape(str(tag_name))]
+            meta.append(personal)
             if mode_label:
                 meta.append(mode_label)
-            meta.append(f"完成于 {record.archived_at.date()}")
+            is_import = record.content.get("origin") == "import"
+            # 导入归档的录入日期不是阅读日期（§3.1）；如实标注为导入时间。
+            meta.append(
+                f"导入于 {record.archived_at.date()}"
+                if is_import
+                else f"完成于 {record.archived_at.date()}"
+            )
             if machine_score is not None:
                 meta.append(f"推荐参考分 {float(machine_score):.1f}")
+            if is_import:
+                meta.insert(0, '<span class="tag">导入</span>')
             body += f'<article><h2><a href="/ui/papers/{quote(record.paper_id, safe="")}">'
             body += f"{escape(title)}</a></h2><p>{' · '.join(meta)}</p>"
             body += f"<p>{escape(record.note or '暂无备注')}</p></article>"
@@ -1170,7 +1226,15 @@ def archive(
             if value not in (None, "")
         }
         body += _pagination("/ui/archive", page_params, offset=offset, total=total, page_size=50)
-        return _page(f"阅读归档 · {total} 篇", body, nav="归档")
+        return _page(
+            f"阅读归档 · {total} 篇",
+            body,
+            nav="归档",
+            heading_actions=(
+                '<a class="button secondary" href="/ui/import">导入已读论文</a> '
+                '<a class="button secondary" href="/ui/reading-insights">阅读回顾</a>'
+            ),
+        )
     except (DomainError, AppError) as exc:
         return _page("阅读归档", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
 

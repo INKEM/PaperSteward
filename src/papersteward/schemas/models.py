@@ -398,7 +398,11 @@ def validate_mapping(
 
 
 def validate_json_text(name: str, text: str, *, source: str | None = None) -> BaseModel:
-    """解析 JSON 文本并校验；语法错误与字段错误都抛 ``SchemaError``。"""
+    """解析 JSON 文本并校验；语法错误与字段错误都抛 ``SchemaError``。
+
+    解析后先经 ``tolerant_trim`` 做白名单容错（当前仅分类副标签名截断），
+    首次校验、修复重验与缓存命中三条路径因此保持一致行为。
+    """
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -409,7 +413,39 @@ def validate_json_text(name: str, text: str, *, source: str | None = None) -> Ba
         ) from exc
     if not isinstance(data, dict):
         raise SchemaError("根节点必须是 JSON object", field=f"schema.{name}", source=source)
-    return validate_mapping(name, data, source=source)
+    return validate_mapping(name, tolerant_trim(name, data), source=source)
+
+
+_SECONDARY_TAG_NAME_MAX = 64
+
+
+def tolerant_trim(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """对已知“展示性自由文本”字段的超长值做防御性截断；其余保持严格校验。
+
+    当前白名单：classification 的 ``secondary_tags[*].name``（上限 64 字符）。
+    模型偶尔把副标签名写成描述性短语；名字只用于展示与匹配（对不上分类法
+    仅打质量标记），截断无信息损失，不应让整篇论文的处理失败。截断可能撞出
+    重复的 facet+name（schema 要求唯一），保留首个。本函数刻意不做通用截断：
+    语义字段（如证据引文）超限仍应走修复/失败路径。
+    """
+    if name != "classification":
+        return payload
+    tags = payload.get("secondary_tags")
+    if not isinstance(tags, list):
+        return payload
+    trimmed: list[Any] = []
+    seen: set[tuple[Any, Any]] = set()
+    for item in tags:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            tag_name = item["name"]
+            if len(tag_name) > _SECONDARY_TAG_NAME_MAX:
+                item = {**item, "name": tag_name[:_SECONDARY_TAG_NAME_MAX].rstrip()}
+            key = (item.get("facet"), str(item.get("name", "")).casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+        trimmed.append(item)
+    return {**payload, "secondary_tags": trimmed}
 
 
 __all__ = [
@@ -446,6 +482,7 @@ __all__ = [
     "StaticScoreOutput",
     "SummaryOutput",
     "schema_for",
+    "tolerant_trim",
     "validate_json_text",
     "validate_mapping",
 ]

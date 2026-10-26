@@ -683,6 +683,140 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class ReadingAssetRow(Base):
+    """手工资产（收获/问题）的稳定身份；当前状态按最大版本读取。"""
+
+    __tablename__ = "reading_asset"
+    __table_args__ = (
+        CheckConstraint("kind IN ('harvest', 'problem')", name="asset_kind_allowed"),
+        Index("uq_reading_asset_idempotency", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAssetRevisionRow(Base):
+    """资产的一个内容/状态版本；只追加，旧版本与当时来源保留。"""
+
+    __tablename__ = "reading_asset_revision"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'archived', 'open', 'resolved')",
+            name="asset_status_allowed",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_asset.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    applicability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class ReadingAssetSourceRow(Base):
+    """资产版本的来源引用；指向归档哈希，可选引用具体反馈版本。"""
+
+    __tablename__ = "reading_asset_source"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["asset_id", "revision"],
+            ["reading_asset_revision.asset_id", "reading_asset_revision.revision"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_reading_asset_source_revision", "asset_id", "revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    archive_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rating_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReadingReportRow(Base):
+    """已保存的阅读回顾报告快照；正文冻结，读取时校验哈希。
+
+    运行 ID 与输入指纹均唯一：前者保证同 run 重试不重复建报告，
+    后者让相同规范化请求与数据去重到既有快照（保留其原截止时间）。
+    """
+
+    __tablename__ = "reading_report"
+    __table_args__ = (
+        CheckConstraint(
+            "report_kind IN ('week', 'month', 'all', 'custom')", name="report_kind_allowed"
+        ),
+        CheckConstraint(
+            "review_mode IN ('as_recorded', 'revised_now')", name="review_mode_allowed"
+        ),
+        Index("uq_reading_report_run", "run_id", unique=True),
+        Index("uq_reading_report_fingerprint", "input_fingerprint", unique=True),
+        Index("ix_reading_report_generated", "generated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    period_label: Mapped[str] = mapped_column(String(32), nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    knowledge_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    contract: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ReadingTimeRevisionRow(Base):
+    """阅读时间声明版本；只追加，不改归档快照/评分/事件。
+
+    精度三值互斥由 CHECK 下沉到数据库；``(paper_id, revision)`` 主键提供
+    乐观并发的最终兜底，幂等键唯一索引支撑重复请求重放。
+    """
+
+    __tablename__ = "reading_time_revision"
+    __table_args__ = (
+        CheckConstraint("precision IN ('day', 'month', 'unknown')", name="precision_allowed"),
+        CheckConstraint(
+            "(precision = 'day' AND declared_date IS NOT NULL AND declared_month IS NULL)"
+            " OR (precision = 'month' AND declared_date IS NULL AND declared_month IS NOT NULL)"
+            " OR (precision = 'unknown' AND declared_date IS NULL AND declared_month IS NULL)",
+            name="precision_value_coherent",
+        ),
+        CheckConstraint(
+            "basis IN ('system_recorded', 'declared', 'unknown')", name="basis_allowed"
+        ),
+        Index("uq_reading_time_idempotency", "idempotency_key", unique=True),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    precision: Mapped[str] = mapped_column(String(8), nullable=False)
+    declared_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    declared_month: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    basis: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class LLMCacheRow(Base):
     """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
 
@@ -792,8 +926,9 @@ class ArchiveSnapshotRow(Base):
         String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
     )
     archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    primary_tag: Mapped[str] = mapped_column(String(64), nullable=False)
-    filing_bucket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 导入归档允许无主标签/归属桶（用户未选标签时），列可空；既有 done 归档仍必有值。
+    primary_tag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filing_bucket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_version: Mapped[str] = mapped_column(String(32), nullable=False)

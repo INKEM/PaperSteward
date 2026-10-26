@@ -12,7 +12,7 @@ from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -43,6 +43,11 @@ from papersteward.pipeline.relevance import (
     RelevanceResult,
     evaluate_relevance,
     extract_profile_facets,
+)
+from papersteward.reading.insights.reports import (
+    ReportPreparationCancelled,
+    prepare_report,
+    save_report,
 )
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.queue import refresh_queue
@@ -90,15 +95,59 @@ class _RunContext:
     facet_vectors: tuple[tuple[float, ...], ...]
 
 
+class ReviewParams(BaseModel):
+    """阅读回顾报告的独立参数模型；周期不进 focus/来源字段。
+
+    不含时区：执行时按工作区运行时解析，排队期间更换时区以运行时为准。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    period: Literal["week", "month", "all", "custom"]
+    mode: Literal["as_recorded", "revised_now"] = "as_recorded"
+    anchor_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    # 用户显式勾选时，报告快照保存资产正文副本；默认只列整理活动与引用。
+    asset_bodies: bool = False
+    tag: str | None = None
+
+    @model_validator(mode="after")
+    def coherent(self) -> ReviewParams:
+        if self.period in {"week", "month"}:
+            if self.anchor_date is None or self.start_date or self.end_date:
+                raise ValueError("周/月报告必须且只能提供 anchor_date")
+        elif self.period == "custom":
+            if self.anchor_date or self.start_date is None or self.end_date is None:
+                raise ValueError("自选报告必须提供 start_date 与 end_date")
+            if self.start_date > self.end_date:
+                raise ValueError("自选报告开始不能晚于结束")
+        elif self.anchor_date or self.start_date or self.end_date:
+            raise ValueError("全部历史报告不接受日期参数")
+        return self
+
+
 class FlowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    kind: Literal["sync", "refresh", "extract"]
+    kind: Literal["sync", "refresh", "extract", "review"]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
     # 可选关注点：作为品味信号喂给检索规划 Agent；不填则纯按档案与已读历史决定。
     focus: str = Field(default="", max_length=500)
     # 期望入队篇数；0 表示使用评分配置中的 min_queue_yield 默认值。
     target: int = Field(default=0, ge=0, le=50)
+    # 阅读回顾报告参数；仅 kind="review" 使用。
+    review: ReviewParams | None = None
+
+    @model_validator(mode="after")
+    def coherent(self) -> FlowRequest:
+        if self.kind == "review":
+            if self.review is None:
+                raise ValueError("回顾任务必须提供 review 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("回顾任务不使用关注点、来源或目标篇数字段")
+        elif self.review is not None:
+            raise ValueError("review 参数仅用于回顾任务")
+        return self
 
 
 def processing_problem(session: Session, settings: Settings) -> str | None:
@@ -208,7 +257,9 @@ class UIFlowManager:
                     return
                 rows = session.scalars(
                     select(RunRow).where(
-                        RunRow.run_type.in_(["ui.sync", "ui.digest", "ui.extract", "ui.refresh"]),
+                        RunRow.run_type.in_(
+                            ["ui.sync", "ui.digest", "ui.extract", "ui.refresh", "ui.review"]
+                        ),
                         RunRow.status == "running",
                     )
                 ).all()
@@ -229,7 +280,9 @@ class UIFlowManager:
             logger.warning("UI run recovery unavailable; check database migrations")
 
     def submit(self, request: FlowRequest) -> str:
-        payload = request.model_dump(exclude={"run_id"})
+        # mode="json"：日期等类型序列化为 ISO 字符串才能进 JSON 列；
+        # 还原时 pydantic 会把字符串解析回原类型。
+        payload = request.model_dump(mode="json", exclude={"run_id"})
         with self.lock:
             with session_scope(self.factory) as session:
                 # 在读预约前取得 SQLite 写锁，跨工作进程同样不会静默排队。
@@ -412,6 +465,9 @@ class UIFlowManager:
             if request.kind == "sync":
                 self._run_sync(request)
                 completed = ["collecting", "processing", "refreshing"]
+            elif request.kind == "review":
+                self._run_review(identity, request)
+                completed = ["reading", "summarizing", "saving"]
             elif request.kind == "extract":
                 self._update(identity, stage="extracting", extract_note="正在读取材料与历史意见…")
                 if self._finalize_stop(identity) or self._terminated(identity):
@@ -499,6 +555,48 @@ class UIFlowManager:
             cache=cache,
         )
         return gateway, provider, llm_config
+
+    def _run_review(self, identity: str, request: FlowRequest) -> None:
+        """阅读回顾报告：读取记录 → 汇总事实 → 保存快照；无模型调用。
+
+        事务顺序遵循阶段计划 §8.1：只读会话内 prepare，事务外算指纹
+        （在 prepare 内完成），BEGIN IMMEDIATE 短写保存并做取消/幂等校验。
+        """
+        assert request.review is not None
+        if self._finalize_stop(identity) or self._terminated(identity):
+            return
+        try:
+            with session_scope(self.factory) as session:
+                prepared = prepare_report(
+                    session,
+                    request.review,
+                    collected_at=utc_now(),
+                    note=lambda stage: self._progress(identity, stage=stage),
+                    include_asset_bodies=request.review.asset_bodies,
+                    should_abort=lambda: self._is_stopping(identity),
+                )
+        except ReportPreparationCancelled:
+            self._finalize_stop(identity)
+            return
+        self._update(identity, stage="saving")
+        # 与取消共享提交锁；快照、结果引用与成功终态同成同败。
+        with self.lock, session_scope(self.factory, immediate=True) as session:
+            if identity in self._cancel_flags:
+                return
+            row = save_report(session, prepared, run_id=identity, now=utc_now())
+            if row is None:
+                return
+            run = session.get(RunRow, identity)
+            assert run is not None
+            run.stats_json = {
+                **run.stats_json,
+                "generated": {"report_id": row.id},
+                "deduplicated": row.run_id != identity,
+                "stage": "completed",
+                "completed": ["reading", "summarizing", "saving"],
+                "updated_at": utc_now().isoformat(),
+            }
+            RunRepository(session).transition(identity, RunStatus.SUCCEEDED, finished_at=utc_now())
 
     def refresh(self, request: FlowRequest) -> None:
         with session_scope(self.factory) as session:

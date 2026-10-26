@@ -131,6 +131,22 @@ class ReadMode(StrEnum):
     SKIM = "skim"
 
 
+class TimePrecision(StrEnum):
+    """阅读时间精度；月精度不得对外伪装成精确日。"""
+
+    DAY = "day"
+    MONTH = "month"
+    UNKNOWN = "unknown"
+
+
+class ReadingTimeBasis(StrEnum):
+    """阅读时间的依据：系统记录、用户声明或来源未明。"""
+
+    SYSTEM_RECORDED = "system_recorded"
+    DECLARED = "declared"
+    UNKNOWN = "unknown"
+
+
 class RelevanceBand(StrEnum):
     """P4 相关度 R 的入队区间；不直接改变文献状态。"""
 
@@ -248,6 +264,27 @@ class RecalculationTrigger(StrEnum):
     METADATA_CORRECTED = "metadata_corrected"
 
 
+# 论文状态的中文展示名；UI 与用户可见文案共用，未知值回退原文。
+STATUS_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "discovered": "已发现",
+        "deduped": "已去重",
+        "screened": "已筛选",
+        "enriched": "已归纳",
+        "summarized": "已概括",
+        "classified": "已归类",
+        "scored": "已评分",
+        "queued": "队列中",
+        "reading": "阅读中",
+        "done": "已完成",
+        "archived": "已归档",
+        "rejected": "不感兴趣",
+        "shelved": "特殊桶",
+        "pushed": "已推送",
+    }
+)
+
+
 __all__ = [
     "AssignedBy",
     "BucketRole",
@@ -263,6 +300,7 @@ __all__ = [
     "ReviewStatus",
     "RunStatus",
     "SPECIAL_BUCKET_PRIORITY",
+    "STATUS_LABELS",
     "ScoreTier",
     "ScoringChangeStatus",
     "SpecialBucketKind",

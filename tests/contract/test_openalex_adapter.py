@@ -202,3 +202,28 @@ def test_malformed_response(payload):
             OpenAlexAdapter(http).search(QuerySpec(keywords=("one",)))
     finally:
         http.close()
+
+
+def test_get_by_doi_hit_miss_and_malformed():
+    requests: list[dict[str, str]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        requests.append(params)
+        if len(requests) == 1:
+            return httpx.Response(200, json={"results": [BODY["results"][0]]})
+        if len(requests) == 2:
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(200, json={"meta": {}})
+
+    http = SourceHTTP("openalex", transport=httpx.MockTransport(handle), sleep=lambda _: None)
+    try:
+        adapter = OpenAlexAdapter(http, now=lambda: NOW)
+        found = adapter.get_by_doi("10.0000/fixture")
+        assert found is not None and found.title == "Synthetic Retrieval Study"
+        assert requests[0]["filter"] == "doi:10.0000/fixture"
+        assert adapter.get_by_doi("10.0000/missing") is None
+        with pytest.raises(SourceError, match="invalid_response"):
+            adapter.get_by_doi("10.0000/broken")
+    finally:
+        http.close()

@@ -57,6 +57,30 @@
 | `_shelf_section()` / `_shelf_inner()` | `api/pages.py` | 探索收藏：说明段、提示性周上限文案、空收藏引导、档位与证据 |
 | `_view_table()` | `api/pages.py` | 排序表：短中文表头 + 单元格 `data-label`（窄屏卡片化字段名） |
 
+## 导入已读论文
+
+| 组件 | 生成位置 | 用途 |
+|---|---|---|
+| 归档页头部入口「导入已读论文」 | `pages.archive()`（`heading_actions=`） | 低频动作不进主导航；归档空态文案带同一入口链接 |
+| `/ui/import` 两步表单 | `api/import_pages.py` | 第一步标识可选（留空直接手填）→ 第二步确认元数据+评分（`.stacked-form`）；解析失败/未命中降级手填并给 `.notice` 说明；解析溯源经 `hidden()` 字段带入确认步；校验错误 X-01 原地重渲染（400） |
+| `<span class="tag">导入</span>` 徽标 | `pages.archive()` 列表 / `_detail_article()` 详情 | 判定 `content_json.origin == "import"`；导入论文无主标签时不渲染标签项 |
+| 导入冲突页 `_conflict_page()` | `api/import_pages.py` | 重复导入 409：守卫文案 + 「打开论文详情页」链接 + 返回导入/归档 |
+| 导入成功通知 | `pages.detail(imported=1)` | 303 到详情页带 `?imported=1`，`_detail_article` 顶部渲染成功提示 |
+
+## 阅读回顾
+
+| 组件 | 位置 | 约定 |
+|---|---|---|
+| 回顾次级导航 `insights_navigation()` | `api/insights_pages.py` | 本周／本月／全部历史／已保存回顾／手工资产共用入口，仍归属主导航“归档”；窄屏换行 |
+| 周期筛选与明细 | `insights_pages._filter_form()`／`_section_block()` | 原生 GET 表单，可键盘提交；切换周期禁用无关日期字段；历史标签携带分类版本；分页保留模式、日期与主题，各明细组可独立展开分页 |
+| 全部历史完整性 | `_all_history_body()` | 全部归档来源及日期精度，当前资产入口；不输出长期画像；分页不截断统计分母 |
+| 报告快照与变化提示 | `_report_detail_body()` | 正文来自冻结快照，另按原时区／周期／模式比较有效事实；无关的新阅读不标为失效；回到论文后可返回原回顾上下文 |
+| 统一导出选择 | `api/insights_export_pages.py` | 默认事实分享；私人完整副本下载前勾选说明；报告私人副本保持冻结；全部历史私人副本为含修订的 JSON |
+| 资产表单与删除范围 | `_asset_create_form()`／`_asset_detail_body()` | 新建或冲突错误就近显示，完整草稿保留并转义；正文副本报告的删除复选框必须位于删除表单内 |
+| 阅读日期与本地数据管理 | `read_time_block()`／设置与工作区删除页 | 日期独立于归档；清空预览明确列出日期声明、报告、资产版本及来源；同一备份保存全部表 |
+
+回顾沿用全局 Ctrl／⌘+Enter 提交。打印隐藏导航、筛选及写入按钮，保留表格列头与事实正文。
+
 ## 保留的全局基础层（有意为之）
 
 `article`/`form`/`table`/`details` 的基础样式仍是全局规则——它们是「基线层」，让未

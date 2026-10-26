@@ -144,3 +144,10 @@ def client(migrated_engine: Engine) -> Iterator[TestClient]:
 def activate(client: TestClient, **overrides: object) -> dict[str, str]:
     """兼容旧签名的激活入口：``activate(client, **runtime_overrides)``。"""
     return activate_workspace(client.app.state.engine, runtime_overrides=overrides or None)
+
+
+@pytest.fixture
+def insights_factory(migrated_engine: Engine) -> sessionmaker[Session]:
+    """已激活工作区的会话工厂；阅读回顾（R1-01/02）集成测试共用。"""
+    activate_workspace(migrated_engine)
+    return create_session_factory(migrated_engine)

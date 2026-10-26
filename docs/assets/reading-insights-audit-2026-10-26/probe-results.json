@@ -1,0 +1,45 @@
+{
+  "baseline": "3a351b4",
+  "results": {
+    "A01_topic_scope": {
+      "reproduced": true,
+      "topic_readings": 1,
+      "unrelated_asset_count": 1,
+      "unrelated_asset_refs": 1
+    },
+    "A02_scoped_fingerprint": {
+      "reproduced": true,
+      "scoped_facts_equal": true,
+      "fingerprints_equal": false
+    },
+    "A03_report_series": {
+      "reproduced": true,
+      "mixed_series_ids": [
+        "other-timezone",
+        "other-topic",
+        "target"
+      ],
+      "series_count_after_51_unrelated_reports": 0
+    },
+    "A04_idempotency": {
+      "reproduced": true,
+      "asset_changed_payload_silently_replayed": true,
+      "second_paper_success_result_revision": 0
+    },
+    "A05_asset_provenance_history": {
+      "reproduced": true,
+      "feedback_version_lost_after_ui_revision": true,
+      "history_only_has_summary_fields": [
+        "recorded_at",
+        "revision",
+        "status",
+        "title"
+      ]
+    },
+    "A06_private_title_copies": {
+      "reproduced": true,
+      "deletable_private_copy_report_ids": [],
+      "title_still_in_saved_report_after_asset_deleted": true
+    }
+  }
+}

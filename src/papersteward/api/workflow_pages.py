@@ -46,6 +46,10 @@ LABELS = {
     "ui.sync": "挖掘新论文",
     "ui.digest": "历史日报任务",
     "ui.extract": "生成研究草案",
+    "ui.review": "生成阅读回顾",
+    "reading": "读取记录",
+    "summarizing": "汇总事实",
+    "saving": "保存回顾",
     "ingest": "来源采集",
 }
 
@@ -114,6 +118,12 @@ def _run_result_summary(run: Run) -> str:
         )
     if run.run_type == "ui.extract":
         return "草案已生成，可继续审阅或提意见。"
+    if run.run_type == "ui.review":
+        generated = stats.get("generated")
+        report_id = str(generated.get("report_id")) if isinstance(generated, dict) else ""
+        if report_id and stats.get("deduplicated"):
+            return "本期数据没有变化，已沿用上一份报告。"
+        return "报告已生成并保存，可查看或导出。"
     return "任务已完成。"
 
 
@@ -138,6 +148,8 @@ def _run_next_step(run: Run) -> str:
         return "到阅读队列开始阅读；也可以继续挖掘补充。"
     if run.run_type == "ui.extract":
         return "在下方提意见继续调整，或确认开始使用。"
+    if run.run_type == "ui.review":
+        return "打开报告查看事实与导出；之后可从「归档 → 阅读回顾」再次生成。"
     return ""
 
 
@@ -184,6 +196,9 @@ def run_body(
             "digest": "历史日报任务",
             "refreshing": "正在刷新阅读队列",
             "extracting": "正在生成研究草案",
+            "reading": "正在读取归档记录",
+            "summarizing": "正在汇总阅读事实",
+            "saving": "正在保存报告快照",
             "completed": "正在保存运行结果",
         }.get(stage, "任务正在运行")
     # UXR-15：取消落库被写锁占用时，运行页立即显示「正在停止」而非继续说运行中。
@@ -198,6 +213,8 @@ def run_body(
         stages = ["queued", "collecting", "processing", "refreshing", "completed"]
     elif run.run_type == "ingest":
         stages = ["queued", "collecting", "completed"]
+    elif run.run_type == "ui.review":
+        stages = ["queued", "reading", "summarizing", "saving", "completed"]
     else:
         stages = [
             "queued",
@@ -247,6 +264,7 @@ def run_body(
                 "停止会在本次模型调用结束后生效；上传的材料、修改意见和已生成的"
                 "草案版本都保留，本次结果不保存。"
             ),
+            "ui.review": "停止后已保存的报告保留；本次尚未保存的快照不会落库。",
         }.get(run.run_type, "停止后已完成的数据保留。")
         if stopping:
             # UXR-15：停止已请求（落库待检查点生效），不重复提供停止按钮。
@@ -486,6 +504,7 @@ def dashboard(
     # 挖掘主按钮、折叠的采集参数、次级的刷新排序，一行排布。
     collect = (
         '<details class="collect-params"><summary>采集参数与检索说明</summary>'
+        '<div class="collect-panel">'
         '<label>来源<select name="source">'
         + "".join(
             f'<option value="{value}">{label}</option>'
@@ -502,7 +521,7 @@ def dashboard(
         'min="1" max="50"></label>'
         # UXR-06：检索说明属于采集参数的语境，随面板折叠，不再常驻顶部。
          + '<p class="muted">不填检索词时由 Agent 依据研究档案、已读历史和关注点生成检索式'
-        "（内容会发送给你配置的模型服务）。</p></details>"
+        "（内容会发送给你配置的模型服务）。</p></div></details>"
     )
     disabled_sync = " disabled" if busy or problem else ""
     toolbar = (
@@ -617,6 +636,18 @@ def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> 
                 headers={**HEADERS, "HX-Redirect": "/ui/setup"},
             )
         return RedirectResponse("/ui/setup", status_code=303)
+    if run.run_type == "ui.review" and run.status is RunStatus.SUCCEEDED:
+        generated = run.stats_json.get("generated")
+        report_id = str(generated.get("report_id")) if isinstance(generated, dict) else ""
+        if report_id:
+            # 报告生成成功即单向往前：直接打开报告详情。
+            target = f"/ui/reading-insights/reports/{report_id}"
+            if fragment:
+                return HTMLResponse(
+                    '<p class="success">报告已生成，正在打开…</p>',
+                    headers={**HEADERS, "HX-Redirect": target},
+                )
+            return RedirectResponse(target, status_code=303)
     running = repository.running_ui_runs()
     home = ("/ui/today", "返回队列") if onboarding_active else ("/ui/setup", "返回首次设置")
     body = run_body(run, current=running[0] if running else None, home=home)

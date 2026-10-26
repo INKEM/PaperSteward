@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from papersteward.storage import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+NOW_MIGRATIONS = datetime(2026, 10, 21, 8, tzinfo=UTC)
 DOMAIN_TABLES = {
     "archive_snapshot",
     "bucket",
@@ -44,6 +46,11 @@ DOMAIN_TABLES = {
     "tag",
     "taxonomy",
     "view_config",
+    "reading_time_revision",
+    "reading_report",
+    "reading_asset",
+    "reading_asset_revision",
+    "reading_asset_source",
 }
 
 
@@ -207,8 +214,75 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "paper_id",
             "score_date",
         ]
+        assert {column["name"] for column in inspector.get_columns("reading_time_revision")} == {
+            "paper_id",
+            "revision",
+            "recorded_at",
+            "precision",
+            "declared_date",
+            "declared_month",
+            "basis",
+            "idempotency_key",
+        }
+        revision_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_time_revision")
+        }
+        assert "uq_reading_time_idempotency" in revision_indexes
+        assert inspector.get_pk_constraint("reading_time_revision")["constrained_columns"] == [
+            "paper_id",
+            "revision",
+        ]
+        assert {column["name"] for column in inspector.get_columns("reading_report")} == {
+            "id",
+            "report_kind",
+            "period_label",
+            "period_start",
+            "period_end",
+            "timezone",
+            "review_mode",
+            "knowledge_cutoff",
+            "generated_at",
+            "contract",
+            "input_fingerprint",
+            "content_json",
+            "content_hash",
+            "run_id",
+        }
+        report_indexes = {index["name"] for index in inspector.get_indexes("reading_report")}
+        assert {
+            "uq_reading_report_run",
+            "uq_reading_report_fingerprint",
+            "ix_reading_report_generated",
+        } <= report_indexes
+        for table, columns in {
+            "reading_asset": {"id", "kind", "idempotency_key", "created_at"},
+            "reading_asset_revision": {
+                "asset_id",
+                "revision",
+                "recorded_at",
+                "title",
+                "body",
+                "applicability",
+                "status",
+            },
+            "reading_asset_source": {
+                "id",
+                "asset_id",
+                "revision",
+                "paper_id",
+                "archive_hash",
+                "rating_at",
+            },
+        }.items():
+            assert {column["name"] for column in inspector.get_columns(table)} == columns
+        asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
+        assert "uq_reading_asset_idempotency" in asset_indexes
+        assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
+            "asset_id",
+            "revision",
+        ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0019"
+        assert current == "0023"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -232,11 +306,223 @@ def test_upgrade_is_idempotent_and_can_repeat_after_downgrade(sqlite_engine: Eng
         assert "paper" in set(inspect(connection).get_table_names())
 
 
+def test_downgrade_0020_guarded_by_null_import_snapshots(sqlite_engine: Engine) -> None:
+    _upgrade(sqlite_engine)
+    # 直接写行绕过领域仓储（仓储自带激活门）；此处只验证迁移守卫本身。
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO paper (id, title, status, authors_json, first_seen_at, oa_status) "
+                "VALUES ('p-imp', '导入论文', 'done', '[]', "
+                "'2026-10-21 08:00:00.000000', 'unknown')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-imp', '2026-10-21 08:00:00.000000', NULL, NULL, "
+                "'1.0', '1.0', '1.0.0', :content_hash, '{}', '[]')"
+            ),
+            {"content_hash": "a" * 64},
+        )
+
+    with pytest.raises(RuntimeError, match="无法回退迁移 0020"):
+        _downgrade(sqlite_engine, "0019")
+
+    with sqlite_engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+        assert current == "0020"
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM archive_snapshot"))
+        connection.execute(text("DELETE FROM paper"))
+
+    _downgrade(sqlite_engine, "0019")
+    _upgrade(sqlite_engine)
+
+
 def test_migration_matches_models(sqlite_engine: Engine) -> None:
     _upgrade(sqlite_engine)
 
     with sqlite_engine.connect() as connection:
         command.check(_alembic_config(connection))
+
+
+@pytest.mark.parametrize("target", ["0021", "0023"])
+def test_0021_roundtrip_preserves_archives_with_representative_data(
+    sqlite_engine: Engine,
+    target: str,
+) -> None:
+    """带代表数据的 0020 → 0021 → 0020 → 0021 往返：归档保留，日期声明随 0021 移除。"""
+    _upgrade(sqlite_engine, "0020")
+    factory = create_session_factory(sqlite_engine)
+    with session_scope(factory) as session:
+        # 无主标签的导入归档 + 有主标签的 done 归档，代表两类既有数据。
+        for paper_id in ("p-import", "p-done"):
+            PaperRepository(session).add(
+                Paper(
+                    id=paper_id,
+                    title=paper_id,
+                    status=PaperStatus.DONE,
+                    first_seen_at=NOW_MIGRATIONS,
+                )
+            )
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-import', '2026-10-21 08:00:00.000000', NULL, NULL, "
+                "'1.0', '1.0', '1.0.0', :import_hash, '{}', '[]'), "
+                "('p-done', '2026-10-21 08:00:00.000000', 'T01', 'b1', "
+                "'1.0', '1.0', '1.0.0', :done_hash, '{}', '[]')"
+            ),
+            {"import_hash": "b" * 64, "done_hash": "c" * 64},
+        )
+
+    _upgrade(sqlite_engine, target)
+    with session_scope(factory) as session:
+        from papersteward.core.entities import ReadingTimeRevision
+        from papersteward.core.enums import ReadingTimeBasis, TimePrecision
+        from papersteward.storage.insights import ReadingTimeRevisionRepository
+
+        ReadingTimeRevisionRepository(session).add(
+            ReadingTimeRevision(
+                paper_id="p-import",
+                revision=1,
+                recorded_at=NOW_MIGRATIONS,
+                precision=TimePrecision.MONTH,
+                basis=ReadingTimeBasis.DECLARED,
+                month="2026-09",
+                idempotency_key="roundtrip-key",
+            )
+        )
+
+    _downgrade(sqlite_engine, "0020")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "reading_time_revision" not in tables
+        rows = connection.execute(
+            text("SELECT paper_id FROM archive_snapshot ORDER BY paper_id")
+        ).all()
+        assert {row[0] for row in rows} == {"p-done", "p-import"}
+
+    _upgrade(sqlite_engine, target)
+    with sqlite_engine.connect() as connection:
+        assert "reading_time_revision" in set(inspect(connection).get_table_names())
+        # 原归档在往返后仍可读取；声明版本已被 0021 downgrade 移除（发布说明的数据损失范围）。
+        count = connection.execute(text("SELECT COUNT(*) FROM archive_snapshot")).scalar()
+        assert count == 2
+
+
+def test_0022_roundtrip_preserves_archives_with_saved_report(sqlite_engine: Engine) -> None:
+    """0021 → 0022 → 0021 → 0022 往返：归档保留，报告快照随 0022 移除。"""
+    _upgrade(sqlite_engine, "0022")
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO paper (id, title, status, authors_json, first_seen_at, oa_status) "
+                "VALUES ('p-r', '报告论文', 'archived', '[]', "
+                "'2026-10-21 08:00:00.000000', 'unknown')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-r', '2026-10-21 08:00:00.000000', 'T01', NULL, "
+                "'1.0', '1.0', '1.0.0', :content_hash, '{}', '[]')"
+            ),
+            {"content_hash": "d" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_report (id, report_kind, period_label, period_start, "
+                "period_end, timezone, review_mode, knowledge_cutoff, generated_at, contract, "
+                "input_fingerprint, content_json, content_hash, run_id) VALUES ("
+                "'rep-1', 'week', '2026-W43', '2026-10-19', '2026-10-25', 'Asia/Shanghai', "
+                "'as_recorded', '2026-10-25 16:00:00.000000', "
+                "'2026-10-26 02:00:00.000000', 'reading-insights.report/1', "
+                ":fp, '{}', :hash, 'run-1')"
+            ),
+            {"fp": "e" * 64, "hash": "f" * 64},
+        )
+
+    _downgrade(sqlite_engine, "0021")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "reading_report" not in tables
+        rows = connection.execute(text("SELECT paper_id FROM archive_snapshot")).all()
+        assert [row[0] for row in rows] == ["p-r"]
+
+    _upgrade(sqlite_engine, "0022")
+    with sqlite_engine.connect() as connection:
+        assert "reading_report" in set(inspect(connection).get_table_names())
+        count = connection.execute(text("SELECT COUNT(*) FROM reading_report")).scalar()
+        assert count == 0
+
+
+def test_0023_roundtrip_preserves_archives_with_asset(sqlite_engine: Engine) -> None:
+    """0022 → 0023 → 0022 → 0023 往返：归档与报告保留，资产随降级移除。"""
+    _upgrade(sqlite_engine, "0023")
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO paper (id, title, status, authors_json, first_seen_at, oa_status) "
+                "VALUES ('p-a', '资产论文', 'archived', '[]', "
+                "'2026-10-21 08:00:00.000000', 'unknown')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-a', '2026-10-21 08:00:00.000000', 'T01', NULL, "
+                "'1.0', '1.0', '1.0.0', :content_hash, '{}', '[]')"
+            ),
+            {"content_hash": "a" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at) VALUES ("
+                "'asset-1', 'problem', 'key-1', '2026-10-26 02:00:00.000000')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at, title, "
+                "body, applicability, status) VALUES ("
+                "'asset-1', 1, '2026-10-26 02:00:00.000000', '一个问题', "
+                "'待确认的方法问题', NULL, 'open')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_source (id, asset_id, revision, paper_id, "
+                "archive_hash, rating_at) VALUES ("
+                "'src-1', 'asset-1', 1, 'p-a', :hash, NULL)"
+            ),
+            {"hash": "b" * 64},
+        )
+
+    _downgrade(sqlite_engine, "0022")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert not {"reading_asset", "reading_asset_revision", "reading_asset_source"} & tables
+        rows = connection.execute(text("SELECT paper_id FROM archive_snapshot")).all()
+        assert [row[0] for row in rows] == ["p-a"]
+
+    _upgrade(sqlite_engine, "0023")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert {"reading_asset", "reading_asset_revision", "reading_asset_source"} <= tables
+        count = connection.execute(text("SELECT COUNT(*) FROM reading_asset")).scalar()
+        assert count == 0
 
 
 def test_p0_rows_are_migrated_to_formal_schema(sqlite_engine: Engine) -> None:

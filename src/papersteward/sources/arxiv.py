@@ -109,6 +109,17 @@ class ArxivAdapter:
             raise ValueError("page_size 必须在1–100之间")
         self.http, self.now, self.page_size = http, now, page_size
 
+    def get_by_id(self, arxiv_id: str) -> PaperCandidate | None:
+        """按 arXiv ID 直查（id_list 参数）；未知 ID 返回空 feed → None。
+
+        ``arxiv_id`` 须为规范化的裸 ID（``normalize_arxiv`` 产物）；
+        API 返回错误条目时由 parse_feed 抛 SourceError，由调用方降级。
+        """
+        entries = parse_feed(
+            self.http.get(ENDPOINT, {"id_list": arxiv_id, "max_results": 1}), self.now()
+        )
+        return entries[0] if entries else None
+
     def search(self, query: QuerySpec) -> list[PaperCandidate]:
         compiled = compile_query(query)
         result: list[PaperCandidate] = []
