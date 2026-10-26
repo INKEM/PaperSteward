@@ -358,7 +358,7 @@ def post_asset_revision(asset_id: str, body: AssetRevisionInput, session: Sessio
         return append_revision(session, asset_id, body, now=utc_now())
 
 
-@router.get("/assets/{asset_id}/delete-preview", summary="删除范围预览")
+@router.get("/assets/{asset_id}/delete-preview", summary="删除范围预览（含私人标题/正文副本）")
 def get_asset_delete_preview(asset_id: str, session: SessionDep) -> Any:
     with domain_errors():
         ensure_active(session, action="reading_insights.assets")

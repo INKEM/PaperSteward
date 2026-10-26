@@ -1386,19 +1386,26 @@ def _asset_detail_body(
     body += "<h2>删除</h2>"
     body += (
         f'<p class="muted">将删除 {preview["revision_count"]} 个版本、'
-        f"{preview['source_count']} 条来源引用。"
-        "仅引用此资产（不含正文副本）的报告会继续显示「来源已移除」。</p>"
+        f"{preview['source_count']} 条来源引用，以及此资产自身的标题、正文与适用说明。</p>"
     )
+    copies = preview["private_copies"]
     body += '<form method="post" action="' + url + '/delete" class="stacked-form">'
-    if preview["reports_with_body"]:
-        body += "<p>以下报告曾选入此资产的正文副本，可一并删除：</p><ul>"
-        for report_id in preview["reports_with_body"]:
+    if copies:
+        body += "<p>以下报告含此资产的私人副本，可勾选一并删除：</p><ul>"
+        for item in copies:
+            field_text = "、".join("标题" if kind == "title" else "正文" for kind in item["fields"])
             body += (
-                f'<li><label><input type="checkbox" name="also_{escape(report_id)}" value="1"> '
-                f'<a href="/ui/reading-insights/reports/{escape(report_id)}">'
-                f"{escape(report_id)}</a></label></li>"
+                f'<li><label><input type="checkbox" name="also_{escape(item["report_id"])}" '
+                'value="1"> '
+                f'<a href="/ui/reading-insights/reports/{escape(item["report_id"])}">'
+                f"{escape(item['report_id'])}</a>（含{escape(field_text)}）</label></li>"
             )
         body += "</ul>"
+        body += (
+            '<p class="muted">不勾选的报告会保留原副本：可在该报告中删除整份，'
+            "或另存脱敏版本；已下载的导出文件与数据库备份不会自动收回。</p>"
+        )
+    body += '<p class="muted">仅引用此资产、不含私人副本的报告会继续显示「来源已移除」。</p>'
     body += (
         '<label>输入「删除资产」确认<input name="confirmation" autocomplete="off"></label>'
         "<button>删除资产</button></form>"
@@ -1587,7 +1594,7 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
             raise InvalidRequestError("请输入「删除资产」以确认删除")
         with write_tx(session):
             preview = delete_preview(session, asset_id)
-            removable = set(preview["reports_with_body"])
+            removable = {item["report_id"] for item in preview["private_copies"]}
             also = [rid for rid in removable if form.get(f"also_{rid}")]
             ensure_active(session, action="reading_insights.assets")
             delete_asset(session, asset_id, also_report_ids=also)

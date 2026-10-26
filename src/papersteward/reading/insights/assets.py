@@ -321,17 +321,22 @@ def assets_for_paper(session: Session, paper_id: str) -> list[AssetView]:
 
 
 def delete_preview(session: Session, asset_id: str) -> dict[str, Any]:
-    """删除范围预览：版本数、来源引用数、曾选入正文副本的报告清单。"""
+    """删除范围预览：版本数、来源引用数、含私人副本的报告清单。
+
+    私人成分包括资产自身的标题/正文/适用说明（随资产删除），以及已保存
+    报告中的标题/正文副本——仅标题副本的报告同样列入 ``private_copies``
+    （F06）；不含私人字段的引用（如脱敏副本）归入 ``referenced_reports``。
+    """
     repository = ReadingAssetRepository(session)
     if repository.get_asset(asset_id) is None:
         raise NotFoundError("资产不存在")
     revisions = repository.revisions(asset_id)
     source_count = sum(len(repository.sources(asset_id, row.revision)) for row in revisions)
-    with_body, referenced = _reports_with_asset(session, asset_id)
+    copies, referenced = _private_copies_for_asset(session, asset_id)
     return {
         "revision_count": len(revisions),
         "source_count": source_count,
-        "reports_with_body": with_body,
+        "private_copies": copies,
         "referenced_reports": referenced,
     }
 
@@ -339,17 +344,17 @@ def delete_preview(session: Session, asset_id: str) -> dict[str, Any]:
 def delete_asset(
     session: Session, asset_id: str, *, also_report_ids: Sequence[str] = ()
 ) -> list[str]:
-    """删除资产；勾选的报告快照一并删除（清掉私人正文副本）。"""
+    """删除资产；勾选的含私人副本报告一并删除（清掉其中的标题/正文副本）。"""
     repository = ReadingAssetRepository(session)
     if repository.get_asset(asset_id) is None:
         raise NotFoundError("资产不存在")
     preview = delete_preview(session, asset_id)
-    removable = set(preview["reports_with_body"])
+    removable = {item["report_id"] for item in preview["private_copies"]}
     removed: list[str] = []
     for report_id in also_report_ids:
         if report_id not in removable:
             raise InvalidRequestError(
-                "该报告不含此资产的正文副本，无需一并删除",
+                "该报告不含此资产的私人副本，无需一并删除",
                 details={"field": "also_report_ids"},
             )
         delete_report(session, report_id)
@@ -369,8 +374,14 @@ def asset_events(session: Session, *, until: datetime) -> list[tuple[str, dateti
     ]
 
 
-def _reports_with_asset(session: Session, asset_id: str) -> tuple[list[str], list[str]]:
-    """含正文副本的报告与仅含引用的报告（按生成时间倒序）。"""
+def _private_copies_for_asset(
+    session: Session, asset_id: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """扫描报告冻结正文：含私人副本的清单与不含副本的普通引用。
+
+    以实际内容为准（保存路径同时维护 reading_derived_copy 登记表供撤回复用）；
+    清单按报告生成时间倒序，字段类别区分标题与正文，仅标题副本必须入选。
+    """
     summaries = []
     offset = 0
     while True:
@@ -379,18 +390,34 @@ def _reports_with_asset(session: Session, asset_id: str) -> tuple[list[str], lis
         offset += len(listing["items"])
         if offset >= listing["total"]:
             break
-    with_body: list[str] = []
+    copies: list[dict[str, Any]] = []
     referenced: list[str] = []
     for summary in summaries:
         detail = read_report(session, summary.report_id)
-        refs = detail.content.assets
-        if asset_id not in {ref.asset_id for ref in refs}:
+        refs = [ref for ref in detail.content.assets if ref.asset_id == asset_id]
+        if not refs:
             continue
-        if any(ref.asset_id == asset_id and ref.body is not None for ref in refs):
-            with_body.append(detail.report_id)
+        fields: list[str] = []
+        revision: int | None = None
+        for ref in refs:
+            if ref.revision is not None:
+                revision = ref.revision
+            if ref.title:
+                fields.append("title")
+            if ref.body is not None:
+                fields.append("body")
+        if fields:
+            copies.append(
+                {
+                    "report_id": detail.report_id,
+                    "fields": fields,
+                    "source_revision": revision,
+                    "generated_at": detail.generated_at,
+                }
+            )
         else:
             referenced.append(detail.report_id)
-    return with_body, referenced
+    return copies, referenced
 
 
 def _request_sources(sources: Sequence[AssetSourceInput]) -> list[tuple[str, str | None]]:

@@ -46,9 +46,12 @@ from papersteward.reading.insights.scope import (
 )
 from papersteward.reading.insights.timeline import workspace_timezone
 from papersteward.storage.delivery import content_hash
-from papersteward.storage.insights import ReadingReportRepository
+from papersteward.storage.insights import (
+    ReadingDerivedCopyRepository,
+    ReadingReportRepository,
+)
 from papersteward.storage.mappers import as_utc
-from papersteward.storage.models import ReadingReportRow
+from papersteward.storage.models import ReadingDerivedCopyRow, ReadingReportRow
 from papersteward.storage.repositories import RunRepository
 
 
@@ -243,7 +246,30 @@ def save_report(
     repository.save_context(
         row.id, prepared.context.model_dump(mode="json"), series_key(prepared.context)
     )
+    _register_asset_copies(session, row.id, prepared.content, created_at=now)
     return row
+
+
+def _register_asset_copies(
+    session: Session, report_id: str, content: InsightReportContent, *, created_at: datetime
+) -> None:
+    """登记报告中的私人字段副本；只写 ID 与字段类别，不复制私人原文。"""
+    rows = []
+    for ref in content.assets:
+        common: dict[str, Any] = {
+            "source_kind": "asset",
+            "source_id": ref.asset_id,
+            "source_revision": ref.revision,
+            "derived_kind": "report",
+            "derived_id": report_id,
+            "created_at": created_at,
+        }
+        if ref.title:
+            rows.append(ReadingDerivedCopyRow(id=uuid4().hex, field_kind="title", **common))
+        if ref.body is not None:
+            rows.append(ReadingDerivedCopyRow(id=uuid4().hex, field_kind="body", **common))
+    if rows:
+        ReadingDerivedCopyRepository(session).add_many(rows)
 
 
 def read_report(session: Session, report_id: str) -> ReportDetail:

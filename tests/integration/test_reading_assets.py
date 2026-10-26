@@ -43,6 +43,7 @@ from papersteward.storage.models import (
     ReadingAssetRow,
     ReadingAssetSourceRow,
 )
+from papersteward.storage.tx import write_tx
 from papersteward.storage.workspace import clear_workspace
 
 NOW5 = datetime(2026, 10, 26, 2, 0, tzinfo=UTC)
@@ -651,24 +652,125 @@ def test_delete_preview_reports_and_body_opt_in(client, migrated_engine):
     with session_scope(factory) as session:
         preview = delete_preview(session, asset_id)
         assert preview["revision_count"] == 1
-        assert preview["reports_with_body"] == [ids["as-rep-body"]]
-        assert set(preview["referenced_reports"]) == {ids["as-rep-plain"]}
+        # 仅标题副本的报告同样列入可清理范围（F06）。
+        copies = {item["report_id"]: item for item in preview["private_copies"]}
+        assert set(copies) == {ids["as-rep-plain"], ids["as-rep-body"]}
+        assert copies[ids["as-rep-plain"]]["fields"] == ["title"]
+        assert copies[ids["as-rep-plain"]]["source_revision"] == 1
+        assert copies[ids["as-rep-body"]]["fields"] == ["title", "body"]
+        assert preview["referenced_reports"] == []
         with pytest.raises(InvalidRequestError):
-            delete_asset(
-                session,
-                asset_id,
-                also_report_ids=[ids["as-rep-plain"]],
-            )
-        removed = delete_asset(session, asset_id, also_report_ids=[ids["as-rep-body"]])
-        assert removed == [ids["as-rep-body"]]
+            delete_asset(session, asset_id, also_report_ids=["missing-report"])
+        # 两份报告都含私人副本，均可勾选删除。
+        removed = delete_asset(
+            session,
+            asset_id,
+            also_report_ids=[ids["as-rep-plain"], ids["as-rep-body"]],
+        )
+        assert set(removed) == {ids["as-rep-plain"], ids["as-rep-body"]}
         archives = len(session.scalars(select(ArchiveSnapshotRow)).all())
         assert archives == 2  # 阅读量与归档不变
-    assert client.get(f"/reading-insights/reports/{ids['as-rep-body']}").status_code == 404
-    # 未勾选的报告仅显示「来源已移除」。
-    kept = client.get(f"/ui/reading-insights/reports/{ids['as-rep-plain']}")
+    for report_id in (ids["as-rep-plain"], ids["as-rep-body"]):
+        assert client.get(f"/reading-insights/reports/{report_id}").status_code == 404
+
+
+def test_title_only_copy_deletion_is_consistent_across_views(client, migrated_engine):
+    """F06：仅标题副本可被清理；保留的报告在页面/JSON/个人导出中口径一致。"""
+    from test_ui_flows import HEADERS
+
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    in_week = datetime(2026, 10, 22, 3, tzinfo=UTC)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=in_week)
+        asset_id = view.asset_id
+    manager: UIFlowManager = client.app.state.ui_flows
+    manager.submit(
+        FlowRequest(
+            run_id="f06-title-only",
+            kind="review",
+            review=ReviewParams.model_validate({"period": "week", "anchor_date": ANCHOR}),
+        )
+    )
+    wait(manager, "f06-title-only")
+    with session_scope(factory) as session:
+        listing = list_reports(session, limit=10, offset=0)
+    report_id = next(item.report_id for item in listing["items"] if item.run_id == "f06-title-only")
+
+    # 个人导出仍含私人标题（显式副本），事实导出不含。
+    facts = client.get(f"/reading-insights/reports/{report_id}/export?format=json")
+    assert "一个方法问题" not in facts.text
+    personal = client.get(
+        f"/ui/reading-insights/export/download?report_id={report_id}"
+        "&scope=personal&confirm_private=yes&format=json"
+    )
+    assert personal.status_code == 200
+    assert "一个方法问题" in personal.text
+
+    # 删除预览把仅标题副本列出来；页面给出去向与处理方式。
+    page = client.get(f"/ui/reading-insights/assets/{asset_id}")
+    assert f'name="also_{report_id}"' in page.text
+    assert "含标题" in page.text
+    assert "另存脱敏版本" in page.text
+
+    # 资产删除时不勾选：报告保留，资产消失后页面显示「来源已移除」。
+    response = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/delete",
+        data={"confirmation": "删除资产"},
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    kept = client.get(f"/ui/reading-insights/reports/{report_id}")
     assert kept.status_code == 200
     assert "来源已移除" in kept.text
-    assert "一个方法问题" not in kept.text
+    with session_scope(factory) as session:
+        detail = read_report(session, report_id)
+        assert detail.content.assets[0].title == "一个方法问题"
+        from papersteward.storage.models import ReadingDerivedCopyRow
+
+        rows = session.scalars(
+            select(ReadingDerivedCopyRow).where(ReadingDerivedCopyRow.derived_id == report_id)
+        ).all()
+        # 资产已删除，但副本登记保留：后续撤回仍能找到位置。
+        assert sorted(row.field_kind for row in rows) == ["title"]
+
+
+def test_delete_asset_rollback_keeps_everything(client, migrated_engine):
+    """删除事务中断整体回滚：资产、报告与副本登记全部原样。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    in_week = datetime(2026, 10, 22, 3, tzinfo=UTC)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=in_week)
+        asset_id = view.asset_id
+    manager: UIFlowManager = client.app.state.ui_flows
+    manager.submit(
+        FlowRequest(
+            run_id="f06-rollback",
+            kind="review",
+            review=ReviewParams.model_validate({"period": "week", "anchor_date": ANCHOR}),
+        )
+    )
+    wait(manager, "f06-rollback")
+    with session_scope(factory) as session:
+        listing = list_reports(session, limit=10, offset=0)
+    report_id = next(item.report_id for item in listing["items"] if item.run_id == "f06-rollback")
+    with session_scope(factory) as session:
+        from papersteward.storage.models import ReadingDerivedCopyRow
+
+        with pytest.raises(RuntimeError), write_tx(session):
+            delete_asset(session, asset_id, also_report_ids=[report_id])
+            raise RuntimeError("模拟删除事务中断")
+    with session_scope(factory) as session:
+        assert session.get(ReadingAssetRow, asset_id) is not None
+        assert read_report(session, report_id) is not None
+        rows = session.scalars(
+            select(ReadingDerivedCopyRow).where(ReadingDerivedCopyRow.derived_id == report_id)
+        ).all()
+        assert len(rows) == 1  # title 登记行未丢
 
 
 def test_asset_body_html_is_escaped_on_page(client, migrated_engine):
