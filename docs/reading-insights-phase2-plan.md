@@ -1,6 +1,6 @@
 # 阅读回顾第二阶段：有证据的知识提炼实施计划
 
-> 日期：2026-10-26。状态：R2-00A、R2-00B、R2-00C 已完成并复验，第一阶段六组返工全部关闭；R2-01 已完成并复验（§19）；R2-02 及后续批次待实施。原计划与独立复核记录保留，实际交付见 §16–§19。
+> 日期：2026-10-26。状态：R2-00A、R2-00B、R2-00C 已完成并复验，第一阶段六组返工全部关闭；R2-01（§19）、R2-02（§20）已完成并复验；R2-03 及后续批次待实施。原计划与独立复核记录保留，实际交付见 §16–§20。
 > 起点：第一阶段基线 `3a351b4`、迁移 head `0023`；[独立复核发现 6 组返工项](reading-insights-phase1-acceptance.md)。
 > 对应愿景：[功能设计第二阶段](reading-insights-design.md#第二阶段有证据的知识提炼)。本文将返工、数据与授权基础、知识提炼和验收拆成可独立审阅的交付批次。
 
@@ -454,3 +454,27 @@ F01–F03（R2-00A）、F04–F05（R2-00B）、F06（R2-00C）全部修复并�
 测试仅一条既有 Starlette/httpx 弃用警告，无失败。走查中发现程序化 `requestSubmit` 经 htmx 提交会丢 submitter 的 `action=clear`（产生一条内容相同的版本 3，服务端如实记录、聚合不计修订）；原生按钮点击（用户真实路径）验证正确。Docker、其他设备实机及真实打印未执行；本批未改动用户个人数据库，未调用真实外部模型或文献源。
 
 完成条件核对：无需模型即可记录与查看理由（表单与 JSON 均离线可用）；现有评分、偏好、补给和检索 prompt 不消费新增文本——结构化理由只进 `reading_structured_feedback` 与回顾读侧，挖掘/评分/检索链路无任何引用。R2-02（材料清单与用途授权）起才放开模型辅助分析。
+
+## 20. R2-02 实施与复验（2026-10-26）
+
+在 `feat/reading-insights-phase2` 实施，只交付 §6 的存储、服务、JSON 接口、发送边界门与页面骨架；「模型辅助」完整提交流程、`ui.insight_analysis` 任务与 prompt 捕获/在途返回/repair/排队期间撤回类测试随 R2-03 落地（批次边界经确认）。既有模型设置 consent、`Action`/评分链路零改动。
+
+- 迁移 `0028` 新增五表：`reading_analysis_grant`（用途授权，绑定规范化端点身份与 llm_config 行版本，once 授权可绑清单哈希）、`reading_analysis_revoke_event`（撤回审计，只存 ID 与原因）、`reading_analysis_manifest`（材料清单，只存版本锚点/哈希/类别，不存原文）、`reading_analysis_preview`（短期令牌，绑定清单哈希与配置版本，一次性消费）、`reading_analysis_excerpt`（用户摘录，`(paper_id, content_hash)` 唯一幂等）。全部新表零成本；降级整体删除（已列入发布说明）。head 断言四处同步。
+- **授权独立于既有 consent**：授权要求模型连接已就绪但不受其 consent 覆盖；授权绑定「工作区（同库）＋用途＋规范化端点＋llm_config 行版本＋材料类别上限」，任何设置保存都产生新版本号使旧授权失效（覆盖 §6.2「地址变化、类别扩大须重新说明；既有授权不能被新端点沿用」）。`ensure_send_authorized` 是每次实际发送与落库前的边界门（403 语义，新增 `NotAuthorizedError`），核对授权存在、配置版本、规范化端点与类别范围；重试与 repair 同受约束由 R2-03 的 runner 复用该门保证。未授权路径 **provider 构造次数为零**（测试断言）。
+- `build_analysis_gateway` 强制 `cache=None`（§6.3）：通用 `DatabaseLLMCache` 键只有 model+prompt+input_hash，缺端点与授权绑定，不用于私人分析；分析 runner 只能经此构造。
+- 材料清单（§6.1 七类）逐类落版本锚点：归档 metadata/模型概括→归档 `content_hash`；评分/备注→最新 `rating.created_at`；结构化理由→`revision:n`；资产→来源命中资产的最新 `revision:n`；摘录→`content_hash`。每条 `ref_hash` 只哈希引用值；排除项带原因冻结；coverage 分「归档库存/选中篇数/各类别条数」。同选材（哈希一致）复用同一清单行。预览令牌 15 分钟、一次性、绑定配置版本，过期/不符/已消费/配置变化分别报错。
+- 页面：阅读回顾导航新增「阅读分析」页（连接摘要、授权列表/表单/撤回、最小显式材料预览表单＋结果表含展示限制文案），全离线；归档详情新增「补充摘录（可选）」块（保存/删除走详情重渲染，同内容幂等，失败保留输入）。JSON：授权状态/授权/撤回、清单+令牌、令牌只读校验、摘录三路由。
+
+| 验证 | 实际结果 |
+|---|---|
+| `make check PYTEST=".venv/bin/pytest --basetemp=/dev/shm/ps-r202-check"` | 格式、ruff、175 个源文件 mypy 通过；非 e2e **1,283 项通过**，4 项排除 |
+| `make e2e PYTEST=".venv/bin/pytest --basetemp=/dev/shm/ps-r202-e2e"` | 4 项真实 Uvicorn 用例通过（无模型、禁止外网） |
+| `TMPDIR=/dev/shm make migrate-check` | 空库升级 → 降级 base → 升级 head `0028` 通过 |
+| 带数据 0027→0028→降级→升级 | head 种子五表行逐行不变；降级 0027 整体删除五表；再升级为空表 |
+| §6 授权矩阵回归 | 未授权拒绝（且零 provider 构造）、正常通过、任何设置保存→403、换端点→403、类别扩大→403（details 列缺类别）、撤回→403（重复撤回幂等）、once 绑定清单哈希、另一工作区库隔离 403；`build_analysis_gateway` 断言 `cache is None` |
+| §6 测试清单归属 | 未授权/排除材料不进 prompt、换端点、预览过期、缓存命中企图、repair/重试、在途与排队期间撤回、日志脱敏 → R2-03 在真实发送路径上补齐（FakeLLM/本机捕获端点） |
+| 新浏览器走查 | 分析页授权/预览/撤回、未确认提交被原生必填拦截、详情页摘录块、窄屏 390×844 无溢出、全程无外网请求；见[走查记录](assets/reading-insights-r202-2026-10-26/README.md) |
+
+测试仅一条既有 Starlette/httpx 弃用警告，无失败。走查中确认程序化 `requestSubmit` 在无 htmx 处理的页面同样丢 submitter 的场景不适用（分析页表单为标准整页提交）；截图接口超时沿用 DOM 快照＋数据库行证据。Docker、其他设备实机及真实打印未执行；本批未改动用户个人数据库，未调用真实外部模型或文献源。
+
+完成条件核对：默认关闭私人文本分析（未授权路径零调用、JSON/页面均不发送）；数据去向可核查（连接摘要、类别清单、版本锚点与哈希、展示限制、撤回审计）；仅有既有模型授权时新私人分析调用次数为零（测试断言）。R2-03 起在 `ui.insight_analysis` 任务中复用 `ensure_send_authorized` 与 `build_analysis_gateway` 完成真实发送路径。
