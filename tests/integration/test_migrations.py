@@ -55,6 +55,11 @@ DOMAIN_TABLES = {
     "reading_write_receipt",
     "reading_derived_copy",
     "reading_structured_feedback",
+    "reading_analysis_grant",
+    "reading_analysis_revoke_event",
+    "reading_analysis_manifest",
+    "reading_analysis_preview",
+    "reading_analysis_excerpt",
 }
 
 
@@ -346,8 +351,33 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "asset_id",
             "revision",
         ]
+        assert {column["name"] for column in inspector.get_columns("reading_analysis_grant")} == {
+            "id",
+            "purpose",
+            "scope_mode",
+            "endpoint_identity",
+            "model_config_version",
+            "model_name",
+            "material_classes_json",
+            "manifest_hash",
+            "consent_version",
+            "created_at",
+            "revoked_at",
+        }
+        assert {column["name"] for column in inspector.get_columns("reading_analysis_excerpt")} == {
+            "id",
+            "paper_id",
+            "content",
+            "source_note",
+            "content_hash",
+            "recorded_at",
+        }
+        excerpt_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_excerpt")
+        }
+        assert "uq_reading_analysis_excerpt" in excerpt_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0027"
+        assert current == "0028"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1252,3 +1282,91 @@ def test_0027_receipt_rebuild_preserves_rows_and_extends_operations(
 
     _upgrade(sqlite_engine, "0027")
     assert receipts() == before, "再升级不恢复已删除的数据"
+
+
+def test_0028_analysis_tables_roundtrip_with_data(sqlite_engine: Engine) -> None:
+    """0028 全为新表：head 种子后降级 0027 整体删除，再升级为空表。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+
+    _upgrade(sqlite_engine)
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+
+    with session_scope(factory) as session:
+        seed_paper(session, "ana-paper", first_seen_at=at)
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g1', 'reading_reflection', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"user_notes\"]', NULL, 'reading-analysis.consent/1',"
+                " :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_revoke_event (id, grant_id, purpose,"
+                " reason, created_at) VALUES ('r1', 'g1', 'reading_reflection',"
+                " 'user', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_manifest (id, purpose, manifest_hash,"
+                " content_json, created_at) VALUES ('m1', 'reading_reflection',"
+                " 'a'*64, '{}', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_preview (id, token, manifest_id,"
+                " manifest_hash, purpose, model_config_version, expires_at,"
+                " consumed_at, created_at) VALUES ('p1', 'tok', 'm1', 'a'*64,"
+                " 'reading_reflection', 'v-test', :expires, NULL, :at)"
+            ),
+            {"at": at.isoformat(), "expires": (at + timedelta(minutes=15)).isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_excerpt (id, paper_id, content,"
+                " source_note, content_hash, recorded_at) VALUES ('e1', 'ana-paper',"
+                " '摘录内容', '第 2 页', 'b'*64, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    def analysis_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_analysis_grant",
+                    "reading_analysis_revoke_event",
+                    "reading_analysis_manifest",
+                    "reading_analysis_preview",
+                    "reading_analysis_excerpt",
+                )
+            }
+
+    before = analysis_state()
+    assert all(len(rows) == 1 for rows in before.values())
+
+    _upgrade(sqlite_engine)
+    assert analysis_state() == before
+
+    _downgrade(sqlite_engine, "0027")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert not set(before) & tables
+
+    _upgrade(sqlite_engine, "0028")
+    assert all(not rows for rows in analysis_state().values())

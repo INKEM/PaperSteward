@@ -932,6 +932,125 @@ class ReadingStructuredFeedbackRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class ReadingAnalysisGrantRow(Base):
+    """阅读分析用途授权；独立于既有模型连接的 consent，发送边界逐一核对。
+
+    绑定当前工作区（同库即工作区）、用途、规范化端点身份与模型配置版本
+    （llm_config 行版本，任何设置保存都换版本 → 强制重新授权）。材料类别
+    是授权覆盖的上限，类别扩大须重新授权；once 授权额外绑定清单哈希。
+    """
+
+    __tablename__ = "reading_analysis_grant"
+    __table_args__ = (
+        CheckConstraint("purpose IN ('reading_reflection')", name="grant_purpose_allowed"),
+        CheckConstraint("scope_mode IN ('once', 'workspace')", name="grant_scope_allowed"),
+        Index("ix_reading_analysis_grant_purpose", "purpose", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    endpoint_identity: Mapped[str] = mapped_column(String(512), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    material_classes_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    manifest_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReadingAnalysisRevokeEventRow(Base):
+    """授权撤回审计；只存授权 ID 与原因，不存任何私人正文。"""
+
+    __tablename__ = "reading_analysis_revoke_event"
+    __table_args__ = (
+        CheckConstraint("reason IN ('user')", name="revoke_reason_allowed"),
+        Index("ix_reading_analysis_revoke_grant", "grant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisManifestRow(Base):
+    """分析材料清单；materials_json 只存材料 ID/版本锚点/哈希/类别，不存原文。
+
+    同一用途下相同选材（哈希一致）复用同一行，预览令牌与提交按清单哈希
+    绑定核对。
+    """
+
+    __tablename__ = "reading_analysis_manifest"
+    __table_args__ = (
+        Index("uq_reading_analysis_manifest", "purpose", "manifest_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisPreviewRow(Base):
+    """分析预览令牌；短期有效，绑定清单哈希与模型配置版本，提交时重新核对。"""
+
+    __tablename__ = "reading_analysis_preview"
+    __table_args__ = (
+        CheckConstraint(
+            "consumed_at IS NULL OR consumed_at >= created_at",
+            name="preview_consumed_after_created",
+        ),
+        Index("uq_reading_analysis_preview_token", "token", unique=True),
+        Index("ix_reading_analysis_preview_manifest", "manifest_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisExcerptRow(Base):
+    """用户补充摘录；私人材料，独立授权后才可作为清单材料发送。
+
+    ``content_hash`` 同时做 ``(paper_id, content_hash)`` 唯一约束的幂等去重，
+    不走写入回执（创建语义简单，重复提交返回既有行）。
+    """
+
+    __tablename__ = "reading_analysis_excerpt"
+    __table_args__ = (
+        Index("uq_reading_analysis_excerpt", "paper_id", "content_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class LLMCacheRow(Base):
     """LLM 结果缓存；键为 model+prompt 版本+输入哈希，命中即跳过 provider 调用。
 

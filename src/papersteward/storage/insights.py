@@ -14,6 +14,11 @@ from papersteward.storage.mappers import (
     reading_time_revision_to_row,
 )
 from papersteward.storage.models import (
+    ReadingAnalysisExcerptRow,
+    ReadingAnalysisGrantRow,
+    ReadingAnalysisManifestRow,
+    ReadingAnalysisPreviewRow,
+    ReadingAnalysisRevokeEventRow,
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
@@ -227,7 +232,151 @@ class ReadingStructuredFeedbackRepository(_Repository):
         return by_paper
 
 
+class ReadingAnalysisGrantRepository(_Repository):
+    """阅读分析用途授权；只追加与按用途查活动授权，撤回置 revoked_at。"""
+
+    def add(self, row: ReadingAnalysisGrantRow) -> ReadingAnalysisGrantRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, grant_id: str) -> ReadingAnalysisGrantRow | None:
+        return self._session.get(ReadingAnalysisGrantRow, grant_id)
+
+    def active_for_purpose(self, purpose: str) -> list[ReadingAnalysisGrantRow]:
+        """未撤回的授权，按创建时间倒序（最新在前）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisGrantRow)
+                .where(
+                    ReadingAnalysisGrantRow.purpose == purpose,
+                    ReadingAnalysisGrantRow.revoked_at.is_(None),
+                )
+                .order_by(ReadingAnalysisGrantRow.created_at.desc(), ReadingAnalysisGrantRow.id)
+            ).all()
+        )
+
+    def list_all(self) -> list[ReadingAnalysisGrantRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisGrantRow).order_by(
+                    ReadingAnalysisGrantRow.created_at.desc(), ReadingAnalysisGrantRow.id
+                )
+            ).all()
+        )
+
+
+class ReadingAnalysisRevokeRepository(_Repository):
+    """授权撤回审计；只追加与按授权查询，不含任何私人正文。"""
+
+    def add(self, row: ReadingAnalysisRevokeEventRow) -> ReadingAnalysisRevokeEventRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def list_for_grant(self, grant_id: str) -> list[ReadingAnalysisRevokeEventRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisRevokeEventRow)
+                .where(ReadingAnalysisRevokeEventRow.grant_id == grant_id)
+                .order_by(ReadingAnalysisRevokeEventRow.created_at)
+            ).all()
+        )
+
+
+class ReadingAnalysisManifestRepository(_Repository):
+    """分析材料清单；同一用途同选材（哈希一致）复用同一行。"""
+
+    def add(self, row: ReadingAnalysisManifestRow) -> ReadingAnalysisManifestRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, manifest_id: str) -> ReadingAnalysisManifestRow | None:
+        return self._session.get(ReadingAnalysisManifestRow, manifest_id)
+
+    def by_hash(self, purpose: str, manifest_hash: str) -> ReadingAnalysisManifestRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisManifestRow).where(
+                ReadingAnalysisManifestRow.purpose == purpose,
+                ReadingAnalysisManifestRow.manifest_hash == manifest_hash,
+            )
+        ).first()
+
+
+class ReadingAnalysisPreviewRepository(_Repository):
+    """分析预览令牌；按 token 查找，消费置 consumed_at。"""
+
+    def add(self, row: ReadingAnalysisPreviewRow) -> ReadingAnalysisPreviewRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def find_by_token(self, token: str) -> ReadingAnalysisPreviewRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisPreviewRow).where(ReadingAnalysisPreviewRow.token == token)
+        ).first()
+
+
+class ReadingAnalysisExcerptRepository(_Repository):
+    """用户补充摘录；只追加与按论文读取，删除按行。"""
+
+    def add(self, row: ReadingAnalysisExcerptRow) -> ReadingAnalysisExcerptRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, excerpt_id: str) -> ReadingAnalysisExcerptRow | None:
+        return self._session.get(ReadingAnalysisExcerptRow, excerpt_id)
+
+    def find_by_hash(self, paper_id: str, content_hash: str) -> ReadingAnalysisExcerptRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisExcerptRow).where(
+                ReadingAnalysisExcerptRow.paper_id == paper_id,
+                ReadingAnalysisExcerptRow.content_hash == content_hash,
+            )
+        ).first()
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingAnalysisExcerptRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisExcerptRow)
+                .where(ReadingAnalysisExcerptRow.paper_id == paper_id)
+                .order_by(ReadingAnalysisExcerptRow.recorded_at, ReadingAnalysisExcerptRow.id)
+            ).all()
+        )
+
+    def list_for_papers(
+        self, paper_ids: Collection[str]
+    ) -> dict[str, list[ReadingAnalysisExcerptRow]]:
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(ReadingAnalysisExcerptRow)
+            .where(ReadingAnalysisExcerptRow.paper_id.in_(ids))
+            .order_by(ReadingAnalysisExcerptRow.paper_id, ReadingAnalysisExcerptRow.recorded_at)
+        ).all()
+        by_paper: dict[str, list[ReadingAnalysisExcerptRow]] = {}
+        for row in rows:
+            by_paper.setdefault(row.paper_id, []).append(row)
+        return by_paper
+
+    def delete(self, excerpt_id: str) -> bool:
+        row = self._session.get(ReadingAnalysisExcerptRow, excerpt_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
+
+
 __all__ = [
+    "ReadingAnalysisExcerptRepository",
+    "ReadingAnalysisGrantRepository",
+    "ReadingAnalysisManifestRepository",
+    "ReadingAnalysisPreviewRepository",
+    "ReadingAnalysisRevokeRepository",
     "ReadingAssetRepository",
     "ReadingDerivedCopyRepository",
     "ReadingReportRepository",

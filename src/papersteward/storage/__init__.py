@@ -10,6 +10,11 @@ from papersteward.storage.db import (
     utc_now,
 )
 from papersteward.storage.insights import (
+    ReadingAnalysisExcerptRepository,
+    ReadingAnalysisGrantRepository,
+    ReadingAnalysisManifestRepository,
+    ReadingAnalysisPreviewRepository,
+    ReadingAnalysisRevokeRepository,
     ReadingAssetRepository,
     ReadingDerivedCopyRepository,
     ReadingReportRepository,
@@ -61,6 +66,11 @@ __all__ = [
     "RatingRepository",
     "ReadingAssetRepository",
     "ReadingDerivedCopyRepository",
+    "ReadingAnalysisExcerptRepository",
+    "ReadingAnalysisGrantRepository",
+    "ReadingAnalysisManifestRepository",
+    "ReadingAnalysisPreviewRepository",
+    "ReadingAnalysisRevokeRepository",
     "ReadingReportRepository",
     "ReadingStructuredFeedbackRepository",
     "ReadingTimeRevisionRepository",
