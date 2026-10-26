@@ -35,6 +35,7 @@ from papersteward.reading.insights.materials import (
     validate_preview_token,
 )
 from papersteward.storage import session_scope
+from papersteward.storage.db import create_session_factory
 from papersteward.storage.repositories import ConfigRepository
 
 NOW2 = datetime(2026, 10, 25, 18, 0, tzinfo=UTC)
@@ -397,3 +398,112 @@ def test_excerpt_cascades_with_paper(insights_factory):
         assert list_excerpts(session, "exc-b") == []
         with pytest.raises(NotFoundError):
             delete_excerpt(session, "exc-b", view.excerpt_id)
+
+
+# —— JSON 接口 ——————————————————————————————————————————————————————
+
+
+def test_json_analysis_api_roundtrip(client, migrated_engine):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        seed_paper(session, "api-a", first_seen_at=T_DONE)
+        seed_archive(
+            session,
+            "api-a",
+            archived_at=T_DONE,
+            content=system_content(title="API分析", completed_at=T_DONE),
+            rating_col=4,
+            note_col="初读备注",
+            ratings=[(T_DONE, 4, "初读备注")],
+        )
+    with session_scope(factory) as session:
+        save_llm_config(
+            session,
+            LLMSettingsPayload.model_validate(
+                {"base_url": "http://127.0.0.1:9/v1", "model": "test-model", "consent": True}
+            ),
+            SETTINGS,
+        )
+
+    status_view = client.get("/reading-insights/analysis/authorization")
+    assert status_view.status_code == 200
+    body = status_view.json()
+    assert body["llm_configured"] is True
+    assert body["llm_endpoint_identity"] == "http://127.0.0.1:9/v1"
+    assert body["grants"] == []
+
+    granted = client.post(
+        "/reading-insights/analysis/grants",
+        json={
+            "scope_mode": "workspace",
+            "material_classes": ["archive_metadata", "user_notes"],
+            "acknowledged": True,
+        },
+    )
+    assert granted.status_code == 201
+    grant_view = granted.json()
+    assert grant_view["model_config_version"] == body["llm_config_version"]
+
+    manifest = client.post(
+        "/reading-insights/analysis/manifests",
+        json={"paper_ids": ["api-a"], "kinds": ["archive_metadata", "user_notes"]},
+    )
+    assert manifest.status_code == 201
+    payload = manifest.json()
+    assert payload["manifest"]["coverage"]["selected_papers"] == 1
+    assert payload["preview"]["consumed"] is False
+
+    preview = client.get(f"/reading-insights/analysis/previews/{payload['preview']['token']}")
+    assert preview.status_code == 200
+    assert preview.json()["valid"] is True
+
+    missing = client.post(
+        "/reading-insights/analysis/manifests",
+        json={"paper_ids": ["ghost"], "kinds": ["archive_metadata"]},
+    )
+    assert missing.status_code == 400
+
+    bad_grant = client.post(
+        "/reading-insights/analysis/grants",
+        json={"scope_mode": "workspace", "material_classes": ["user_notes"]},
+    )
+    assert bad_grant.status_code == 422
+
+    revoke = client.post(f"/reading-insights/analysis/grants/{grant_view['grant_id']}/revoke")
+    assert revoke.status_code == 200
+    assert revoke.json()["revoked_at"] is not None
+    status_after = client.get("/reading-insights/analysis/authorization")
+    grants = status_after.json()["grants"]
+    assert grants[0]["revoked_at"] is not None
+
+
+def test_json_excerpt_api_roundtrip(client, migrated_engine):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    with session_scope(factory) as session:
+        seed_paper(session, "api-exc", first_seen_at=T_DONE)
+        seed_archive(
+            session,
+            "api-exc",
+            archived_at=T_DONE,
+            content=system_content(title="API摘录", completed_at=T_DONE),
+        )
+
+    created = client.post(
+        "/reading-insights/papers/api-exc/excerpts",
+        json={"content": "摘录正文", "source_note": "第 3 页"},
+    )
+    assert created.status_code == 201
+    excerpt = created.json()
+
+    listing = client.get("/reading-insights/papers/api-exc/excerpts")
+    assert listing.status_code == 200
+    assert [item["excerpt_id"] for item in listing.json()] == [excerpt["excerpt_id"]]
+
+    removed = client.delete(f"/reading-insights/papers/api-exc/excerpts/{excerpt['excerpt_id']}")
+    assert removed.status_code == 204
+    assert client.get("/reading-insights/papers/api-exc/excerpts").json() == []
+
+    missing_paper = client.post("/reading-insights/papers/ghost/excerpts", json={"content": "x"})
+    assert missing_paper.status_code == 404

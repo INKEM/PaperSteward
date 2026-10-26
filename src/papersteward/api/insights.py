@@ -3,11 +3,12 @@
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Response, status
 from sqlalchemy.orm import Session
 
 from papersteward.api.deps import SessionDep
 from papersteward.api.domain_errors import domain_errors
+from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
 from papersteward.errors import InvalidRequestError
 from papersteward.reading.insights.aggregate import (
@@ -24,21 +25,41 @@ from papersteward.reading.insights.assets import (
     get_asset_view,
     list_assets,
 )
+from papersteward.reading.insights.authorization import (
+    analysis_authorization_status,
+    grant_analysis_authorization,
+    revoke_analysis_authorization,
+)
 from papersteward.reading.insights.contracts import (
+    AnalysisAuthorizationStatus,
+    AnalysisGrantInput,
+    AnalysisGrantView,
     AssetCreateInput,
     AssetRevisionDetail,
     AssetRevisionInput,
     AssetView,
+    ExcerptInput,
+    ExcerptView,
     InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
     InsightsModel,
+    ManifestSelectionInput,
     PeriodKind,
     ReadTimeInput,
     ReadTimeView,
     ReviewMode,
     StructuredFeedbackInput,
     StructuredFeedbackView,
+)
+from papersteward.reading.insights.materials import (
+    add_excerpt,
+    create_manifest,
+    create_preview_token,
+    delete_excerpt,
+    list_excerpts,
+    manifest_content_of,
+    validate_preview_token,
 )
 from papersteward.reading.insights.structured_feedback import (
     revise_structured_feedback,
@@ -225,7 +246,7 @@ def _parse_date_param(name: str, value: str | None) -> date | None:
 
 from uuid import uuid4  # noqa: E402
 
-from fastapi import Request, Response  # noqa: E402
+from fastapi import Request  # noqa: E402
 from fastapi.responses import PlainTextResponse  # noqa: E402
 from pydantic import Field  # noqa: E402
 
@@ -453,3 +474,109 @@ def compare_reports(report_id: str, other_id: str, session: SessionDep) -> Any:
         detail, other = read_report(session, report_id), read_report(session, other_id)
         ensure_same_series(detail, other)
         return {"base": detail.content.metrics, "other": other.content.metrics}
+
+
+# —— 阅读分析（R2-02）：授权、材料清单、预览令牌与摘录 ————————————————
+
+
+@router.get(
+    "/analysis/authorization",
+    response_model=AnalysisAuthorizationStatus,
+    summary="查看阅读分析授权现状",
+)
+def get_analysis_authorization(session: SessionDep) -> Any:
+    with domain_errors():
+        return analysis_authorization_status(session, settings=get_settings())
+
+
+@router.post(
+    "/analysis/grants",
+    response_model=AnalysisGrantView,
+    status_code=status.HTTP_201_CREATED,
+    summary="授权阅读分析用途（独立于模型连接的知情同意）",
+)
+def post_analysis_grant(body: AnalysisGrantInput, session: SessionDep) -> Any:
+    with domain_errors(), session.begin():
+        return grant_analysis_authorization(
+            session,
+            scope_mode=body.scope_mode,
+            material_classes=list(body.material_classes),
+            settings=get_settings(),
+            now=utc_now(),
+        )
+
+
+@router.post(
+    "/analysis/grants/{grant_id}/revoke",
+    response_model=AnalysisGrantView,
+    summary="撤回阅读分析授权；此后发送边界一律拒绝",
+)
+def post_analysis_revoke(grant_id: str, session: SessionDep) -> Any:
+    with domain_errors(), session.begin():
+        return revoke_analysis_authorization(session, grant_id=grant_id, now=utc_now())
+
+
+@router.post(
+    "/analysis/manifests",
+    status_code=status.HTTP_201_CREATED,
+    summary="按选材生成材料清单与短期预览令牌（不发送任何请求）",
+)
+def post_analysis_manifest(body: ManifestSelectionInput, session: SessionDep) -> dict[str, Any]:
+    with domain_errors(), write_tx(session):
+        row, _created = create_manifest(
+            session,
+            paper_ids=list(body.paper_ids),
+            kinds=list(body.kinds),
+            exclusions=list(body.exclusions),
+            now=utc_now(),
+            purpose=body.purpose,
+        )
+        token = create_preview_token(
+            session, manifest_id=row.id, now=utc_now(), purpose=body.purpose
+        )
+    return {
+        "manifest": manifest_content_of(row).model_dump(mode="json"),
+        "preview": token.model_dump(mode="json"),
+    }
+
+
+@router.get(
+    "/analysis/previews/{token}",
+    summary="只读校验预览令牌；GET 不创建任何外部请求",
+)
+def get_analysis_preview(token: str, session: SessionDep) -> dict[str, Any]:
+    with domain_errors():
+        row = validate_preview_token(session, token=token, now=utc_now())
+        return {"manifest_hash": row.manifest_hash, "purpose": row.purpose, "valid": True}
+
+
+@router.post(
+    "/papers/{paper_id}/excerpts",
+    response_model=ExcerptView,
+    status_code=status.HTTP_201_CREATED,
+    summary="为归档补充一条用户摘录（私人材料）",
+)
+def post_paper_excerpt(paper_id: str, body: ExcerptInput, session: SessionDep) -> Any:
+    with domain_errors(), write_tx(session):
+        return add_excerpt(session, paper_id, data=body, now=utc_now())
+
+
+@router.get(
+    "/papers/{paper_id}/excerpts",
+    response_model=list[ExcerptView],
+    summary="读取归档的用户摘录",
+)
+def get_paper_excerpts(paper_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        return list_excerpts(session, paper_id)
+
+
+@router.delete(
+    "/papers/{paper_id}/excerpts/{excerpt_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除一条用户摘录",
+)
+def delete_paper_excerpt(paper_id: str, excerpt_id: str, session: SessionDep) -> Response:
+    with domain_errors(), session.begin():
+        delete_excerpt(session, paper_id, excerpt_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
