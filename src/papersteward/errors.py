@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     VALIDATION_ERROR = "validation_error"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
+    NOT_AUTHORIZED = "not_authorized"
     CONFIGURATION_ERROR = "configuration_error"
     METHOD_NOT_ALLOWED = "method_not_allowed"
     HTTP_ERROR = "http_error"
@@ -106,6 +107,14 @@ class ConfigurationError(AppError):
     default_message = "系统配置无效"
 
 
+class NotAuthorizedError(AppError):
+    """发送边界授权不足：用途未授权、端点或配置已变化、材料类别超出范围。"""
+
+    code = ErrorCode.NOT_AUTHORIZED
+    status_code = 403
+    default_message = "该用途尚未授权，或授权已因设置变化失效"
+
+
 __all__ = [
     "AppError",
     "ConfigurationError",
@@ -114,5 +123,6 @@ __all__ = [
     "ErrorCode",
     "ErrorResponse",
     "InvalidRequestError",
+    "NotAuthorizedError",
     "NotFoundError",
 ]

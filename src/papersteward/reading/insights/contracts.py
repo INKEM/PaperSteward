@@ -690,3 +690,157 @@ class AssetRevisionDetail(InsightsModel):
     kind: str
     revision: AssetRevisionView
     source_status: list[AssetSourceStatus] = Field(default_factory=list)
+
+
+# —— 阅读分析（R2-02）：材料类别、用途授权与预览令牌的契约 ————————————
+# 分析是应用数据，不注册为 LLM JSON schema；发送边界由 authorization 模块把关。
+
+ANALYSIS_CONSENT_VERSION = "reading-analysis.consent/1"
+ANALYSIS_PURPOSE = "reading_reflection"
+PREVIEW_TTL_SECONDS = 15 * 60
+
+MaterialKind = Literal[
+    "archive_metadata",
+    "model_summary",
+    "user_rating",
+    "structured_reasons",
+    "user_notes",
+    "asset_content",
+    "user_excerpt",
+]
+
+MATERIAL_KIND_LABELS: dict[str, str] = {
+    "archive_metadata": "冻结元数据／导入摘要",
+    "model_summary": "既有模型概括与评分依据",
+    "user_rating": "主观评分",
+    "structured_reasons": "结构化理由",
+    "user_notes": "备注与个人说明",
+    "asset_content": "已确认资产内容",
+    "user_excerpt": "用户补充摘录",
+}
+
+MATERIAL_KIND_LIMITS: dict[str, str] = {
+    "archive_metadata": "只有摘要与元数据，不能宣称验证全文结论",
+    "model_summary": "历史模型概括；无法对照原文时不作为已核验原文证据",
+    "user_rating": "用户评价，不是论文客观质量",
+    "structured_reasons": "用户在截止前记录的理由版本，不是论文客观质量",
+    "user_notes": "私人文本，单独授权后才会进入分析",
+    "asset_content": "用户确认的个人整理；确认不消除私人属性",
+    "user_excerpt": "用户提供；未核对全文时不自动承诺引文真实",
+}
+
+
+class MaterialRef(InsightsModel):
+    """清单中的一条材料引用；只存 ID、版本锚点与哈希，不存任何原文。"""
+
+    kind: MaterialKind
+    target_id: str = Field(min_length=1, max_length=128)
+    paper_id: str | None = Field(default=None, min_length=1, max_length=64)
+    version_key: str = Field(min_length=1, max_length=128)
+    fields: list[str] = Field(min_length=1, max_length=8)
+    ref_hash: str = Field(min_length=64, max_length=64)
+
+
+class MaterialExclusion(InsightsModel):
+    """选材时的显式排除；原因只用于展示，进入清单冻结。"""
+
+    paper_id: str = Field(min_length=1, max_length=64)
+    kind: MaterialKind | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ManifestCoverage(InsightsModel):
+    """覆盖统计：归档库存与本次实际选中分开展示。"""
+
+    archived_total: int = Field(ge=0)
+    selected_papers: int = Field(ge=0)
+    by_kind: dict[str, int] = Field(default_factory=dict)
+
+
+class AnalysisManifestContent(InsightsModel):
+    """一次分析的材料清单正文；构建后冻结，预览令牌与提交按哈希绑定。"""
+
+    purpose: str
+    built_at: AwareDatetime
+    materials: list[MaterialRef] = Field(max_length=2000)
+    exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
+    coverage: ManifestCoverage
+
+
+class AnalysisGrantInput(InsightsModel):
+    """授权请求：范围模式＋覆盖的材料类别＋显式知情确认。"""
+
+    scope_mode: Literal["once", "workspace"]
+    material_classes: list[MaterialKind] = Field(min_length=1, max_length=7)
+    acknowledged: bool
+
+    @model_validator(mode="after")
+    def acknowledged_is_explicit(self) -> "AnalysisGrantInput":
+        if self.acknowledged is not True:
+            raise ValueError("必须显式确认数据去向说明")
+        return self
+
+
+class AnalysisGrantView(InsightsModel):
+    """授权的属主视图；模型配置版本变化即失效，撤回保留历史。"""
+
+    grant_id: str
+    purpose: str
+    scope_mode: Literal["once", "workspace"]
+    endpoint_identity: str
+    model_config_version: str
+    model_name: str | None = None
+    material_classes: list[str] = Field(default_factory=list)
+    manifest_hash: str | None = None
+    consent_version: str
+    created_at: AwareDatetime
+    revoked_at: AwareDatetime | None = None
+
+
+class AnalysisAuthorizationStatus(InsightsModel):
+    """当前工作区的授权现状：模型连接摘要与授权/撤回列表分开表达。"""
+
+    llm_configured: bool
+    llm_endpoint_identity: str | None = None
+    llm_model: str | None = None
+    llm_config_version: str | None = None
+    grants: list[AnalysisGrantView] = Field(default_factory=list)
+
+
+class ExcerptInput(InsightsModel):
+    """用户补充摘录；私人材料，独立授权后才可作为清单材料发送。"""
+
+    content: str = Field(min_length=1, max_length=8000)
+    source_note: str | None = Field(default=None, max_length=500)
+
+
+class ExcerptView(InsightsModel):
+    """摘录的属主视图；含录入时间与内容哈希。"""
+
+    excerpt_id: str
+    paper_id: str
+    content: str
+    source_note: str | None = None
+    content_hash: str
+    recorded_at: AwareDatetime
+
+
+class ManifestSelectionInput(InsightsModel):
+    """建清单的选材输入：论文列表＋类别＋逐篇排除（类别级排除留给后续批次）。"""
+
+    purpose: str = ANALYSIS_PURPOSE
+    paper_ids: list[str] = Field(min_length=1, max_length=500)
+    kinds: list[MaterialKind] = Field(min_length=1, max_length=7)
+    exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
+
+
+class AnalysisPreviewView(InsightsModel):
+    """预览令牌的属主视图：绑定关系与有效期限，不含清单正文。"""
+
+    token: str
+    manifest_id: str
+    manifest_hash: str
+    purpose: str
+    model_config_version: str
+    expires_at: AwareDatetime
+    consumed: bool = False
