@@ -107,3 +107,58 @@ def test_manifest_content_rejects_unknown_fields():
                 "surprise": 1,
             }
         )
+
+
+def test_flow_request_insight_analysis_coherence():
+    from papersteward.jobs.ui_flow import FlowRequest
+
+    good = FlowRequest.model_validate(
+        {
+            "run_id": "run-1",
+            "kind": "insight_analysis",
+            "analysis": {
+                "manifest_id": "m1",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g1",
+            },
+        }
+    )
+    assert good.analysis is not None and good.analysis.purpose == "reading_reflection"
+    ok_review = FlowRequest.model_validate(
+        {
+            "run_id": "run-2",
+            "kind": "review",
+            "review": {"period": "week", "anchor_date": "2026-10-22"},
+        }
+    )
+    assert ok_review.analysis is None
+    for payload in [
+        {"run_id": "r", "kind": "insight_analysis"},
+        {
+            "run_id": "r",
+            "kind": "insight_analysis",
+            "analysis": {"manifest_id": "m", "manifest_hash": "a" * 64, "grant_id": "g", "x": 1},
+        },
+        {
+            "run_id": "r",
+            "kind": "insight_analysis",
+            "analysis": {"manifest_id": "m", "manifest_hash": "short", "grant_id": "g"},
+        },
+        {
+            "run_id": "r",
+            "kind": "insight_analysis",
+            "analysis": {
+                "manifest_id": "m",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g",
+            },
+            "focus": "关注点",
+        },
+        {
+            "run_id": "r",
+            "kind": "sync",
+            "analysis": {"manifest_id": "m", "manifest_hash": "a" * 64, "grant_id": "g"},
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            FlowRequest.model_validate(payload)

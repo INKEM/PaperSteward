@@ -44,6 +44,10 @@ from papersteward.pipeline.relevance import (
     evaluate_relevance,
     extract_profile_facets,
 )
+from papersteward.reading.insights.analysis import (
+    AnalysisRunParamsView,
+    run_insight_analysis,
+)
 from papersteward.reading.insights.reports import (
     ReportPreparationCancelled,
     prepare_report,
@@ -57,6 +61,10 @@ from papersteward.sources.http import SourceHTTP
 from papersteward.sources.planner import QueryPlan, plan_queries
 from papersteward.sources.registry import build_adapters
 from papersteward.storage import session_scope
+from papersteward.storage.insights import (
+    ReadingAnalysisGrantRepository,
+    ReadingAnalysisManifestRepository,
+)
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import (
     PaperAnalysisRepository,
@@ -126,10 +134,24 @@ class ReviewParams(BaseModel):
         return self
 
 
+class AnalysisRunParams(BaseModel):
+    """单篇分析任务参数；只含清单/授权标识、版本与用途，无私人正文。
+
+    全部为扁平标量：运行页「用原参数重试」可直接带回。授权在提交时核对
+    活动 grant 并在每次发送边界重新核对；材料以清单哈希绑定。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    manifest_id: str = Field(min_length=1, max_length=64)
+    manifest_hash: str = Field(min_length=64, max_length=64)
+    grant_id: str = Field(min_length=1, max_length=64)
+    purpose: str = Field(default="reading_reflection", min_length=1, max_length=32)
+
+
 class FlowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    kind: Literal["sync", "refresh", "extract", "review"]
+    kind: Literal["sync", "refresh", "extract", "review", "insight_analysis"]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
     # 可选关注点：作为品味信号喂给检索规划 Agent；不填则纯按档案与已读历史决定。
     focus: str = Field(default="", max_length=500)
@@ -137,6 +159,8 @@ class FlowRequest(BaseModel):
     target: int = Field(default=0, ge=0, le=50)
     # 阅读回顾报告参数；仅 kind="review" 使用。
     review: ReviewParams | None = None
+    # 单篇分析参数；仅 kind="insight_analysis" 使用。
+    analysis: AnalysisRunParams | None = None
 
     @model_validator(mode="after")
     def coherent(self) -> FlowRequest:
@@ -147,6 +171,13 @@ class FlowRequest(BaseModel):
                 raise ValueError("回顾任务不使用关注点、来源或目标篇数字段")
         elif self.review is not None:
             raise ValueError("review 参数仅用于回顾任务")
+        if self.kind == "insight_analysis":
+            if self.analysis is None:
+                raise ValueError("分析任务必须提供 analysis 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("分析任务不使用关注点、来源或目标篇数字段")
+        elif self.analysis is not None:
+            raise ValueError("analysis 参数仅用于分析任务")
         return self
 
 
@@ -258,7 +289,14 @@ class UIFlowManager:
                 rows = session.scalars(
                     select(RunRow).where(
                         RunRow.run_type.in_(
-                            ["ui.sync", "ui.digest", "ui.extract", "ui.refresh", "ui.review"]
+                            [
+                                "ui.sync",
+                                "ui.digest",
+                                "ui.extract",
+                                "ui.refresh",
+                                "ui.review",
+                                "ui.insight_analysis",
+                            ]
                         ),
                         RunRow.status == "running",
                     )
@@ -305,6 +343,27 @@ class UIFlowManager:
                     ensure_draft_stage(session, occurred_at=utc_now())
                     if not materials_text(session).strip():
                         raise InvalidRequestError("请先上传至少一份描述研究方向的材料")
+                elif request.kind == "insight_analysis":
+                    # 模型任务提交即校验配置与用途授权；发送边界会再次核对。
+                    if problem := processing_problem(session, self.settings):
+                        raise InvalidRequestError(problem)
+                    analysis = request.analysis
+                    assert analysis is not None
+                    manifest = ReadingAnalysisManifestRepository(session).get(analysis.manifest_id)
+                    if (
+                        manifest is None
+                        or manifest.purpose != analysis.purpose
+                        or manifest.manifest_hash != analysis.manifest_hash
+                    ):
+                        raise InvalidRequestError("材料清单不存在或与参数不符，请重新生成预览")
+                    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(
+                        analysis.purpose
+                    )
+                    grant = next((item for item in grants if item.id == analysis.grant_id), None)
+                    if grant is None:
+                        raise InvalidRequestError("阅读分析授权不存在或已撤回，请重新核对数据去向")
+                    if grant.scope_mode == "once" and grant.manifest_hash != analysis.manifest_hash:
+                        raise InvalidRequestError("本次授权与清单不匹配，请重新预览并授权")
                 else:
                     bound_context(session, utc_now(), action="ui." + request.kind)
                 if request.kind == "sync" and (
@@ -487,6 +546,26 @@ class UIFlowManager:
                     },
                 )
                 completed = ["extracting"]
+            elif request.kind == "insight_analysis":
+                self._update(identity, stage="analyzing")
+                if self._finalize_stop(identity) or self._terminated(identity):
+                    return
+                assert request.analysis is not None
+                generated = run_insight_analysis(
+                    self.factory,
+                    self.settings,
+                    params=AnalysisRunParamsView(
+                        manifest_id=request.analysis.manifest_id,
+                        manifest_hash=request.analysis.manifest_hash,
+                        grant_id=request.analysis.grant_id,
+                        purpose=request.analysis.purpose,
+                    ),
+                    run_id=identity,
+                    should_abort=lambda: self._is_stopping(identity),
+                    progress=lambda **values: self._update(identity, **values),
+                )
+                self._update(identity, generated=generated)
+                completed = ["analyzing", "saving"]
             else:
                 self._update(identity, stage="refreshing")
                 self.refresh(request)

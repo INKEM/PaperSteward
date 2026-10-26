@@ -124,6 +124,22 @@ def _run_result_summary(run: Run) -> str:
         if report_id and stats.get("deduplicated"):
             return "本期数据没有变化，已沿用上一份报告。"
         return "报告已生成并保存，可查看或导出。"
+    if run.run_type == "ui.insight_analysis":
+        generated = stats.get("generated")
+        data = generated if isinstance(generated, dict) else {}
+        completed = _number(data, "papers_completed")
+        candidates = _number(data, "candidate_count")
+        insufficient = _number(data, "papers_insufficient")
+        failed = _number(data, "papers_failed")
+        stale = _number(data, "papers_stale")
+        parts = [f"分析完成 {completed} 篇，生成候选 {candidates} 条。"]
+        if insufficient:
+            parts.append(f"材料不足 {insufficient} 篇")
+        if failed:
+            parts.append(f"失败 {failed} 篇")
+        if stale:
+            parts.append(f"源已变化 {stale} 篇")
+        return "；".join(parts)
     return "任务已完成。"
 
 
@@ -150,6 +166,8 @@ def _run_next_step(run: Run) -> str:
         return "在下方提意见继续调整，或确认开始使用。"
     if run.run_type == "ui.review":
         return "打开报告查看事实与导出；之后可从「归档 → 阅读回顾」再次生成。"
+    if run.run_type == "ui.insight_analysis":
+        return "到「阅读分析」页核对候选（候选未经确认不会写入资产）；失败篇目可用原参数重试。"
     return ""
 
 
@@ -198,6 +216,7 @@ def run_body(
             "extracting": "正在生成研究草案",
             "reading": "正在读取归档记录",
             "summarizing": "正在汇总阅读事实",
+            "analyzing": "正在逐篇分析并核对来源",
             "saving": "正在保存报告快照",
             "completed": "正在保存运行结果",
         }.get(stage, "任务正在运行")
@@ -215,6 +234,8 @@ def run_body(
         stages = ["queued", "collecting", "completed"]
     elif run.run_type == "ui.review":
         stages = ["queued", "reading", "summarizing", "saving", "completed"]
+    elif run.run_type == "ui.insight_analysis":
+        stages = ["queued", "analyzing", "saving", "completed"]
     else:
         stages = [
             "queued",
@@ -265,6 +286,7 @@ def run_body(
                 "草案版本都保留，本次结果不保存。"
             ),
             "ui.review": "停止后已保存的报告保留；本次尚未保存的快照不会落库。",
+            "ui.insight_analysis": "停止在当前篇目边界生效；已完成篇目的候选保留。",
         }.get(run.run_type, "停止后已完成的数据保留。")
         if stopping:
             # UXR-15：停止已请求（落库待检查点生效），不重复提供停止按钮。
@@ -584,12 +606,21 @@ def dashboard(
 async def submit_run(request: Request) -> Response:
     try:
         values = await fields(request)
+        analysis = None
+        if values.get("kind") == "insight_analysis":
+            analysis = {
+                "manifest_id": values.get("manifest_id", ""),
+                "manifest_hash": values.get("manifest_hash", ""),
+                "grant_id": values.get("grant_id", ""),
+                "purpose": values.get("purpose") or "reading_reflection",
+            }
         spec = FlowRequest(
             run_id=values.get("run_id", ""),
             kind=values.get("kind"),
             source=values.get("source", "arxiv"),
             focus=values.get("focus", ""),
             target=values.get("target", "0"),
+            analysis=analysis,
         )
         identity = resolve_workspace(request).ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)
@@ -636,6 +667,14 @@ def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> 
                 headers={**HEADERS, "HX-Redirect": "/ui/setup"},
             )
         return RedirectResponse("/ui/setup", status_code=303)
+    if run.run_type == "ui.insight_analysis" and run.status is RunStatus.SUCCEEDED:
+        target = f"/ui/reading-insights/analysis?run={quote(run.id, safe='')}"
+        if fragment:
+            return HTMLResponse(
+                '<p class="success">分析完成，正在打开候选…</p>',
+                headers={**HEADERS, "HX-Redirect": target},
+            )
+        return RedirectResponse(target, status_code=303)
     if run.run_type == "ui.review" and run.status is RunStatus.SUCCEEDED:
         generated = run.stats_json.get("generated")
         report_id = str(generated.get("report_id")) if isinstance(generated, dict) else ""

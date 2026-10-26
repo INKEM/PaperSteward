@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -24,7 +26,9 @@ from papersteward.errors import (
 from papersteward.llm.runtime import CONFIG_KEY
 from papersteward.reading.insights.contracts import (
     ANALYSIS_PURPOSE,
+    LIMITED_REASON_LABELS,
     PREVIEW_TTL_SECONDS,
+    VALUE_SOURCE_LABELS,
     AnalysisManifestContent,
     AnalysisPreviewView,
     ExcerptInput,
@@ -450,3 +454,171 @@ def _preview_view(row: ReadingAnalysisPreviewRow) -> AnalysisPreviewView:
         expires_at=as_utc(row.expires_at),
         consumed=row.consumed_at is not None,
     )
+
+
+@dataclass(frozen=True)
+class MaterialContent:
+    """清单材料在实际发送时的解析结果；``text`` 只含该类别的最小必要字段。
+
+    ``ok=False`` 表示按版本锚点重新解析后哈希不一致或数据已不存在——
+    runner 必须把对应论文标记为源已漂移，不得把新材料当作清单材料发送。
+    """
+
+    ref: MaterialRef
+    text: str
+    ok: bool
+
+
+def resolve_material_content(
+    session: Session, ref: MaterialRef, *, built_at: datetime
+) -> MaterialContent:
+    """按清单引用重新解析实际内容并核对哈希；与清单构建共用同一口径。
+
+    返回的 ``text`` 是进入 prompt 的最小必要字段文本（结构化理由只含
+    码与有无标记，不含自由文本原文）；解析不到或哈希不一致时
+    ``ok=False``、``text`` 为空。
+    """
+    if ref.kind == "archive_metadata":
+        row = session.get(ArchiveSnapshotRow, ref.target_id)
+        if row is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        content, _ = _verified(session, row)
+        raw_metadata = content.get("metadata")
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+        ok = content_hash({"metadata": metadata}) == ref.ref_hash
+        return MaterialContent(ref=ref, text=_metadata_text(metadata), ok=ok)
+    if ref.kind == "model_summary":
+        row = session.get(ArchiveSnapshotRow, ref.target_id)
+        if row is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        content, _ = _verified(session, row)
+        model_output = {
+            "summary": content.get("summary"),
+            "score": content.get("score"),
+        }
+        ok = content_hash(model_output) == ref.ref_hash
+        return MaterialContent(ref=ref, text=_model_output_text(model_output), ok=ok)
+    if ref.kind in {"user_rating", "user_notes"}:
+        rating = _rating_at_version(session, ref.target_id, ref.version_key)
+        if rating is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        ok = content_hash({"score": rating.score}) == ref.ref_hash and ref.kind == "user_rating"
+        if ref.kind == "user_notes":
+            ok = content_hash({"note": rating.note}) == ref.ref_hash
+            return MaterialContent(ref=ref, text=str(rating.note or ""), ok=ok)
+        return MaterialContent(
+            ref=ref,
+            text="未评分" if rating.score is None else f"评分：{rating.score} / 5",
+            ok=ok,
+        )
+    if ref.kind == "structured_reasons":
+        srow = session.get(ReadingStructuredFeedbackRow, _structured_pk(ref))
+        if srow is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        ok = _structured_hash(srow) == ref.ref_hash
+        return MaterialContent(ref=ref, text=_structured_text(srow), ok=ok)
+    if ref.kind == "asset_content":
+        revision = session.get(
+            ReadingAssetRevisionRow,
+            {"asset_id": ref.target_id, "revision": _asset_revision(ref.version_key)},
+        )
+        if revision is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        ok = (
+            content_hash(
+                {
+                    "title": revision.title,
+                    "body": revision.body,
+                    "applicability": revision.applicability,
+                    "status": revision.status,
+                }
+            )
+            == ref.ref_hash
+        )
+        return MaterialContent(ref=ref, text=_asset_text(revision), ok=ok)
+    if ref.kind == "user_excerpt":
+        erow = session.get(ReadingAnalysisExcerptRow, ref.target_id)
+        if erow is None:
+            return MaterialContent(ref=ref, text="", ok=False)
+        ok = (
+            content_hash({"content": erow.content, "source_note": erow.source_note}) == ref.ref_hash
+        )
+        return MaterialContent(ref=ref, text=_excerpt_text(erow), ok=ok)
+    return MaterialContent(ref=ref, text="", ok=False)
+
+
+def _metadata_text(metadata: dict[str, Any]) -> str:
+    parts = [f"标题：{metadata.get('title') or '未知'}"]
+    if authors := metadata.get("authors"):
+        parts.append(f"作者：{authors}")
+    if venue := metadata.get("venue"):
+        parts.append(f"发表：{venue}")
+    if published := metadata.get("published_at"):
+        parts.append(f"年份：{published}")
+    if abstract := metadata.get("abstract"):
+        parts.append(f"摘要：{abstract}")
+    return "\n".join(str(part) for part in parts)
+
+
+def _model_output_text(model_output: dict[str, Any]) -> str:
+    raw_summary = model_output.get("summary")
+    summary: dict[str, Any] = raw_summary if isinstance(raw_summary, dict) else {}
+    parts = [
+        f"概括：{summary.get('summary_100') or '无'}",
+        f"研究问题：{summary.get('what') or '无'}",
+        f"方法：{summary.get('how') or '无'}",
+        f"发现：{summary.get('finding') or '无'}",
+        f"局限：{summary.get('limitation') or '无'}",
+    ]
+    if model_output.get("score") is not None:
+        parts.append(f"模型评分依据：{json.dumps(model_output['score'], ensure_ascii=False)}")
+    return "\n".join(str(part) for part in parts)
+
+
+def _structured_text(row: ReadingStructuredFeedbackRow) -> str:
+    labels = {**VALUE_SOURCE_LABELS, **LIMITED_REASON_LABELS}
+    sources = "、".join(labels.get(code, str(code)) for code in (row.value_sources_json or []))
+    reasons = "、".join(labels.get(code, str(code)) for code in (row.limited_reasons_json or []))
+    return (
+        f"价值来源：{sources or '无'}；价值有限：{reasons or '无'}；"
+        f"有语境：{'是' if row.context_note or row.applicability else '否'}；"
+        f"有收获：{'是' if row.takeaway else '否'}；"
+        f"有疑问：{'是' if row.question else '否'}；"
+        f"有使用结果：{'是' if row.usage_result else '否'}"
+    )
+
+
+def _asset_text(revision: ReadingAssetRevisionRow) -> str:
+    return (
+        f"标题：{revision.title}\n状态：{revision.status}\n"
+        f"正文：{revision.body}\n"
+        f"适用说明：{revision.applicability or '无'}"
+    )
+
+
+def _excerpt_text(row: ReadingAnalysisExcerptRow) -> str:
+    return f"摘录：{row.content}\n出处：{row.source_note or '未填写'}"
+
+
+def _rating_at_version(session: Session, paper_id: str, version_key: str) -> RatingRow | None:
+    """按评分版本时间（ISO 文本）取行；逐条比对吸收 SQLite 存储形态差异。"""
+    from papersteward.storage.mappers import as_utc
+
+    try:
+        target = as_utc(datetime.fromisoformat(version_key))
+    except ValueError:
+        return None
+    for candidate in session.scalars(select(RatingRow).where(RatingRow.paper_id == paper_id)):
+        if as_utc(candidate.created_at) == target:
+            return candidate
+    return None
+
+
+def _structured_pk(ref: MaterialRef) -> dict[str, Any]:
+    paper_id, revision = ref.target_id, ref.version_key.removeprefix("revision:")
+    return {"paper_id": paper_id, "revision": int(revision)}
+
+
+def _asset_revision(version_key: str) -> int:
+    """资产版本键形如 ``revision:{n}``；资产 ID 在引用的 ``target_id``。"""
+    return int(version_key.removeprefix("revision:"))
