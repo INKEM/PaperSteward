@@ -11,7 +11,13 @@ from papersteward.storage.mappers import (
     reading_time_revision_from_row,
     reading_time_revision_to_row,
 )
-from papersteward.storage.models import ReadingReportRow, ReadingTimeRevisionRow
+from papersteward.storage.models import (
+    ReadingAssetRevisionRow,
+    ReadingAssetRow,
+    ReadingAssetSourceRow,
+    ReadingReportRow,
+    ReadingTimeRevisionRow,
+)
 from papersteward.storage.repositories import _Repository
 
 
@@ -96,4 +102,188 @@ class ReadingReportRepository(_Repository):
         return True
 
 
-__all__ = ["ReadingReportRepository", "ReadingTimeRevisionRepository"]
+__all__ = [
+    "ReadingAssetRepository",
+    "ReadingReportRepository",
+    "ReadingTimeRevisionRepository",
+]
+
+
+class ReadingAssetRepository(_Repository):
+    """手工资产的仓储：身份、版本与来源一次写入；只追加与删除。"""
+
+    def create(
+        self,
+        asset: ReadingAssetRow,
+        revision: ReadingAssetRevisionRow,
+        sources: list[ReadingAssetSourceRow],
+    ) -> None:
+        # 无 relationship 时按依赖分段 flush，保证父表先落库。
+        self._session.add(asset)
+        self._flush()
+        self._session.add(revision)
+        self._flush()
+        for source in sources:
+            self._session.add(source)
+        self._flush()
+
+    def add_revision(
+        self, revision: ReadingAssetRevisionRow, sources: list[ReadingAssetSourceRow]
+    ) -> None:
+        self._session.add(revision)
+        self._flush()
+        for source in sources:
+            self._session.add(source)
+        self._flush()
+
+    def get_asset(self, asset_id: str) -> ReadingAssetRow | None:
+        return self._session.get(ReadingAssetRow, asset_id)
+
+    def get_by_idempotency(self, key: str) -> ReadingAssetRow | None:
+        return self._session.scalars(
+            select(ReadingAssetRow).where(ReadingAssetRow.idempotency_key == key)
+        ).first()
+
+    def max_revision(self, asset_id: str) -> int:
+        return (
+            self._session.scalar(
+                select(func.max(ReadingAssetRevisionRow.revision)).where(
+                    ReadingAssetRevisionRow.asset_id == asset_id
+                )
+            )
+            or 0
+        )
+
+    def revision(self, asset_id: str, revision: int) -> ReadingAssetRevisionRow | None:
+        return self._session.get(
+            ReadingAssetRevisionRow, {"asset_id": asset_id, "revision": revision}
+        )
+
+    def revisions(self, asset_id: str) -> list[ReadingAssetRevisionRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAssetRevisionRow)
+                .where(ReadingAssetRevisionRow.asset_id == asset_id)
+                .order_by(ReadingAssetRevisionRow.revision)
+            ).all()
+        )
+
+    def all_revisions(self) -> list[ReadingAssetRevisionRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAssetRevisionRow).order_by(
+                    ReadingAssetRevisionRow.recorded_at, ReadingAssetRevisionRow.asset_id
+                )
+            ).all()
+        )
+
+    def sources(self, asset_id: str, revision: int) -> list[ReadingAssetSourceRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAssetSourceRow)
+                .where(
+                    ReadingAssetSourceRow.asset_id == asset_id,
+                    ReadingAssetSourceRow.revision == revision,
+                )
+                .order_by(ReadingAssetSourceRow.id)
+            ).all()
+        )
+
+    def list_current(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        paper_id: str | None = None,
+        keyword: str | None = None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[ReadingAssetRow, ReadingAssetRevisionRow]], int]:
+        """按最新版本视图筛选资产；来源/关键词只作用于当前版本。"""
+        latest = (
+            select(func.max(ReadingAssetRevisionRow.revision))
+            .where(ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
+            .correlate(ReadingAssetRow)
+            .scalar_subquery()
+        )
+        statement = select(ReadingAssetRow, ReadingAssetRevisionRow).join(
+            ReadingAssetRevisionRow,
+            (ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
+            & (ReadingAssetRevisionRow.revision == latest),
+        )
+        conditions = []
+        if kind:
+            conditions.append(ReadingAssetRow.kind == kind)
+        if status:
+            conditions.append(ReadingAssetRevisionRow.status == status)
+        if paper_id:
+            source_exists = (
+                select(ReadingAssetSourceRow.id)
+                .where(
+                    ReadingAssetSourceRow.asset_id == ReadingAssetRow.id,
+                    ReadingAssetSourceRow.revision == ReadingAssetRevisionRow.revision,
+                    ReadingAssetSourceRow.paper_id == paper_id,
+                )
+                .exists()
+            )
+            conditions.append(source_exists)
+        if keyword:
+            escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            conditions.append(
+                ReadingAssetRevisionRow.title.like(pattern, escape="\\")
+                | ReadingAssetRevisionRow.body.like(pattern, escape="\\")
+            )
+        if conditions:
+            statement = statement.where(*conditions)
+        total = (
+            self._session.scalar(
+                select(func.count()).select_from(statement.order_by(None).subquery())
+            )
+            or 0
+        )
+        rows = self._session.execute(
+            statement.order_by(ReadingAssetRevisionRow.recorded_at.desc(), ReadingAssetRow.id)
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [(row[0], row[1]) for row in rows], int(total)
+
+    def assets_for_paper(
+        self, paper_id: str
+    ) -> list[tuple[ReadingAssetRow, ReadingAssetRevisionRow]]:
+        """引用了某篇论文（当前版本来源）的资产，按整理时间倒序。"""
+        latest = (
+            select(func.max(ReadingAssetRevisionRow.revision))
+            .where(ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
+            .correlate(ReadingAssetRow)
+            .scalar_subquery()
+        )
+        source_exists = (
+            select(ReadingAssetSourceRow.id)
+            .where(
+                ReadingAssetSourceRow.asset_id == ReadingAssetRow.id,
+                ReadingAssetSourceRow.revision == ReadingAssetRevisionRow.revision,
+                ReadingAssetSourceRow.paper_id == paper_id,
+            )
+            .exists()
+        )
+        rows = self._session.execute(
+            select(ReadingAssetRow, ReadingAssetRevisionRow)
+            .join(
+                ReadingAssetRevisionRow,
+                (ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
+                & (ReadingAssetRevisionRow.revision == latest),
+            )
+            .where(source_exists)
+            .order_by(ReadingAssetRevisionRow.recorded_at.desc())
+        ).all()
+        return [(row[0], row[1]) for row in rows]
+
+    def delete_asset(self, asset_id: str) -> bool:
+        row = self._session.get(ReadingAssetRow, asset_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True

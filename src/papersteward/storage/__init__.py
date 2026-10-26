@@ -9,7 +9,11 @@ from papersteward.storage.db import (
     session_scope,
     utc_now,
 )
-from papersteward.storage.insights import ReadingReportRepository, ReadingTimeRevisionRepository
+from papersteward.storage.insights import (
+    ReadingAssetRepository,
+    ReadingReportRepository,
+    ReadingTimeRevisionRepository,
+)
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import (
     ArchiveSnapshotRepository,
@@ -52,6 +56,7 @@ __all__ = [
     "PaperTagRepository",
     "ProfileRepository",
     "RatingRepository",
+    "ReadingAssetRepository",
     "ReadingReportRepository",
     "ReadingTimeRevisionRepository",
     "ReviewRepository",

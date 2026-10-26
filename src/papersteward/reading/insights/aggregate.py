@@ -5,6 +5,7 @@
 
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import datetime
 
 from papersteward.reading.insights.contracts import (
     CountEntry,
@@ -65,12 +66,19 @@ def feedback_changes(
     return changes
 
 
-def build_overview(projection: InsightsProjection, *, tag: str | None = None) -> InsightOverview:
+def build_overview(
+    projection: InsightsProjection,
+    *,
+    tag: str | None = None,
+    asset_events: Sequence[tuple[str, datetime]] = (),
+) -> InsightOverview:
     """从投影计算事实概览；tag 按冻结主标签收窄，所有分母与明细同一范围。
 
     口径（§3.3）：本期阅读 = 日期明确属于本期（未知日期不进阅读数，只进
     全部历史与未定库存）；本期补录 = 本期进入归档的外部已读论文，与阅读
-    量可能重叠；覆盖率/评分分布以截止前最后有效反馈为准。
+    量可能重叠；覆盖率/评分分布以截止前最后有效反馈为准。资产整理活动
+    按版本记录时间归入周期（操作数=版本数，不同资产数=去重 asset_id），
+    不会增加已读篇数。
     """
     papers = [p for p in projection.papers if tag is None or p.primary_tag == tag]
     period = projection.period
@@ -92,6 +100,8 @@ def build_overview(projection: InsightsProjection, *, tag: str | None = None) ->
     partial_month = [p for p in papers if p.membership is PeriodMembership.UNASSIGNED_PARTIAL_MONTH]
     unassigned = unassigned_unknown + partial_month
     period_changes = _period_changes(papers, period)
+    period_assets = _period_asset_events(asset_events, period)
+    asset_ids = {asset_id for asset_id, _ in period_assets}
 
     return InsightOverview(
         metrics=InsightMetrics(
@@ -111,6 +121,8 @@ def build_overview(projection: InsightsProjection, *, tag: str | None = None) ->
             backfill_coverage=_coverage(backfills),
             score_distribution=_score_distribution(readings),
             feedback_changes=_change_stats(period_changes),
+            asset_events=len(period_assets),
+            asset_assets=len(asset_ids),
             reading_modes=_reading_modes(readings),
             primary_tags=_primary_tags(readings),
             published_decades=_published_decades(readings),
@@ -163,6 +175,21 @@ def _period_changes(
             day = local_date(change.recorded_at, period.timezone)
             if start is not None and end is not None and start <= day <= end:
                 scoped.append(change)
+    return scoped
+
+
+def _period_asset_events(
+    asset_events: Sequence[tuple[str, datetime]], period: ResolvedPeriod
+) -> list[tuple[str, datetime]]:
+    if period.kind is PeriodKind.ALL:
+        return list(asset_events)
+    start = period.start_date
+    end = period.end_date_inclusive
+    scoped = []
+    for asset_id, recorded_at in asset_events:
+        day = local_date(recorded_at, period.timezone)
+        if start is not None and end is not None and start <= day <= end:
+            scoped.append((asset_id, recorded_at))
     return scoped
 
 

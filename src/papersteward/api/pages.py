@@ -904,7 +904,9 @@ def shelves(session: SessionDep, kind: str | None = None, offset: int = 0) -> HT
 
 
 @router.get("/papers/{paper_id}")
-def detail(paper_id: str, session: SessionDep, imported: str = "") -> HTMLResponse:
+def detail(
+    paper_id: str, session: SessionDep, imported: str = "", asset_created: str = ""
+) -> HTMLResponse:
     try:
         paper = PaperRepository(session).get(paper_id)
         if paper is None:
@@ -917,6 +919,8 @@ def detail(paper_id: str, session: SessionDep, imported: str = "") -> HTMLRespon
         else:
             nav_key = "阅读队列"
         notice = "已导入这篇已读论文并完成归档；评分与备注可在下方修订。" if imported else ""
+        if asset_created:
+            notice = "已保存这条资产；它关联了本篇文献。"
         return _page(
             paper.title,
             _detail_article(session, paper_id, paper=paper, notice=notice),
@@ -999,6 +1003,9 @@ def _detail_article(
                 )
             body += "</ul></details>"
         body += read_time_block(view, draft=read_time_draft)
+        from papersteward.api.insights_pages import asset_section
+
+        body += asset_section(session, paper_id)
         score_data = record.content.get("score")
         if isinstance(score_data, dict):
             # UXR-08：推荐依据放在反馈之后，默认折叠——先理解论文，再看机器评分。

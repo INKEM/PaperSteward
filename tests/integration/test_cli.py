@@ -46,8 +46,8 @@ def test_doctor_passes_on_migrated_database(
     checks = _checks(report)
     assert checks[CHECK_CONFIG].ok is True
     assert checks[CHECK_DATABASE].detail == "ok"
-    assert "current=0022" in checks[CHECK_MIGRATION].detail
-    assert "head=0022" in checks[CHECK_MIGRATION].detail
+    assert "current=0023" in checks[CHECK_MIGRATION].detail
+    assert "head=0023" in checks[CHECK_MIGRATION].detail
 
 
 def test_doctor_reports_pending_migration(
@@ -146,7 +146,7 @@ def test_doctor_cli_passes(
     assert code == 0
     assert "结果：通过" in captured.out
     assert "迁移版本" in captured.out
-    assert "current=0022" in captured.out
+    assert "current=0023" in captured.out
 
 
 def test_doctor_cli_fails_without_migration(

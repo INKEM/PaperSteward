@@ -15,7 +15,20 @@ from papersteward.reading.insights.aggregate import (
     OVERVIEW_DETAIL_MAX_LIMIT,
     build_overview,
 )
+from papersteward.reading.insights.assets import (
+    append_revision,
+    asset_events,
+    assets_for_paper,
+    create_asset,
+    delete_asset,
+    delete_preview,
+    get_asset_view,
+    list_assets,
+)
 from papersteward.reading.insights.contracts import (
+    AssetCreateInput,
+    AssetRevisionInput,
+    AssetView,
     InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
@@ -162,7 +175,11 @@ def get_overview(
             tag=tag,
         )
         projection = build_projection(session, query)
-        overview = build_overview(projection, tag=tag_code)
+        overview = build_overview(
+            projection,
+            tag=tag_code,
+            asset_events=asset_events(session, until=utc_now()),
+        )
         return finalize_overview(session, overview, detail_limit=detail_limit)
 
 
@@ -261,3 +278,88 @@ def delete_report_route(report_id: str, session: SessionDep) -> Any:
         ensure_active(session, action="reading_insights.report")
         delete_report(session, report_id)
         return {"deleted": True}
+
+
+# —— 手工资产 JSON 接口 ————————————————————————————————————————
+
+
+@router.get("/assets", summary="查找手工资产")
+def get_assets(
+    session: SessionDep,
+    kind: str | None = None,
+    status: str | None = None,
+    paper_id: str | None = None,
+    keyword: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.assets")
+        if not 1 <= limit <= 200 or offset < 0:
+            raise InvalidRequestError("分页参数非法", details={"field": "limit"})
+        return list_assets(
+            session,
+            kind=kind,
+            status=status,
+            paper_id=paper_id,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@router.post(
+    "/assets",
+    response_model=AssetView,
+    status_code=status.HTTP_201_CREATED,
+    summary="创建手工资产",
+)
+def post_asset(body: AssetCreateInput, session: SessionDep) -> Any:
+    with domain_errors(), session.begin():
+        ensure_active(session, action="reading_insights.assets")
+        return create_asset(session, body, now=utc_now())
+
+
+@router.get("/assets/{asset_id}", response_model=AssetView, summary="资产当前版本与历史")
+def get_asset_detail(asset_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.assets")
+        return get_asset_view(session, asset_id)
+
+
+@router.get("/assets/{asset_id}/papers", summary="引用某篇论文的资产")
+def get_assets_for_paper(paper_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.assets")
+        return {"items": assets_for_paper(session, paper_id)}
+
+
+@router.post(
+    "/assets/{asset_id}/revisions",
+    response_model=AssetView,
+    status_code=status.HTTP_201_CREATED,
+    summary="带预期版本追加资产修订",
+)
+def post_asset_revision(asset_id: str, body: AssetRevisionInput, session: SessionDep) -> Any:
+    with domain_errors(), session.begin():
+        ensure_active(session, action="reading_insights.assets")
+        return append_revision(session, asset_id, body, now=utc_now())
+
+
+@router.get("/assets/{asset_id}/delete-preview", summary="删除范围预览")
+def get_asset_delete_preview(asset_id: str, session: SessionDep) -> Any:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.assets")
+        return delete_preview(session, asset_id)
+
+
+@router.delete("/assets/{asset_id}", summary="删除资产及选定的派生副本")
+def delete_asset_route(
+    asset_id: str,
+    session: SessionDep,
+    also_report_ids: list[str] | None = None,
+) -> Any:
+    with domain_errors(), session.begin():
+        ensure_active(session, action="reading_insights.assets")
+        removed = delete_asset(session, asset_id, also_report_ids=also_report_ids or ())
+        return {"deleted": True, "removed_reports": removed}

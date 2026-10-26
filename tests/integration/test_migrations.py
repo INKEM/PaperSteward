@@ -48,6 +48,9 @@ DOMAIN_TABLES = {
     "view_config",
     "reading_time_revision",
     "reading_report",
+    "reading_asset",
+    "reading_asset_revision",
+    "reading_asset_source",
 }
 
 
@@ -251,8 +254,35 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "uq_reading_report_fingerprint",
             "ix_reading_report_generated",
         } <= report_indexes
+        for table, columns in {
+            "reading_asset": {"id", "kind", "idempotency_key", "created_at"},
+            "reading_asset_revision": {
+                "asset_id",
+                "revision",
+                "recorded_at",
+                "title",
+                "body",
+                "applicability",
+                "status",
+            },
+            "reading_asset_source": {
+                "id",
+                "asset_id",
+                "revision",
+                "paper_id",
+                "archive_hash",
+                "rating_at",
+            },
+        }.items():
+            assert {column["name"] for column in inspector.get_columns(table)} == columns
+        asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
+        assert "uq_reading_asset_idempotency" in asset_indexes
+        assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
+            "asset_id",
+            "revision",
+        ]
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0022"
+        assert current == "0023"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -431,6 +461,65 @@ def test_0022_roundtrip_preserves_archives_with_saved_report(sqlite_engine: Engi
     with sqlite_engine.connect() as connection:
         assert "reading_report" in set(inspect(connection).get_table_names())
         count = connection.execute(text("SELECT COUNT(*) FROM reading_report")).scalar()
+        assert count == 0
+
+
+def test_0023_roundtrip_preserves_archives_with_asset(sqlite_engine: Engine) -> None:
+    """0022 → 0023 → 0022 → 0023 往返：归档与报告保留，资产随降级移除。"""
+    _upgrade(sqlite_engine, "0023")
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO paper (id, title, status, authors_json, first_seen_at, oa_status) "
+                "VALUES ('p-a', '资产论文', 'archived', '[]', "
+                "'2026-10-21 08:00:00.000000', 'unknown')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO archive_snapshot (paper_id, archived_at, primary_tag, "
+                "filing_bucket_id, profile_version, taxonomy_version, config_version, "
+                "content_hash, content_json, secondary_tags_json) VALUES ("
+                "'p-a', '2026-10-21 08:00:00.000000', 'T01', NULL, "
+                "'1.0', '1.0', '1.0.0', :content_hash, '{}', '[]')"
+            ),
+            {"content_hash": "a" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at) VALUES ("
+                "'asset-1', 'problem', 'key-1', '2026-10-26 02:00:00.000000')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at, title, "
+                "body, applicability, status) VALUES ("
+                "'asset-1', 1, '2026-10-26 02:00:00.000000', '一个问题', "
+                "'待确认的方法问题', NULL, 'open')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_source (id, asset_id, revision, paper_id, "
+                "archive_hash, rating_at) VALUES ("
+                "'src-1', 'asset-1', 1, 'p-a', :hash, NULL)"
+            ),
+            {"hash": "b" * 64},
+        )
+
+    _downgrade(sqlite_engine, "0022")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert not {"reading_asset", "reading_asset_revision", "reading_asset_source"} & tables
+        rows = connection.execute(text("SELECT paper_id FROM archive_snapshot")).all()
+        assert [row[0] for row in rows] == ["p-a"]
+
+    _upgrade(sqlite_engine, "0023")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert {"reading_asset", "reading_asset_revision", "reading_asset_source"} <= tables
+        count = connection.execute(text("SELECT COUNT(*) FROM reading_asset")).scalar()
         assert count == 0
 
 

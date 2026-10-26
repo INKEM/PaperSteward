@@ -320,3 +320,21 @@ def test_entries_are_sorted_deterministically():
     ]
     entries = build_overview(projection(papers)).metrics.primary_tags
     assert [(e.key, e.count) for e in entries] == [("T01", 2), ("T02", 1)]
+
+
+def test_asset_events_are_counted_within_period_and_deduped():
+    events = [
+        ("a", datetime(2026, 10, 20, 3, tzinfo=UTC)),  # 周期内
+        ("a", datetime(2026, 10, 22, 3, tzinfo=UTC)),  # 周期内（同资产）
+        ("b", datetime(2026, 10, 21, 3, tzinfo=UTC)),  # 周期内
+        ("c", datetime(2026, 10, 27, 3, tzinfo=UTC)),  # 周期外
+    ]
+    metrics = build_overview(projection([paper("p")]), asset_events=events).metrics
+    assert metrics.asset_events == 3
+    assert metrics.asset_assets == 2
+
+
+def test_asset_events_default_to_zero():
+    metrics = build_overview(projection([paper("p")])).metrics
+    assert metrics.asset_events == 0
+    assert metrics.asset_assets == 0

@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Protocol
@@ -28,6 +28,7 @@ from papersteward.reading.insights.contracts import (
     InsightsProjection,
     NoteFeedbackChange,
     PaperProjection,
+    ReportAssetRef,
     ReportChange,
     ReportDetail,
     ReportFeedbackVersion,
@@ -41,7 +42,7 @@ from papersteward.reading.insights.periods import knowledge_cutoff, resolve_peri
 from papersteward.reading.insights.projection import build_projection
 from papersteward.reading.insights.timeline import workspace_timezone
 from papersteward.storage.delivery import content_hash
-from papersteward.storage.insights import ReadingReportRepository
+from papersteward.storage.insights import ReadingAssetRepository, ReadingReportRepository
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import ReadingReportRow
 from papersteward.storage.repositories import RunRepository
@@ -84,6 +85,7 @@ def prepare_report(
     *,
     collected_at: datetime,
     note: Callable[[str], None] | None = None,
+    include_asset_bodies: bool = False,
 ) -> PreparedReport:
     """读取记录并汇总事实；只读，不产生任何写入。"""
     timezone = workspace_timezone(session)
@@ -107,9 +109,16 @@ def prepare_report(
     projection = build_projection(session, query)
     if note is not None:
         note("summarizing")
-    overview = build_overview(projection)
-    content = build_report_content(overview)
-    fingerprint = report_fingerprint(query, period, cutoff, projection)
+    # 延迟导入：assets 服务反向依赖本模块的删除/列表。
+    from papersteward.reading.insights.assets import asset_events
+
+    events = asset_events(session, until=cutoff)
+    overview = build_overview(projection, asset_events=events)
+    assets = _asset_refs_at(session, cutoff, include_bodies=include_asset_bodies)
+    content = build_report_content(overview, assets=assets)
+    fingerprint = report_fingerprint(
+        query, period, cutoff, projection, assets=assets, asset_events=events
+    )
     return PreparedReport(
         query=query,
         period=period,
@@ -125,6 +134,9 @@ def report_fingerprint(
     period: ResolvedPeriod,
     cutoff: datetime,
     projection: InsightsProjection,
+    *,
+    assets: Sequence[ReportAssetRef] = (),
+    asset_events: Sequence[tuple[str, datetime]] = (),
 ) -> str:
     """输入指纹：规范化请求 + 时间语义 + 全部参与数据的逐篇摘要。
 
@@ -139,11 +151,17 @@ def report_fingerprint(
             "period_closed": closed,
             "knowledge_cutoff": cutoff.isoformat(),
             "papers": [paper.model_dump(mode="json") for paper in projection.papers],
+            "assets": [ref.model_dump(mode="json") for ref in assets],
+            "asset_events": sorted(
+                (asset_id, recorded_at.isoformat()) for asset_id, recorded_at in asset_events
+            ),
         }
     )
 
 
-def build_report_content(overview: InsightOverview) -> InsightReportContent:
+def build_report_content(
+    overview: InsightOverview, *, assets: Sequence[ReportAssetRef] = ()
+) -> InsightReportContent:
     """冻结正文：剥离私人备注原文，只留评分事实与备注有无标记。"""
     return InsightReportContent(
         contract=REPORT_CONTRACT,
@@ -152,7 +170,31 @@ def build_report_content(overview: InsightOverview) -> InsightReportContent:
         backfills=[_report_paper(paper) for paper in overview.backfills],
         changes=[_report_change(change) for change in overview.changes],
         unassigned=[_report_paper(paper) for paper in overview.unassigned],
+        assets=list(assets),
     )
+
+
+def _asset_refs_at(
+    session: Session, cutoff: datetime, *, include_bodies: bool
+) -> list[ReportAssetRef]:
+    """快照时刻的资产引用；正文仅在用户显式勾选时保存副本。"""
+    repository = ReadingAssetRepository(session)
+    refs: dict[str, ReportAssetRef] = {}
+    for row in repository.all_revisions():
+        recorded = as_utc(row.recorded_at)
+        if recorded > cutoff:
+            continue
+        asset = repository.get_asset(row.asset_id)
+        if asset is None:
+            continue
+        refs[row.asset_id] = ReportAssetRef(
+            asset_id=row.asset_id,
+            title=row.title,
+            kind=asset.kind,
+            status=row.status,
+            body=row.body if include_bodies else None,
+        )
+    return [refs[asset_id] for asset_id in sorted(refs)]
 
 
 def _report_paper(paper: PaperProjection) -> ReportPaper:

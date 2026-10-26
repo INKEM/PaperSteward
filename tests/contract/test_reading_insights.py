@@ -384,6 +384,8 @@ def test_minimal_overview_json_is_frozen():
                 "unrated": 0,
             },
             "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "asset_events": 0,
+            "asset_assets": 0,
             "reading_modes": [
                 {"key": "deep", "label": "deep", "count": 1, "taxonomy_version": None}
             ],
@@ -474,3 +476,83 @@ def test_report_content_models_reject_extra_fields():
     InsightReportContent.model_validate(payload)
     with pytest.raises(ValidationError):
         InsightReportContent.model_validate({**payload, "surprise": 1})
+
+
+# —— 手工资产契约：严格性与旧快照兼容 ——————————————————————————
+
+
+def test_asset_create_input_strictness():
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    ok = AssetCreateInput.model_validate(
+        {
+            "kind": "problem",
+            "title": "t",
+            "body": "b",
+            "sources": [{"paper_id": "p1"}],
+            "idempotency_key": "k1",
+        }
+    )
+    assert ok.sources[0].paper_id == "p1"
+    for payload in [
+        {"kind": "problem", "title": "t", "body": "b", "sources": [], "idempotency_key": "k"},
+        {"kind": "problem", "title": "t", "body": "b", "idempotency_key": "k"},
+        {
+            "kind": "diary",
+            "title": "t",
+            "body": "b",
+            "sources": [{"paper_id": "p"}],
+            "idempotency_key": "k",
+        },
+        {
+            "kind": "problem",
+            "title": "t",
+            "body": "b",
+            "sources": [{"paper_id": "p", "archive_hash": "x"}],
+            "idempotency_key": "k",
+        },
+        {
+            "kind": "problem",
+            "title": "t",
+            "body": "b",
+            "sources": [{"paper_id": "p"}],
+            "idempotency_key": "has space",
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            AssetCreateInput.model_validate(payload)
+
+
+def test_asset_revision_input_strictness():
+    from papersteward.reading.insights.contracts import AssetRevisionInput
+
+    payload = {
+        "expected_revision": 1,
+        "title": "t",
+        "body": "b",
+        "status": "resolved",
+        "sources": [{"paper_id": "p"}],
+    }
+    assert AssetRevisionInput.model_validate(payload).status == "resolved"
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "expected_revision": "1"})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "status": "bogus"})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "sources": []})
+
+
+def test_report_content_defaults_are_backward_compatible():
+    from papersteward.reading.insights.contracts import InsightReportContent
+
+    """旧报告快照（无资产字段）用新模型读取：默认空列表、指标默认 0。"""
+    overview = build_overview(_minimal_projection())
+    metrics = overview.metrics.model_dump()
+    # 模拟旧快照：R1-05 之前的冻结正文不含资产字段。
+    metrics.pop("asset_events")
+    metrics.pop("asset_assets")
+    content = InsightReportContent.model_validate(
+        {"contract": "reading-insights.report/1", "metrics": metrics}
+    )
+    assert content.metrics.asset_events == 0
+    assert content.assets == []

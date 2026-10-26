@@ -683,6 +683,68 @@ class RatingRow(Base):
     read_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class ReadingAssetRow(Base):
+    """手工资产（收获/问题）的稳定身份；当前状态按最大版本读取。"""
+
+    __tablename__ = "reading_asset"
+    __table_args__ = (
+        CheckConstraint("kind IN ('harvest', 'problem')", name="asset_kind_allowed"),
+        Index("uq_reading_asset_idempotency", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAssetRevisionRow(Base):
+    """资产的一个内容/状态版本；只追加，旧版本与当时来源保留。"""
+
+    __tablename__ = "reading_asset_revision"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'archived', 'open', 'resolved')",
+            name="asset_status_allowed",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_asset.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    applicability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class ReadingAssetSourceRow(Base):
+    """资产版本的来源引用；指向归档哈希，可选引用具体反馈版本。"""
+
+    __tablename__ = "reading_asset_source"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["asset_id", "revision"],
+            ["reading_asset_revision.asset_id", "reading_asset_revision.revision"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_reading_asset_source_revision", "asset_id", "revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    archive_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rating_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ReadingReportRow(Base):
     """已保存的阅读回顾报告快照；正文冻结，读取时校验哈希。
 

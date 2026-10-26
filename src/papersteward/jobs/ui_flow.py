@@ -103,6 +103,8 @@ class ReviewParams(BaseModel):
     anchor_date: date | None = None
     start_date: date | None = None
     end_date: date | None = None
+    # 用户显式勾选时，报告快照保存资产正文副本；默认只列整理活动与引用。
+    asset_bodies: bool = False
 
     @model_validator(mode="after")
     def coherent(self) -> ReviewParams:
@@ -564,6 +566,7 @@ class UIFlowManager:
                 request.review,
                 collected_at=utc_now(),
                 note=lambda stage: self._update(identity, stage=stage),
+                include_asset_bodies=request.review.asset_bodies,
             )
         self._update(identity, stage="saving")
         with session_scope(self.factory, immediate=True) as session:

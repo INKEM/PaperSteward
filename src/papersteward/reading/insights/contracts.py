@@ -273,6 +273,9 @@ class InsightMetrics(InsightsModel):
     backfill_coverage: CoverageStats
     score_distribution: ScoreDistribution
     feedback_changes: FeedbackChangeStats
+    # 资产整理活动：版本数=操作数，去重资产数=不同资产；不增加已读篇数。
+    asset_events: int = Field(default=0, ge=0)
+    asset_assets: int = Field(default=0, ge=0)
     reading_modes: list[CountEntry] = Field(default_factory=list)
     primary_tags: list[CountEntry] = Field(default_factory=list)
     published_decades: list[CountEntry] = Field(default_factory=list)
@@ -332,6 +335,16 @@ class ReportPaper(InsightsModel):
     feedback: list[ReportFeedbackVersion] = Field(default_factory=list)
 
 
+class ReportAssetRef(InsightsModel):
+    """报告内的资产引用；body 仅在用户显式勾选时保存正文副本。"""
+
+    asset_id: str
+    title: str
+    kind: str
+    status: str
+    body: str | None = None
+
+
 class InsightReportContent(InsightsModel):
     """报告快照的冻结正文；读取时的唯一内容来源。"""
 
@@ -341,6 +354,7 @@ class InsightReportContent(InsightsModel):
     backfills: list[ReportPaper] = Field(default_factory=list)
     changes: list[ReportChange] = Field(default_factory=list)
     unassigned: list[ReportPaper] = Field(default_factory=list)
+    assets: list[ReportAssetRef] = Field(default_factory=list)
 
 
 class ReportSummary(InsightsModel):
@@ -363,3 +377,67 @@ class ReportDetail(ReportSummary):
     """报告详情：元信息 + 冻结正文。"""
 
     content: InsightReportContent
+
+
+# —— 手工资产契约 ————————————————————————————————————————————
+
+AssetKind = Literal["harvest", "problem"]
+AssetStatus = Literal["active", "archived", "open", "resolved"]
+
+
+class AssetSourceInput(InsightsModel):
+    """资产来源：指向归档；可选引用具体反馈版本（记录时间戳）。"""
+
+    paper_id: str
+    rating_at: AwareDatetime | None = None
+
+
+class AssetCreateInput(InsightsModel):
+    kind: AssetKind
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=20000)
+    applicability: str | None = Field(default=None, max_length=2000)
+    sources: list[AssetSourceInput] = Field(min_length=1, max_length=20)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class AssetRevisionInput(InsightsModel):
+    """全量内容修订；expected_revision 做乐观并发校验。"""
+
+    expected_revision: int = Field(ge=1, strict=True)
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=20000)
+    applicability: str | None = Field(default=None, max_length=2000)
+    status: AssetStatus
+    sources: list[AssetSourceInput] = Field(min_length=1, max_length=20)
+
+
+class AssetSourceRef(InsightsModel):
+    paper_id: str
+    archive_hash: str
+    rating_at: AwareDatetime | None = None
+
+
+class AssetRevisionView(InsightsModel):
+    revision: int
+    recorded_at: AwareDatetime
+    title: str
+    body: str
+    applicability: str | None = None
+    status: str
+    sources: list[AssetSourceRef] = Field(default_factory=list)
+
+
+class AssetRevisionSummary(InsightsModel):
+    revision: int
+    recorded_at: AwareDatetime
+    title: str
+    status: str
+
+
+class AssetView(InsightsModel):
+    asset_id: str
+    kind: str
+    created_at: AwareDatetime
+    revision: AssetRevisionView
+    history: list[AssetRevisionSummary] = Field(default_factory=list)

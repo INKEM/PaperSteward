@@ -7,6 +7,7 @@
 
 from html import escape
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,9 @@ from papersteward.core.enums import ReadingTimeBasis, TimePrecision
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError
 from papersteward.reading.insights.contracts import (
+    AssetCreateInput,
+    AssetRevisionInput,
+    AssetView,
     CountEntry,
     InsightMetrics,
     InsightOverview,
@@ -38,7 +42,7 @@ from papersteward.reading.insights.contracts import (
     ReviewMode,
 )
 from papersteward.reading.insights.timeline import record_reading_time
-from papersteward.storage.onboarding import get_onboarding
+from papersteward.storage.onboarding import ensure_active, get_onboarding
 from papersteward.storage.repositories import PaperRepository, TaxonomyRepository
 
 router = APIRouter(prefix="/ui/reading-insights", include_in_schema=False)
@@ -278,6 +282,10 @@ def _overview_body(
         f"时区 {escape(metrics.period.timezone)} · "
         f"模式 {_MODE_LABELS[metrics.mode]}</p>"
     )
+    body += (
+        '<p class="muted"><a href="/ui/reading-insights/assets">手工资产</a> · '
+        '<a href="/ui/reading-insights/reports">已保存的报告</a></p>'
+    )
     body += _filter_form(session, filter_params)
     body += "<h2>本期指标</h2>" + _metrics_table(metrics)
     body += "<h2>分布</h2>" + _distributions_html(metrics)
@@ -417,6 +425,11 @@ def _metrics_table(metrics: InsightMetrics) -> str:
             f"评分 {changes.score_events} 次 · 备注 {changes.note_events} 次"
             f" · 涉及 {changes.papers_affected} 篇",
             "非初始修订的实际变化",
+        ),
+        (
+            "资产整理活动",
+            f"{metrics.asset_events} 次操作 · {metrics.asset_assets} 个资产",
+            "创建、修订、关闭问题等；不增加已读篇数",
         ),
         (
             "全部历史（当前范围）",
@@ -764,6 +777,7 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
         if detail.content.unassigned
         else '<p class="muted">无</p>'
     )
+    body += _report_assets_section(session, detail)
     body += '<p class="muted">查看依据：明细中的文献可点回原归档页核对；报告不含备注原文。</p>'
     series = [
         item for item in list_series_reports(session, detail) if item.report_id != detail.report_id
@@ -788,6 +802,31 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
         "<button>删除报告</button></form></details>"
     )
     return body
+
+
+def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
+    """快照中的资产引用；资产已删除时只显示「来源已移除」，不渲染旧标题。"""
+    from papersteward.storage.insights import ReadingAssetRepository
+
+    repository = ReadingAssetRepository(session)
+    refs = detail.content.assets
+    body = f"<h2>资产引用（{len(refs)}）</h2>"
+    if not refs:
+        return body + '<p class="muted">无</p>'
+    body += "<ul>"
+    for ref in refs:
+        if repository.get_asset(ref.asset_id) is None:
+            body += "<li>来源已移除</li>"
+            continue
+        kind_label = _ASSET_KIND_LABELS.get(ref.kind, ref.kind)
+        body += (
+            f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
+            f"{escape(ref.title)}</a> · {escape(kind_label)} · "
+            f"{escape(_asset_status_text(ref.status))}"
+            + (" · 含正文副本" if ref.body is not None else "")
+            + "</li>"
+        )
+    return body + "</ul>"
 
 
 def _report_changes_table(changes: list[ReportChange]) -> str:
@@ -862,3 +901,481 @@ def _compare_html(base: ReportDetail, other: ReportDetail) -> str:
     )
     body += "</tbody></table>"
     return body
+
+
+# —— 手工资产页面：列表 / 详情 / 修订 / 状态 / 删除 ——————————————————————
+
+_ASSET_STATUS_LABELS = {
+    "active": "有效",
+    "archived": "已归档",
+    "open": "待解决",
+    "resolved": "已解决",
+}
+_ASSET_KIND_LABELS = {"harvest": "收获", "problem": "问题"}
+
+
+def _asset_status_text(status: str) -> str:
+    return _ASSET_STATUS_LABELS.get(status, status)
+
+
+def asset_section(session: SessionDep, paper_id: str) -> str:
+    """归档详情页的相关资产区：列表 + 预填该论文为来源的新建表单。"""
+    from papersteward.reading.insights.assets import assets_for_paper
+
+    views = assets_for_paper(session, paper_id)
+    body = f"<h2>相关资产（{len(views)}）</h2>"
+    if views:
+        body += "<ul>"
+        for view in views:
+            body += (
+                f'<li><a href="/ui/reading-insights/assets/{escape(view.asset_id)}">'
+                f"{escape(view.revision.title)}</a> · "
+                f"{escape(_ASSET_KIND_LABELS.get(view.kind, view.kind))} · "
+                f"{escape(_asset_status_text(view.revision.status))}</li>"
+            )
+        body += "</ul>"
+    body += (
+        '<p class="muted"><a href="/ui/reading-insights/assets">全部手工资产</a></p>'
+        + _asset_create_form(paper_id)
+    )
+    return body
+
+
+@router.get("/assets")
+def assets_page(
+    session: SessionDep,
+    kind: str = "",
+    status: str = "",
+    paper_id: str = "",
+    keyword: str = "",
+    offset: int = 0,
+) -> Response:
+    from papersteward.reading.insights.assets import list_assets
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        listing = list_assets(
+            session,
+            kind=kind or None,
+            status=status or None,
+            paper_id=paper_id or None,
+            keyword=keyword or None,
+            limit=_PAGE_SIZE,
+            offset=max(0, offset),
+        )
+    except (DomainError, AppError) as exc:
+        return _page("手工资产", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+    total = int(listing["total"])
+    body = f"<h2>手工资产（{total}）</h2>"
+    body += _asset_filter_form(kind, status, paper_id, keyword)
+    body += _asset_create_form()
+    if not listing["items"]:
+        body += (
+            '<article class="empty"><h2>还没有手工资产</h2>'
+            "<p>从归档详情页或这里记录一条收获或问题；至少关联一篇已读文献。</p></article>"
+        )
+        return _page("手工资产", body, nav="归档")
+    body += (
+        '<table><thead><tr><th scope="col">类型</th><th scope="col">标题</th>'
+        '<th scope="col">状态</th><th scope="col">整理时间</th></tr></thead><tbody>'
+    )
+    for item in listing["items"]:
+        revision = item["revision"]
+        body += (
+            "<tr>"
+            f'<th scope="row">{escape(_ASSET_KIND_LABELS.get(item["kind"], item["kind"]))}</th>'
+            '<td data-label="标题"><a href="'
+            f'/ui/reading-insights/assets/{escape(item["asset_id"])}">'
+            f"{escape(revision['title'])}</a></td>"
+            f'<td data-label="状态">{escape(_asset_status_text(revision["status"]))}</td>'
+            f'<td data-label="整理时间">{escape(revision["recorded_at"].isoformat())}</td>'
+            "</tr>"
+        )
+    body += "</tbody></table>"
+    if total > _PAGE_SIZE:
+        body += _pagination(
+            "/ui/reading-insights/assets",
+            {
+                k: v
+                for k, v in {
+                    "kind": kind,
+                    "status": status,
+                    "paper_id": paper_id,
+                    "keyword": keyword,
+                }.items()
+                if v
+            },
+            offset=offset,
+            total=total,
+            page_size=_PAGE_SIZE,
+        )
+    return _page("手工资产", body, nav="归档")
+
+
+def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> str:
+    return (
+        '<form method="get" class="queue-filters">'
+        '<label>类型<select name="kind">'
+        + select_options(
+            [("", "全部"), ("harvest", "收获"), ("problem", "问题")], selected=kind or None
+        )
+        + '</select></label><label>状态<select name="status">'
+        + select_options(
+            [
+                ("", "全部"),
+                ("active", "有效"),
+                ("open", "待解决"),
+                ("resolved", "已解决"),
+                ("archived", "已归档"),
+            ],
+            selected=status or None,
+        )
+        + '</select></label><label>来源论文 ID<input name="paper_id" value="'
+        + escape(paper_id)
+        + '"></label><label>关键词<input name="keyword" value="'
+        + escape(keyword)
+        + '"></label><button type="submit">筛选</button></form>'
+    )
+
+
+def _asset_create_form(source_paper: str = "") -> str:
+    return (
+        "<details><summary>记录新的收获或问题</summary>"
+        '<form method="post" action="/ui/reading-insights/assets" class="stacked-form">'
+        + hidden("source_paper", source_paper)
+        + hidden("idempotency_key", uuid4().hex)
+        + '<label>类型<select name="kind">'
+        + select_options([("harvest", "收获"), ("problem", "问题")])
+        + '</select></label><label>标题<input name="title" required maxlength="256"></label>'
+        + '<label>内容<textarea name="body" rows="4" required maxlength="20000">'
+        + "</textarea></label>"
+        + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
+        + "</textarea></label>"
+        + '<label>来源论文 ID（每行一个，已归档文献）<textarea name="sources" rows="2">'
+        + escape(source_paper)
+        + "</textarea></label>"
+        + "<button>保存资产</button></form></details>"
+    )
+
+
+@router.post("/assets")
+async def create_asset_page(request: Request, session: SessionDep) -> Response:
+    from papersteward.reading.insights.assets import create_asset
+
+    values: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        values = dict(form)
+        body = _parse_asset_create(form)
+        with session.begin():
+            ensure_active(session, action="reading_insights.assets")
+            view = create_asset(session, body, now=utc_now())
+        source_paper = form.get("source_paper") or ""
+        if source_paper:
+            return RedirectResponse(
+                f"/ui/papers/{quote(source_paper, safe='')}?asset_created=1&view={view.asset_id}",
+                status_code=303,
+            )
+        return RedirectResponse(f"/ui/reading-insights/assets/{view.asset_id}", status_code=303)
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查资产内容。"
+        )
+        page = _asset_form_error_page(message, values)
+        page.status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        return page
+
+
+def _parse_asset_create(form: dict[str, str]) -> AssetCreateInput:
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    source_paper = (form.get("source_paper") or "").strip()
+    lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
+    if source_paper and source_paper not in lines:
+        lines.insert(0, source_paper)
+    payload = {
+        "kind": form.get("kind", ""),
+        "title": form.get("title", ""),
+        "body": form.get("body", ""),
+        "applicability": form.get("applicability") or None,
+        "sources": [{"paper_id": pid} for pid in lines],
+        "idempotency_key": form.get("idempotency_key") or uuid4().hex,
+    }
+    return AssetCreateInput.model_validate(payload)
+
+
+def _asset_form_error_page(message: str, values: dict[str, str]) -> HTMLResponse:
+    body = (
+        f'<p role="alert" tabindex="-1" autofocus>{escape(message)}'
+        "（已保留你的输入，可修正后重试）</p>"
+    )
+    body += _asset_create_form(values.get("source_paper", ""))
+    draft_note = values.get("body", "")
+    if draft_note:
+        body += f'<p class="muted">草稿内容已保留在下方表单之外：{escape(draft_note[:200])}</p>'
+    return _page("手工资产", body, nav="归档")
+
+
+def _allowed_transitions(kind: str, status: str) -> list[str]:
+    if kind == "harvest":
+        return ["archived"] if status == "active" else []
+    if status == "open":
+        return ["resolved", "archived"]
+    if status == "resolved":
+        return ["open", "archived"]
+    return []
+
+
+@router.get("/assets/{asset_id}")
+def asset_page(
+    session: SessionDep,
+    asset_id: str,
+    title: str = "",
+    body: str = "",
+    applicability: str = "",
+    status: str = "",
+    sources: str = "",
+) -> Response:
+    from papersteward.reading.insights.assets import get_asset_view
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    draft = {
+        "title": title,
+        "body": body,
+        "applicability": applicability,
+        "status": status,
+        "sources": sources,
+    }
+    try:
+        view = get_asset_view(session, asset_id)
+    except (DomainError, AppError) as exc:
+        rendered = _page("手工资产", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+        rendered.status_code = exc.status_code if isinstance(exc, AppError) else 404
+        return rendered
+    return _page(
+        f"手工资产 · {escape(view.revision.title)}",
+        _asset_detail_body(session, view, draft=draft or None),
+        nav="归档",
+    )
+
+
+def _asset_detail_body(
+    session: SessionDep, view: AssetView, *, draft: dict[str, str] | None = None
+) -> str:
+    from papersteward.reading.insights.assets import delete_preview
+
+    draft = draft or {}
+    url = f"/ui/reading-insights/assets/{escape(view.asset_id)}"
+    revision = view.revision
+    kind_label = _ASSET_KIND_LABELS.get(view.kind, view.kind)
+    body = (
+        f'<p class="muted">{escape(kind_label)} · '
+        f"当前状态 {escape(_asset_status_text(revision.status))} · "
+        f"版本 {revision.revision} · "
+        f"创建于 {escape(view.created_at.isoformat())} · "
+        '<a href="/ui/reading-insights/assets">全部资产</a></p>'
+        f"<h2>{escape(revision.title)}</h2>"
+        "<p>" + escape(revision.body).replace("\n", "<br>") + "</p>"
+    )
+    if revision.applicability:
+        body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += f"<h2>来源（{len(revision.sources)}）</h2><ul>"
+    for source in revision.sources:
+        rating = (
+            f" · 反馈版本 {source.rating_at.isoformat()}" if source.rating_at is not None else ""
+        )
+        body += (
+            f'<li><a href="/ui/papers/{escape(source.paper_id)}">'
+            f"{escape(source.paper_id)}</a>{rating}</li>"
+        )
+    body += "</ul>"
+    # 修订表单：全量内容 + 预期版本；冲突时保留草稿由查询参数带回。
+    body += (
+        "<h2>修订</h2>"
+        '<form method="post" action="'
+        + url
+        + '/revisions" class="stacked-form">'
+        + hidden("expected_revision", str(revision.revision))
+        + '<label>标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title") or revision.title)
+        + '"></label>'
+        + '<label>内容<textarea name="body" rows="4" required maxlength="20000">'
+        + escape(draft.get("body") or revision.body)
+        + "</textarea></label>"
+        + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
+        + escape(draft.get("applicability") or revision.applicability or "")
+        + "</textarea></label>"
+        + '<label>状态<select name="status">'
+        + select_options(
+            [
+                ("active", "有效"),
+                ("open", "待解决"),
+                ("resolved", "已解决"),
+                ("archived", "已归档"),
+            ],
+            selected=draft.get("status") or revision.status,
+        )
+        + '</select></label><label>来源论文 ID（每行一个）<textarea name="sources" rows="2">'
+        + escape(draft.get("sources") or "\n".join(source.paper_id for source in revision.sources))
+        + "</textarea></label>"
+        + "<button>保存为新版本</button></form>"
+    )
+    for target in _allowed_transitions(view.kind, revision.status):
+        body += (
+            '<form method="post" action="'
+            + url
+            + '/status" class="inline">'
+            + hidden("status", target)
+            + hidden("expected_revision", str(revision.revision))
+            + f"<button>标记为{_asset_status_text(target)}</button></form>"
+        )
+    if view.history:
+        body += "<h2>历史版本</h2><ul>"
+        for item in view.history:
+            body += (
+                f"<li>版本 {item.revision} · {escape(item.recorded_at.isoformat())} · "
+                f"{escape(item.title)} · {escape(_asset_status_text(item.status))}</li>"
+            )
+        body += "</ul>"
+    preview = delete_preview(session, view.asset_id)
+    body += "<h2>删除</h2>"
+    body += (
+        f'<p class="muted">将删除 {preview["revision_count"]} 个版本、'
+        f"{preview['source_count']} 条来源引用。"
+        "仅引用此资产（不含正文副本）的报告会继续显示「来源已移除」。</p>"
+    )
+    if preview["reports_with_body"]:
+        body += "<p>以下报告曾选入此资产的正文副本，可一并删除：</p><ul>"
+        for report_id in preview["reports_with_body"]:
+            body += (
+                f'<li><label><input type="checkbox" name="also_{escape(report_id)}" value="1"> '
+                f'<a href="/ui/reading-insights/reports/{escape(report_id)}">'
+                f"{escape(report_id)}</a></label></li>"
+            )
+        body += "</ul>"
+    body += (
+        '<form method="post" action="' + url + '/delete" class="stacked-form">'
+        '<label>输入「删除资产」确认<input name="confirmation" autocomplete="off"></label>'
+        "<button>删除资产</button></form>"
+    )
+    return body
+
+
+@router.post("/assets/{asset_id}/revisions")
+async def revise_asset_page(request: Request, asset_id: str, session: SessionDep) -> Response:
+    """追加修订；冲突或非法输入重渲染资产页并保留草稿（X-01）。"""
+    from papersteward.reading.insights.assets import append_revision, get_asset_view
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = {
+            "title": form.get("title", ""),
+            "body": form.get("body", ""),
+            "applicability": form.get("applicability", ""),
+            "status": form.get("status", ""),
+            "sources": form.get("sources", ""),
+        }
+        body = _parse_asset_revision(form)
+        with session.begin():
+            ensure_active(session, action="reading_insights.assets")
+            view = append_revision(session, asset_id, body, now=utc_now())
+        return RedirectResponse(f"/ui/reading-insights/assets/{asset_id}", status_code=303)
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查资产内容。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        view = get_asset_view(session, asset_id)
+        page_body = _asset_detail_body(
+            session,
+            view,
+            draft=draft or None,
+        )
+        notice = (
+            f'<p role="alert" tabindex="-1" autofocus>{escape(message)}'
+            "（已保留你的输入，可修正后重试）</p>"
+        )
+        rendered = _page(
+            f"手工资产 · {escape(view.revision.title)}", notice + page_body, nav="归档"
+        )
+        rendered.status_code = status_code
+        return rendered
+
+
+def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
+    from papersteward.reading.insights.contracts import AssetRevisionInput
+
+    try:
+        expected = int(form.get("expected_revision") or "0")
+    except ValueError as exc:
+        raise ValidationError("expected_revision 无效") from exc
+    lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
+    return AssetRevisionInput.model_validate(
+        {
+            "expected_revision": expected,
+            "title": form.get("title", ""),
+            "body": form.get("body", ""),
+            "applicability": form.get("applicability") or None,
+            "status": form.get("status", ""),
+            "sources": [{"paper_id": pid} for pid in lines],
+        }
+    )
+
+
+@router.post("/assets/{asset_id}/status")
+async def asset_status_page(request: Request, asset_id: str, session: SessionDep) -> Response:
+    from papersteward.reading.insights.assets import change_status
+
+    try:
+        form = await form_fields(request)
+        try:
+            expected = int(form.get("expected_revision") or "0")
+        except ValueError as exc:
+            raise ValidationError("expected_revision 无效") from exc
+        with session.begin():
+            ensure_active(session, action="reading_insights.assets")
+            change_status(
+                session,
+                asset_id,
+                form.get("status", ""),
+                now=utc_now(),
+                expected_revision=expected,
+            )
+    except (DomainError, AppError, ValidationError) as exc:
+        return failure(exc, back=f"/ui/reading-insights/assets/{asset_id}")
+    return RedirectResponse(f"/ui/reading-insights/assets/{asset_id}", status_code=303)
+
+
+@router.post("/assets/{asset_id}/delete")
+async def delete_asset_page(request: Request, asset_id: str, session: SessionDep) -> Response:
+    """删除资产；需输入确认短语；勾选的报告快照一并删除。"""
+    from papersteward.reading.insights.assets import delete_asset, delete_preview
+
+    try:
+        form = await form_fields(request)
+        if form.get("confirmation") != "删除资产":
+            raise InvalidRequestError("请输入「删除资产」以确认删除")
+        preview = delete_preview(session, asset_id)
+        removable = set(preview["reports_with_body"])
+        also = [rid for rid in removable if form.get(f"also_{rid}")]
+        with session.begin():
+            ensure_active(session, action="reading_insights.assets")
+            delete_asset(session, asset_id, also_report_ids=also)
+    except (DomainError, AppError) as exc:
+        return failure(exc, back=f"/ui/reading-insights/assets/{asset_id}")
+    return RedirectResponse("/ui/reading-insights/assets", status_code=303)
