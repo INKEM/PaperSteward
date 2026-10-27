@@ -11,7 +11,7 @@ from papersteward.api.domain_errors import domain_errors
 from papersteward.api.workspace_runtime import resolve_workspace
 from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
-from papersteward.errors import InvalidRequestError, NotAuthorizedError
+from papersteward.errors import InvalidRequestError, NotAuthorizedError, NotFoundError
 from papersteward.reading.insights.aggregate import (
     OVERVIEW_DETAIL_DEFAULT_LIMIT,
     OVERVIEW_DETAIL_MAX_LIMIT,
@@ -44,6 +44,7 @@ from papersteward.reading.insights.contracts import (
     AssetRevisionDetail,
     AssetRevisionInput,
     AssetView,
+    CandidateDecisionInput,
     ExcerptInput,
     ExcerptView,
     InsightOverview,
@@ -57,6 +58,11 @@ from papersteward.reading.insights.contracts import (
     ReviewMode,
     StructuredFeedbackInput,
     StructuredFeedbackView,
+)
+from papersteward.reading.insights.decisions import (
+    candidate_with_decision,
+    decide_candidate,
+    decision_view_for_candidate,
 )
 from papersteward.reading.insights.materials import (
     add_excerpt,
@@ -679,3 +685,49 @@ def get_run_candidates(run_id: str, session: SessionDep) -> list[dict[str, Any]]
 def get_paper_candidates(paper_id: str, session: SessionDep) -> list[dict[str, Any]]:
     with domain_errors():
         return candidates_for_paper(session, paper_id)
+
+
+# —— 候选决定（R2-04）——————————————————————————————————————————————
+
+
+@router.post(
+    "/analysis/candidates/{candidate_id}/decisions",
+    status_code=status.HTTP_201_CREATED,
+    summary="处理候选（确认生成资产／并入已有资产／忽略）；同候选重复提交重放同一结果",
+)
+def post_candidate_decision(
+    candidate_id: str, body: CandidateDecisionInput, session: SessionDep
+) -> dict[str, Any]:
+    with domain_errors(), write_tx(session):
+        if body.candidate_id != candidate_id:
+            raise InvalidRequestError("请求体与路径中的候选不一致")
+        ensure_active(session, action="reading_insights.assets")
+        outcome = decide_candidate(session, body, now=utc_now())
+        return {
+            "asset_id": outcome.asset_id,
+            "verification": outcome.candidate.verification,
+            "asset_url": (
+                f"/ui/reading-insights/assets/{outcome.asset_id}" if outcome.asset_id else None
+            ),
+        }
+
+
+@router.get(
+    "/analysis/candidates/{candidate_id}/decisions",
+    summary="查询候选的处理决定",
+)
+def get_candidate_decision(candidate_id: str, session: SessionDep) -> dict[str, Any]:
+    with domain_errors():
+        decision = decision_view_for_candidate(session, candidate_id)
+        if decision is None:
+            raise NotFoundError("该候选还没有处理决定")
+        return decision
+
+
+@router.get(
+    "/analysis/candidates/{candidate_id}",
+    summary="候选详情（含决定状态）",
+)
+def get_candidate_detail(candidate_id: str, session: SessionDep) -> dict[str, Any]:
+    with domain_errors():
+        return candidate_with_decision(session, candidate_id)

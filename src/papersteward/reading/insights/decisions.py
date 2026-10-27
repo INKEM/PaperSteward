@@ -31,7 +31,9 @@ from papersteward.storage.models import (
 
 __all__ = [
     "CandidateDecisionOutcome",
+    "candidate_with_decision",
     "decide_candidate",
+    "decision_view_for_candidate",
     "dismissed_statement_hashes",
 ]
 
@@ -195,3 +197,46 @@ def _replay(
 
         view = get_asset_view(session, existing.asset_id)
     return CandidateDecisionOutcome(view, candidate, asset_id=existing.asset_id)
+
+
+def decision_view_for_candidate(session: Session, candidate_id: str) -> dict[str, object] | None:
+    """候选决定视图；无决定返回 None。"""
+    row = ReadingAnalysisDecisionRepository(session).find_by_candidate(candidate_id)
+    if row is None:
+        return None
+    return {
+        "decision_id": row.id,
+        "candidate_id": row.candidate_id,
+        "decision": row.decision,
+        "asset_id": row.asset_id,
+        "asset_revision": row.asset_revision,
+        "paper_id": row.paper_id,
+        "kind": row.kind,
+        "note": row.note,
+        "decided_at": as_utc(row.decided_at),
+    }
+
+
+def candidate_with_decision(session: Session, candidate_id: str) -> dict[str, object]:
+    """候选详情＋决定状态（确认页用）；候选不存在 404。"""
+    row = session.get(ReadingAnalysisCandidateRow, candidate_id)
+    if row is None:
+        raise NotFoundError("候选不存在")
+    payload: dict[str, object] = {
+        "candidate_id": row.id,
+        "run_id": row.run_id,
+        "paper_id": row.paper_id,
+        "kind": row.kind,
+        "nature": row.nature,
+        "statement": row.statement,
+        "conditions": row.conditions,
+        "limitations": row.limitations,
+        "quote": row.quote,
+        "quote_source_id": row.quote_source_id,
+        "source_refs": list(row.source_refs_json or []),
+        "stale": bool(row.stale),
+        "verification": row.verification,
+        "created_at": as_utc(row.created_at),
+        "decision": decision_view_for_candidate(session, candidate_id),
+    }
+    return payload

@@ -1917,6 +1917,21 @@ def _asset_detail_body(
             )
         body += "</ul>"
     preview = delete_preview(session, view.asset_id)
+    from papersteward.storage.insights import ReadingAnalysisDecisionRepository
+
+    decisions = ReadingAnalysisDecisionRepository(session).by_asset(view.asset_id)
+    if decisions:
+        body += f"<h2>来自候选（{len(decisions)}）</h2><ul>"
+        for decision in decisions:
+            state = {
+                "confirmed": "确认为本资产",
+                "merged": "并入本资产（追加版本）",
+            }.get(str(decision.decision), str(decision.decision))
+            body += "<li>" + escape(state) + " · " + escape(str(decision.decided_at))
+            if decision.note:
+                body += " · " + escape(str(decision.note))
+            body += "</li>"
+        body += "</ul>"
     body += "<h2>删除</h2>"
     body += (
         f'<p class="muted">将删除 {preview["revision_count"]} 个版本、'
@@ -2399,15 +2414,43 @@ def _analysis_runs_section(session: SessionDep, *, selected_run: str | None) -> 
         "user_expression": "用户表达",
         "model_inference": "模型归纳（待核对）",
     }
-    body += '<p class="muted">候选未经你确认，不会写入资产或长期画像；确认入口随下一批提供。</p>'
+    body += (
+        '<p class="muted">候选未经你确认，不会写入资产或长期画像；'
+        "点开候选核对来源后确认／忽略。</p>"
+    )
+    from papersteward.reading.insights.decisions import decision_view_for_candidate
+
     grouped: dict[str, list[dict[str, object]]] = {}
     for item in candidates:
         grouped.setdefault(str(item["paper_id"]), []).append(item)
+    decision_states = {
+        "confirmed": "已确认为资产",
+        "dismissed": "已忽略",
+        "merged": "已并入资产",
+    }
     for paper_id, group in grouped.items():
         body += f"<h4>{escape(paper_id)}</h4><ul>"
         for item in group:
+            candidate_link = (
+                f"/ui/reading-insights/analysis/candidates/{escape(str(item['candidate_id']))}"
+            )
             kind_text = kind_labels.get(str(item["kind"]), str(item["kind"]))
             nature_text = nature_labels.get(str(item["nature"]), str(item["nature"]))
+            decision = decision_view_for_candidate(session, str(item["candidate_id"]))
+            if decision is not None:
+                state = decision_states.get(str(decision["decision"]), "已处理")
+                target = (
+                    f' <a href="/ui/reading-insights/assets/'
+                    f'{escape(str(decision["asset_id"]))}">资产</a>'
+                    if decision.get("asset_id")
+                    else ""
+                )
+                body += (
+                    '<li><p class="muted">'
+                    + f"{escape(kind_text)} · {escape(state)}{target}"
+                    + f' · <a href="{candidate_link}">查看决定</a></p></li>'
+                )
+                continue
             body += (
                 "<li><p>"
                 f"{escape(kind_text)} · {escape(nature_text)}"
@@ -2416,13 +2459,13 @@ def _analysis_runs_section(session: SessionDep, *, selected_run: str | None) -> 
                 + escape(str(item["statement"]))
                 + "</p>"
             )
-            if item["conditions"]:
-                body += f'<p class="muted">适用条件：{escape(str(item["conditions"]))}</p>'
-            if item["limitations"]:
-                body += f'<p class="muted">限制：{escape(str(item["limitations"]))}</p>'
             if item["quote"]:
                 body += f"<p>引文：{escape(str(item['quote']))}</p>"
-            body += '<p class="muted">待核对</p></li>'
+            body += (
+                f'<p><a href="{candidate_link}">核对并确认</a> · '
+                f'<a href="{candidate_link}">忽略</a>'
+                ' <span class="muted">（待核对）</span></p></li>'
+            )
         body += "</ul>"
     return body
 
@@ -2729,3 +2772,237 @@ async def submit_analysis_page(request: Request, session: SessionDep) -> Respons
         if redirected is not None:
             return redirected
         return failure(exc, back="/ui/reading-insights/analysis")
+
+
+# —— 候选确认页（R2-04）：并列候选与来源，确认生成资产／并入／忽略 ————————
+
+
+def _candidate_source_rows(source_refs: list[dict[str, Any]]) -> str:
+    """来源引用解析为可核对链接（论文详情／资产详情）。"""
+    rows = ""
+    for ref in source_refs:
+        kind = str(ref.get("kind", ""))
+        target = str(ref.get("target_id", ""))
+        version = str(ref.get("version_key", ""))
+        label = MATERIAL_KIND_LABELS.get(kind, kind)
+        if kind == "asset_content":
+            link = f'<a href="/ui/reading-insights/assets/{escape(target)}">{escape(target)}</a>'
+        else:
+            link = f'<a href="/ui/papers/{escape(target)}">{escape(target)}</a>'
+        rows += f"<li>{escape(label)} · {link} · 版本 <code>{escape(version[:24])}…</code></li>"
+    return f"<ul>{rows}</ul>" if rows else '<p class="muted">无来源引用</p>'
+
+
+def _candidate_page_body(detail: dict[str, Any], *, draft: dict[str, str] | None) -> str:
+    draft = draft or {}
+    decision = detail.get("decision")
+    candidate_id = str(detail["candidate_id"])
+    url = f"/ui/reading-insights/analysis/candidates/{escape(candidate_id)}"
+    kind_labels = {"harvest": "收获", "question": "问题", "method": "方法"}
+    nature_labels = {
+        "paper_statement": "论文陈述",
+        "user_expression": "用户表达",
+        "model_inference": "模型归纳（待核对）",
+    }
+    head = (
+        '<p class="back-link">'
+        f'<a href="/ui/reading-insights/analysis">← 阅读分析</a></p>'
+        "<h1>核对候选</h1>"
+        f"<p>{escape(kind_labels.get(str(detail['kind']), str(detail['kind'])))} · "
+        f"{escape(nature_labels.get(str(detail['nature']), str(detail['nature'])))} · "
+        f'论文 <a href="/ui/papers/{escape(str(detail["paper_id"]))}">'
+        f"{escape(str(detail['paper_id']))}</a>"
+        + (" · 源已变化" if detail.get("stale") else "")
+        + "</p>"
+        + "<h2>候选陈述</h2><p>"
+        + escape(str(detail["statement"]))
+        + "</p>"
+    )
+    if detail.get("conditions"):
+        head += f'<p class="muted">适用条件：{escape(str(detail["conditions"]))}</p>'
+    if detail.get("limitations"):
+        head += f'<p class="muted">限制：{escape(str(detail["limitations"]))}</p>'
+    if detail.get("quote"):
+        head += f"<p>引文：{escape(str(detail['quote']))}</p>"
+    head += "<h2>来源（请对照原文核对）</h2>" + _candidate_source_rows(
+        detail.get("source_refs") or []
+    )
+    if decision is not None:
+        state = {"confirmed": "已确认为资产", "dismissed": "已忽略", "merged": "已并入资产"}[
+            str(decision["decision"])
+        ]
+        target = (
+            f'<a href="/ui/reading-insights/assets/{escape(str(decision["asset_id"]))}">'
+            "打开资产</a>"
+            if decision.get("asset_id")
+            else ""
+        )
+        return (
+            head
+            + f'<p class="success">{escape(state)}'
+            + f"（{escape(str(decision['decided_at']))}）{target}</p>"
+            + '<p class="muted">资产可以继续修订或删除；决定记录保留在候选上。</p>'
+        )
+
+    default_kind = {"harvest": "harvest", "question": "problem", "method": "method"}[
+        str(detail["kind"])
+    ]
+    confirm_form = (
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "confirm")
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
+        + "<fieldset><legend>确认为资产（写入资产库，可继续修订）</legend>"
+        + '<label>资产类型<select name="kind">'
+        + select_options(
+            [
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=draft.get("kind", default_kind),
+        )
+        + "</select></label>"
+        + '<label>标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title", f"候选：{detail['statement'][:40]}"))
+        + '"></label>'
+        + '<label>内容<textarea name="body" rows="3" required maxlength="20000">'
+        + escape(draft.get("body", str(detail["statement"])))
+        + "</textarea></label>"
+        + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
+        + escape(draft.get("applicability", str(detail.get("conditions") or "")))
+        + "</textarea></label>"
+        + _typed_fields_details(draft)
+        + "<label>来源论文 ID（每行一个；默认引用候选来源，可修改）"
+        + '<textarea name="sources" rows="2">'
+        + escape(draft.get("sources", str(detail["paper_id"])))
+        + "</textarea></label>"
+        + '<p class="muted">确认表示你认可这条个人整理；不等于系统验证论文真实性。'
+        "用户新增、未提供证据的内容会按个人判断对待。</p>"
+        + '<button type="submit">确认并生成资产</button>'
+        + "</fieldset></form>"
+    )
+    dismiss_form = (
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "dismiss")
+        + hidden("idempotency_key", draft.get("dismiss_key") or uuid4().hex)
+        + "<fieldset><legend>忽略这条候选</legend>"
+        + '<label>原因备注（可选，仅自己可见）<input name="note" maxlength="2000" value="'
+        + escape(draft.get("note", ""))
+        + '"></label>'
+        + '<p class="muted">忽略后同一陈述不会再次弹出；改写后的新候选仍会展示。'
+        "决定记录保留，可随时在此回看。</p>"
+        + '<button type="submit">忽略候选</button></fieldset></form>'
+    )
+    merge_form = (
+        "<details><summary>并入已有资产（把候选内容追加为某资产的新版本）</summary>"
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "merge")
+        + hidden("idempotency_key", draft.get("merge_key") or uuid4().hex)
+        + '<label>目标资产 ID<input name="target_asset_id" required maxlength="64" value="'
+        + escape(draft.get("target_asset_id", ""))
+        + '"></label>'
+        + '<label>预期版本<input name="expected_revision" type="number" min="1" required value="'
+        + escape(draft.get("expected_revision", ""))
+        + '"></label>'
+        + '<label>追加内容标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title", f"并入候选：{detail['statement'][:40]}"))
+        + '"></label>'
+        + '<label>追加内容<textarea name="body" rows="3" required maxlength="20000">'
+        + escape(draft.get("body", str(detail["statement"])))
+        + "</textarea></label>"
+        + '<p class="muted">合并会在目标资产上追加新版本并保留其来源；'
+        "原资产与历史引用不变。</p>" + '<button type="submit">并入资产</button></form></details>'
+    )
+    return head + confirm_form + dismiss_form + merge_form
+
+
+@router.get("/analysis/candidates/{candidate_id}")
+async def candidate_review_page(session: SessionDep, candidate_id: str) -> Response:
+    from papersteward.reading.insights.decisions import candidate_with_decision
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        detail = candidate_with_decision(session, candidate_id)
+    except (DomainError, AppError) as exc:
+        return failure(exc, back="/ui/reading-insights/analysis")
+    return _page("核对候选 · PaperSteward", _candidate_page_body(detail, draft=None))
+
+
+@router.post("/analysis/candidates/{candidate_id}/decide")
+async def decide_candidate_page(
+    session: SessionDep, candidate_id: str, request: Request
+) -> Response:
+    from papersteward.reading.insights.contracts import CandidateDecisionInput
+    from papersteward.reading.insights.decisions import (
+        candidate_with_decision,
+        decide_candidate,
+    )
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        kind = form.get("kind") or None
+        typed = _parse_typed(form, kind) if kind else None
+        sources = [
+            {"paper_id": line.strip()}
+            for line in (form.get("sources") or "").splitlines()
+            if line.strip()
+        ]
+        expected = form.get("expected_revision") or None
+        body = CandidateDecisionInput.model_validate(
+            {
+                "candidate_id": candidate_id,
+                "decision": form.get("decision", ""),
+                "idempotency_key": form.get("idempotency_key") or uuid4().hex,
+                "note": form.get("note") or None,
+                "kind": kind,
+                "title": form.get("title") or None,
+                "body": form.get("body") or None,
+                "applicability": form.get("applicability") or None,
+                "typed": typed,
+                "sources": sources or None,
+                "target_asset_id": form.get("target_asset_id") or None,
+                "expected_revision": int(expected) if expected else None,
+                "status": "active",
+            }
+        )
+        with write_tx(session):
+            ensure_active(session, action="reading_insights.assets")
+            outcome = decide_candidate(session, body, now=utc_now())
+        if body.decision == "confirm" and outcome.asset_id:
+            return RedirectResponse(
+                f"/ui/reading-insights/assets/{outcome.asset_id}", status_code=303
+            )
+        return RedirectResponse("/ui/reading-insights/analysis", status_code=303)
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查表单。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            detail = candidate_with_decision(session, candidate_id)
+            rendered = _page(
+                "核对候选 · PaperSteward",
+                _candidate_page_body(detail, draft=draft)
+                + f'<p role="alert" tabindex="-1" autofocus>{escape(message)}'
+                "（已保留你的输入，可修正后重试）</p>",
+            )
+            rendered.status_code = status_code
+            return rendered
+        except (DomainError, AppError):
+            return failure(exc, back="/ui/reading-insights/analysis")

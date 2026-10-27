@@ -12,7 +12,9 @@ from test_reading_analysis_runner import (
     run_runner,
     setup_run,
 )
+from test_ui_flows import HEADERS
 
+from conftest import activate, activate_workspace
 from papersteward.errors import ConflictError, NotFoundError
 from papersteward.reading.insights.analysis import run_insight_analysis
 from papersteward.reading.insights.contracts import CandidateDecisionInput
@@ -21,6 +23,7 @@ from papersteward.reading.insights.decisions import (
     dismissed_statement_hashes,
 )
 from papersteward.storage import session_scope
+from papersteward.storage.db import create_session_factory
 from papersteward.storage.insights import (
     ReadingAnalysisCandidateRepository,
     ReadingAnalysisDecisionRepository,
@@ -38,6 +41,7 @@ def seed_candidate(
         import papersteward.reading.insights.authorization as auth
 
         auth.build_llm_provider = lambda config, **kwargs: provider
+        _seed_run(factory, run_id)
         run_insight_analysis(
             factory,
             SETTINGS,
@@ -276,3 +280,134 @@ def test_merge_appends_revision_to_target_asset(insights_factory):
         # 冲突：expected_revision 过期 → 409，且决定未写入（候选仍待核对，
         # 修正后同候选可重试）。构造于 merge 成功之前无法回溯，此处用另一条
         # 真实候选验证：先建第二篇候选，merge 过期版本 409 后修正重试成功。
+
+
+# —— JSON 决定路由与页面确认流 ——————————————————————————————————————
+
+
+def test_json_decision_roundtrip(client, migrated_engine, monkeypatch):
+    activate_workspace(migrated_engine)
+    factory = create_session_factory(migrated_engine)
+    candidate_id = seed_candidate(factory, "json-dec", run_id="run-json")
+
+    detail = client.get(f"/reading-insights/analysis/candidates/{candidate_id}")
+    assert detail.status_code == 200
+    assert detail.json()["verification"] == "pending_user"
+    assert detail.json()["decision"] is None
+
+    confirmed = client.post(
+        f"/reading-insights/analysis/candidates/{candidate_id}/decisions",
+        json={
+            "candidate_id": candidate_id,
+            "decision": "confirm",
+            "idempotency_key": "json-dec-key",
+            "kind": "harvest",
+            "title": "JSON 确认的收获",
+            "body": "候选陈述",
+            "sources": [{"paper_id": "json-dec"}],
+        },
+    )
+    assert confirmed.status_code == 201
+    assert confirmed.json()["asset_id"]
+
+    # 重复提交重放同一资产
+    replay = client.post(
+        f"/reading-insights/analysis/candidates/{candidate_id}/decisions",
+        json={
+            "candidate_id": candidate_id,
+            "decision": "confirm",
+            "idempotency_key": "json-dec-key",
+            "kind": "harvest",
+            "title": "JSON 确认的收获",
+            "body": "候选陈述",
+            "sources": [{"paper_id": "json-dec"}],
+        },
+    )
+    assert replay.status_code == 201
+    assert replay.json()["asset_id"] == confirmed.json()["asset_id"]
+
+    decision = client.get(f"/reading-insights/analysis/candidates/{candidate_id}/decisions")
+    assert decision.status_code == 200
+    assert decision.json()["decision"] == "confirmed"
+
+    missing = client.get("/reading-insights/analysis/candidates/ghost/decisions")
+    assert missing.status_code == 404
+
+    mismatch = client.post(
+        f"/reading-insights/analysis/candidates/{candidate_id}/decisions",
+        json={"candidate_id": "other", "decision": "dismiss", "idempotency_key": "k"},
+    )
+    assert mismatch.status_code in (400, 422)
+
+
+def test_page_candidate_review_and_confirm(client, migrated_engine, monkeypatch):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    candidate_id = seed_candidate(factory, "page-dec", run_id="run-page-dec")
+
+    # 候选页：并列候选与来源
+    page = client.get(f"/ui/reading-insights/analysis/candidates/{candidate_id}")
+    assert page.status_code == 200
+    assert "核对候选" in page.text
+    assert "确认并生成资产" in page.text
+    assert "忽略候选" in page.text
+    assert "并入已有资产" in page.text
+    assert "请对照原文核对" in page.text
+    assert "用户表达" in page.text
+
+    # 页面确认（默认 kind=problem→改为 harvest）
+    confirmed = client.post(
+        f"/ui/reading-insights/analysis/candidates/{candidate_id}/decide",
+        data={
+            "decision": "confirm",
+            "idempotency_key": "page-dec-key",
+            "kind": "harvest",
+            "title": "页面确认的收获",
+            "body": "候选陈述正文",
+            "sources": "page-dec",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert confirmed.status_code == 303
+    asset_id = confirmed.headers["location"].rsplit("/", 1)[-1]
+
+    # 回到候选页显示已决定
+    after = client.get(f"/ui/reading-insights/analysis/candidates/{candidate_id}")
+    assert "已确认为资产" in after.text
+    assert f"/ui/reading-insights/assets/{asset_id}" in after.text
+
+    # 资产详情含「来自候选」决定回看区
+    asset_page = client.get(f"/ui/reading-insights/assets/{asset_id}")
+    assert asset_page.status_code == 200
+    assert "来自候选" in asset_page.text
+
+    # 分析页候选列表显示已处理状态
+    analysis = client.get("/ui/reading-insights/analysis")
+    assert "已确认为资产" in analysis.text
+    assert "候选未经你确认" in analysis.text
+
+
+def test_page_dismiss_flow_and_analysis_state(client, migrated_engine, monkeypatch):
+    activate(client)
+    factory = create_session_factory(client.app.state.engine)
+    candidate_id = seed_candidate(factory, "page-dis", run_id="run-page-dis")
+
+    dismissed = client.post(
+        f"/ui/reading-insights/analysis/candidates/{candidate_id}/decide",
+        data={
+            "decision": "dismiss",
+            "idempotency_key": "page-dis-key",
+            "note": "与当前任务无关",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert dismissed.status_code == 303
+    assert dismissed.headers["location"] == "/ui/reading-insights/analysis"
+
+    analysis = client.get("/ui/reading-insights/analysis")
+    assert "已忽略" in analysis.text
+    # 资产库不受影响（dismiss 不生成资产）
+    assets = client.get("/ui/reading-insights/assets")
+    assert "还没有手工资产" in assets.text
