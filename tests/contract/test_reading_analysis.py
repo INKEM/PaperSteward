@@ -162,3 +162,146 @@ def test_flow_request_insight_analysis_coherence():
     ]:
         with pytest.raises(ValidationError):
             FlowRequest.model_validate(payload)
+
+
+# —— R2-04：方法卡/证据组类型化内容与资产 kind 一致性 ————————————————————
+
+
+def _typed_method() -> dict[str, object]:
+    return {
+        "problem": "如何估计处理效应",
+        "conditions": "面板数据可用",
+        "approach": "双重差分加平行趋势检验",
+        "limitations": "对样本选择敏感",
+        "resources": None,
+    }
+
+
+def test_asset_kind_method_requires_typed():
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    good = AssetCreateInput.model_validate(
+        {
+            "kind": "method",
+            "title": "双重差分方法卡",
+            "body": "方法概述正文",
+            "sources": [{"paper_id": "p1"}],
+            "typed": _typed_method(),
+            "idempotency_key": "k-method",
+        }
+    )
+    assert good.typed is not None and good.typed.approach.startswith("双重差分")
+    # 缺 typed
+    with pytest.raises(ValidationError, match="类型化内容"):
+        AssetCreateInput.model_validate(
+            {
+                "kind": "method",
+                "title": "t",
+                "body": "b",
+                "sources": [{"paper_id": "p1"}],
+                "idempotency_key": "k",
+            }
+        )
+    # 类型不匹配（method 给证据组字段）
+    with pytest.raises(ValidationError, match="MethodCardContent"):
+        AssetCreateInput.model_validate(
+            {
+                "kind": "method",
+                "title": "t",
+                "body": "b",
+                "sources": [{"paper_id": "p1"}],
+                "typed": {"claim": "c"},
+                "idempotency_key": "k",
+            }
+        )
+
+
+def test_asset_kind_harvest_rejects_typed():
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    with pytest.raises(ValidationError, match="不接受类型化内容"):
+        AssetCreateInput.model_validate(
+            {
+                "kind": "harvest",
+                "title": "t",
+                "body": "b",
+                "sources": [{"paper_id": "p1"}],
+                "typed": _typed_method(),
+                "idempotency_key": "k",
+            }
+        )
+
+
+def test_evidence_group_typed_content():
+    from papersteward.reading.insights.contracts import AssetCreateInput
+
+    good = AssetCreateInput.model_validate(
+        {
+            "kind": "evidence",
+            "title": "证据组",
+            "body": "论点说明",
+            "sources": [{"paper_id": "p1"}],
+            "typed": {
+                "claim": "分层抽样降低季节性偏误",
+                "supports": ["论文第 3 节", "备注记录"],
+                "differing": [],
+                "context": None,
+                "unverified": "未对照原始数据",
+            },
+            "idempotency_key": "k-ev",
+        }
+    )
+    assert good.typed is not None and good.typed.supports == ["论文第 3 节", "备注记录"]
+    # supports 超长
+    with pytest.raises(ValidationError):
+        AssetCreateInput.model_validate(
+            {
+                "kind": "evidence",
+                "title": "t",
+                "body": "b",
+                "sources": [{"paper_id": "p1"}],
+                "typed": {"claim": "c", "supports": ["x"] * 21},
+                "idempotency_key": "k",
+            }
+        )
+
+
+def test_candidate_decision_input_strictness():
+    from papersteward.reading.insights.contracts import CandidateDecisionInput
+
+    good = CandidateDecisionInput.model_validate(
+        {"candidate_id": "c1", "decision": "dismiss", "idempotency_key": "k1"}
+    )
+    assert good.decision == "dismiss"
+    confirm = CandidateDecisionInput.model_validate(
+        {
+            "candidate_id": "c1",
+            "decision": "confirm",
+            "idempotency_key": "k2",
+            "kind": "method",
+            "title": "t",
+            "body": "b",
+            "sources": [{"paper_id": "p1"}],
+            "typed": _typed_method(),
+        }
+    )
+    assert confirm.kind == "method"
+    for payload in [
+        {"candidate_id": "c1", "decision": "confirm", "idempotency_key": "k"},
+        {"candidate_id": "c1", "decision": "delete", "idempotency_key": "k"},
+        {"candidate_id": "c1", "decision": "dismiss", "idempotency_key": "has space"},
+        {"candidate_id": "c1", "decision": "dismiss", "idempotency_key": "k", "x": 1},
+        {
+            "candidate_id": "c1",
+            "decision": "confirm",
+            "idempotency_key": "k",
+            "typed": _typed_method(),
+        },
+        {
+            "candidate_id": "c1",
+            "decision": "merge",
+            "idempotency_key": "k",
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            CandidateDecisionInput.model_validate(payload)

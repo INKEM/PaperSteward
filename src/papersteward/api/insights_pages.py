@@ -37,6 +37,7 @@ from papersteward.reading.insights.contracts import (
     LIMITED_REASON_LABELS,
     MATERIAL_KIND_LABELS,
     MATERIAL_KIND_LIMITS,
+    TYPED_ASSET_KINDS,
     VALUE_SOURCE_CODES,
     VALUE_SOURCE_LABELS,
     AnalysisAuthorizationStatus,
@@ -1373,7 +1374,24 @@ _ASSET_STATUS_LABELS = {
     "open": "待解决",
     "resolved": "已解决",
 }
-_ASSET_KIND_LABELS = {"harvest": "收获", "problem": "问题"}
+_ASSET_KIND_LABELS = {
+    "harvest": "收获",
+    "problem": "问题",
+    "method": "方法卡",
+    "evidence": "证据组",
+}
+_TYPED_FIELD_LABELS = {
+    "problem": "解决什么问题",
+    "conditions": "适用条件",
+    "approach": "关键做法",
+    "limitations": "限制",
+    "resources": "资源／数据要求（未知可留空）",
+    "claim": "待讨论的论点",
+    "supports": "支持材料",
+    "differing": "不同结果／限制",
+    "context": "研究条件／背景",
+    "unverified": "尚未核实的部分",
+}
 
 
 def _asset_status_text(status: str) -> str:
@@ -1480,7 +1498,14 @@ def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> s
         '<form method="get" class="queue-filters">'
         '<label>类型<select name="kind">'
         + select_options(
-            [("", "全部"), ("harvest", "收获"), ("problem", "问题")], selected=kind or None
+            [
+                ("", "全部"),
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=kind or None,
         )
         + '</select></label><label>状态<select name="status">'
         + select_options(
@@ -1501,6 +1526,150 @@ def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> s
     )
 
 
+_TYPED_TEXT_FIELDS = ("problem", "conditions", "approach", "limitations", "resources")
+_TYPED_LIST_FIELDS = ("supports", "differing")
+_TYPED_EXTRA_FIELDS = ("claim", "context", "unverified")
+
+
+def _typed_fields_details(draft: dict[str, str] | None = None) -> str:
+    """方法卡/证据组的结构化字段（全部渲染，服务端按 kind 校验）。
+
+    无 JS 环境下无法按 kind 动态显隐：方法卡与证据组字段分两个 details，
+    并提示用户只填所选类型的字段。
+    """
+    draft = draft or {}
+
+    def textarea(name: str, label: str, *, rows: int = 2) -> str:
+        return (
+            f"<label>{escape(label)}"
+            f'<textarea name="typed_{escape(name)}" rows="{rows}" maxlength="2000">'
+            f"{escape(draft.get(f'typed_{name}', ''))}</textarea></label>"
+        )
+
+    method_fields = (
+        textarea("problem", "解决什么问题")
+        + textarea("conditions", "适用条件")
+        + textarea("approach", "关键做法", rows=4)
+        + textarea("limitations", "限制")
+        + textarea("resources", "资源／数据要求（未知可留空）")
+    )
+    evidence_fields = (
+        textarea("claim", "待讨论的论点")
+        + textarea("supports", "支持材料（每行一条）", rows=3)
+        + textarea("differing", "不同结果／限制（每行一条，可选）", rows=2)
+        + textarea("context", "研究条件／背景（可选）")
+        + textarea("unverified", "尚未核实的部分（可选）")
+    )
+    return (
+        "<details><summary>方法卡字段（类型选「方法卡」时填写）</summary>"
+        + method_fields
+        + "</details>"
+        + "<details><summary>证据组字段（类型选「证据组」时填写）</summary>"
+        + evidence_fields
+        + "</details>"
+    )
+
+
+def _typed_content_html(typed: dict[str, object] | None) -> str:
+    """类型化内容的只读分节展示；无内容返回空串。"""
+    if not typed:
+        return ""
+    rows = ""
+    for key, value in typed.items():
+        if value is None or value == []:
+            continue
+        label = _TYPED_FIELD_LABELS.get(key, key)
+        if isinstance(value, list):
+            text = "；".join(escape(str(item)) for item in value)
+            rows += f"<p><strong>{escape(label)}</strong>：{text}</p>"
+        else:
+            rows += f"<p><strong>{escape(label)}</strong>：{escape(str(value))}</p>"
+    return f'<section class="typed-content">{rows}</section>' if rows else ""
+
+
+def _typed_edit_fields(kind: str, typed: dict[str, object] | None, draft: dict[str, str]) -> str:
+    """修订表单的类型化字段（预填当前版本内容）；仅类型化 kind 渲染。"""
+    if kind not in TYPED_ASSET_KINDS:
+        return ""
+    current = typed or {}
+    specs = _TYPED_EDIT_SPECS[kind]
+    rows = []
+    for name, label, required, rows_count in specs:
+        value = draft.get(f"typed_{name}", str(current.get(name) or ""))
+        required_attr = " required" if required else ""
+        rows.append(
+            f"<label>{escape(label)}"
+            f'<textarea name="typed_{escape(name)}" rows="{rows_count}"'
+            f' maxlength="8000"{required_attr}>{value}</textarea></label>'
+        )
+    if kind == "evidence":
+        raw_supports = current.get("supports")
+        raw_differing = current.get("differing")
+        support_items: list[str] = (
+            [str(item) for item in raw_supports] if isinstance(raw_supports, list) else []
+        )
+        differing_items: list[str] = (
+            [str(item) for item in raw_differing] if isinstance(raw_differing, list) else []
+        )
+        supports = draft.get("typed_supports", "\n".join(support_items))
+        differing = draft.get("typed_differing", "\n".join(differing_items))
+        rows.append(
+            "<label>支持材料（每行一条）"
+            f'<textarea name="typed_supports" rows="3">{escape(supports)}</textarea></label>'
+        )
+        rows.append(
+            "<label>不同结果／限制（每行一条，可选）"
+            f'<textarea name="typed_differing" rows="2">{escape(differing)}</textarea></label>'
+        )
+    return (
+        "<details open><summary>结构化字段（该类型必填）</summary>" + "".join(rows) + "</details>"
+    )
+
+
+# (字段名, 标签, 是否必填, 行数)；supports/differing 列表字段单独处理。
+_TYPED_EDIT_SPECS = {
+    "method": (
+        ("problem", "解决什么问题", True, 2),
+        ("conditions", "适用条件", False, 2),
+        ("approach", "关键做法", True, 4),
+        ("limitations", "限制", False, 2),
+        ("resources", "资源／数据要求（未知可留空）", False, 2),
+    ),
+    "evidence": (
+        ("claim", "待讨论的论点", True, 2),
+        ("context", "研究条件／背景（可选）", False, 2),
+        ("unverified", "尚未核实的部分（可选）", False, 2),
+    ),
+}
+
+
+def _parse_typed(form: dict[str, str], kind: str) -> dict[str, object] | None:
+    """从表单解析类型化内容；非类型化 kind 返回 None。"""
+    if kind not in TYPED_ASSET_KINDS:
+        return None
+    if kind == "method":
+        return {
+            "problem": form.get("typed_problem", ""),
+            "conditions": form.get("typed_conditions") or None,
+            "approach": form.get("typed_approach", ""),
+            "limitations": form.get("typed_limitations") or None,
+            "resources": form.get("typed_resources") or None,
+        }
+    return {
+        "claim": form.get("typed_claim", ""),
+        "supports": [
+            line.strip() for line in (form.get("typed_supports") or "").splitlines() if line.strip()
+        ],
+        "differing": [
+            line.strip()
+            for line in (form.get("typed_differing") or "").splitlines()
+            if line.strip()
+        ],
+        "context": form.get("typed_context") or None,
+        "unverified": form.get("typed_unverified") or None,
+    }
+
+
 def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None = None) -> str:
     draft = draft or {}
     return (
@@ -1509,7 +1678,15 @@ def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None =
         + hidden("source_paper", source_paper)
         + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
         + '<label>类型<select name="kind">'
-        + select_options([("harvest", "收获"), ("problem", "问题")], selected=draft.get("kind"))
+        + select_options(
+            [
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=draft.get("kind"),
+        )
         + '</select></label><label>标题<input name="title" required maxlength="256" value="'
         + escape(draft.get("title", ""))
         + '"></label>'
@@ -1519,10 +1696,12 @@ def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None =
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
         + escape(draft.get("applicability", ""))
         + "</textarea></label>"
+        + _typed_fields_details(draft)
         + '<label>来源论文 ID（每行一个，已归档文献）<textarea name="sources" rows="2">'
         + escape(draft.get("sources", source_paper))
         + "</textarea></label>"
-        + "<button>保存资产</button></form></details>"
+        + '<p class="muted">选「方法卡／证据组」时需填写下方对应的结构化字段；'
+        "收获／问题请留空这些字段。</p>" + "<button>保存资产</button></form></details>"
     )
 
 
@@ -1567,12 +1746,14 @@ def _parse_asset_create(form: dict[str, str]) -> AssetCreateInput:
     lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
     if source_paper and source_paper not in lines:
         lines.insert(0, source_paper)
+    kind = form.get("kind", "")
     payload = {
-        "kind": form.get("kind", ""),
+        "kind": kind,
         "title": form.get("title", ""),
         "body": form.get("body", ""),
         "applicability": form.get("applicability") or None,
         "sources": [{"paper_id": pid} for pid in lines],
+        "typed": _parse_typed(form, kind),
         "idempotency_key": form.get("idempotency_key") or uuid4().hex,
     }
     return AssetCreateInput.model_validate(payload)
@@ -1588,7 +1769,7 @@ def _asset_form_error_page(message: str, values: dict[str, str]) -> HTMLResponse
 
 
 def _allowed_transitions(kind: str, status: str) -> list[str]:
-    if kind == "harvest":
+    if kind in {"harvest", "method", "evidence"}:
         return ["archived"] if status == "active" else []
     if status == "open":
         return ["resolved", "archived"]
@@ -1655,6 +1836,7 @@ def _asset_detail_body(
     )
     if revision.applicability:
         body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += _typed_content_html(revision.typed)
     body += f"<h2>来源（{len(revision.sources)}）</h2><ul>"
     for source in revision.sources:
         rating = (
@@ -1682,6 +1864,7 @@ def _asset_detail_body(
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
         + escape(draft.get("applicability", revision.applicability) or "")
         + "</textarea></label>"
+        + _typed_edit_fields(view.kind, revision.typed, draft)
         + '<label>状态<select name="status">'
         + select_options(
             [
@@ -1786,7 +1969,7 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
         }
         current = get_asset_view(session, asset_id)
         preserve = {source.paper_id: source.rating_at for source in current.revision.sources}
-        body = _parse_asset_revision(form, preserve)
+        body = _parse_asset_revision(form, preserve, kind=current.kind)
         with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = append_revision(session, asset_id, body, now=utc_now())
@@ -1820,12 +2003,16 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
 
 
 def _parse_asset_revision(
-    form: dict[str, str], preserve: dict[str, Any] | None = None
+    form: dict[str, str],
+    preserve: dict[str, Any] | None = None,
+    *,
+    kind: str = "harvest",
 ) -> AssetRevisionInput:
     """表单只提交论文 ID：已有来源按映射回填反馈版本，新增来源不带引用。
 
     ``preserve`` 是当前版本的 paper_id → rating_at 映射；列表中删行即移除
-    来源、加行即新增来源，都是显式动作。
+    来源、加行即新增来源，都是显式动作。类型化资产的 typed 字段同步解析
+    （缺填在契约校验层报错，不静默保留旧内容之外的新形状）。
     """
     from papersteward.reading.insights.contracts import AssetRevisionInput
 
@@ -1850,6 +2037,7 @@ def _parse_asset_revision(
             "title": form.get("title", ""),
             "body": form.get("body", ""),
             "applicability": form.get("applicability") or None,
+            "typed": _parse_typed(form, kind),
             "status": form.get("status", ""),
             "sources": sources,
         }
@@ -1882,6 +2070,7 @@ def asset_revision_page(session: SessionDep, asset_id: str, revision_number: int
     )
     if revision.applicability:
         body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += _typed_content_html(revision.typed)
     body += f"<h2>当时来源（{len(revision.sources)}）</h2><ul>"
     for status in detail.source_status:
         if not status.paper_exists:

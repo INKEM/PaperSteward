@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -67,11 +67,13 @@ def asset_content_payload(
     body: str,
     applicability: str | None,
     sources: Iterable[tuple[str, str | None]],
+    typed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """资产内容的语义载荷；来源按 (paper_id, rating_at) 排序去重。
 
     ``kind`` 只在创建请求中出现（修订的目标已绑定资产身份）；
-    ``rating_at`` 是归一化到 UTC 的 ISO 文本。
+    ``rating_at`` 是归一化到 UTC 的 ISO 文本；``typed`` 是方法卡/证据组的
+    类型化内容（规范化 dict），缺省 None 不进旧载荷形态。
     """
     normalized: list[dict[str, str | None]] = [
         {"paper_id": paper_id, "rating_at": rating_at or None}
@@ -82,6 +84,7 @@ def asset_content_payload(
         "body": body,
         "applicability": applicability,
         "sources": normalized,
+        "typed": dict(typed) if typed else None,
     }
     if kind is not None:
         payload = {"kind": kind, **payload}

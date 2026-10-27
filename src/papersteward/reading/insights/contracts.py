@@ -604,8 +604,34 @@ class ReportDetail(ReportSummary):
 
 # —— 手工资产契约 ————————————————————————————————————————————
 
-AssetKind = Literal["harvest", "problem"]
+AssetKind = Literal["harvest", "problem", "method", "evidence"]
 AssetStatus = Literal["active", "archived", "open", "resolved"]
+
+# 方法卡/证据组的结构化版本内容；与自由正文分列存储，不硬塞进 body。
+TYPED_ASSET_KINDS: frozenset[str] = frozenset({"method", "evidence"})
+
+
+class MethodCardContent(InsightsModel):
+    """方法卡的类型化内容；资源/数据要求未知时 resources 留空。"""
+
+    problem: str = Field(min_length=1, max_length=2000)
+    conditions: str | None = Field(default=None, max_length=2000)
+    approach: str = Field(min_length=1, max_length=8000)
+    limitations: str | None = Field(default=None, max_length=2000)
+    resources: str | None = Field(default=None, max_length=2000)
+
+
+class EvidenceGroupContent(InsightsModel):
+    """证据组的类型化内容；尚未核实部分显式标注。"""
+
+    claim: str = Field(min_length=1, max_length=2000)
+    supports: list[str] = Field(default_factory=list, max_length=20)
+    differing: list[str] = Field(default_factory=list, max_length=20)
+    context: str | None = Field(default=None, max_length=2000)
+    unverified: str | None = Field(default=None, max_length=2000)
+
+
+AssetTypedContent = MethodCardContent | EvidenceGroupContent
 
 
 class AssetSourceInput(InsightsModel):
@@ -621,7 +647,22 @@ class AssetCreateInput(InsightsModel):
     body: str = Field(min_length=1, max_length=20000)
     applicability: str | None = Field(default=None, max_length=2000)
     sources: list[AssetSourceInput] = Field(min_length=1, max_length=20)
+    # 类型化内容：method→MethodCardContent、evidence→EvidenceGroupContent、
+    # harvest/problem 必须为 None（一致性由 coherent 校验器保证）。
+    typed: AssetTypedContent | None = None
     idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    @model_validator(mode="after")
+    def typed_kind_coherent(self) -> "AssetCreateInput":
+        if self.kind in TYPED_ASSET_KINDS:
+            if self.typed is None:
+                raise ValueError(f"{self.kind} 资产必须提供类型化内容")
+            expected = "MethodCardContent" if self.kind == "method" else "EvidenceGroupContent"
+            if type(self.typed).__name__ != expected:
+                raise ValueError(f"{self.kind} 资产的类型化内容必须是 {expected}")
+        elif self.typed is not None:
+            raise ValueError("收获/问题资产不接受类型化内容")
+        return self
 
 
 class AssetRevisionInput(InsightsModel):
@@ -629,6 +670,7 @@ class AssetRevisionInput(InsightsModel):
 
     ``sources`` 为空（省略/None）表示保留当前版本的来源集合原样
     （含归档哈希与反馈版本）；显式给出列表即整体替换，至少保留一条。
+    ``typed`` 同步替换当前版本的类型化内容；省略（None）表示保留原样。
     """
 
     expected_revision: int = Field(ge=1, strict=True)
@@ -638,6 +680,13 @@ class AssetRevisionInput(InsightsModel):
     applicability: str | None = Field(default=None, max_length=2000)
     status: AssetStatus
     sources: list[AssetSourceInput] | None = Field(default=None, min_length=1, max_length=20)
+    typed: AssetTypedContent | None = None
+
+    @model_validator(mode="after")
+    def typed_kind_coherent(self) -> "AssetRevisionInput":
+        # kind 在资产行上：None=保留原样（method/evidence 修订时可省略 typed）；
+        # 给出 typed 时其类型由服务层按资产 kind 校验。
+        return self
 
 
 class AssetSourceRef(InsightsModel):
@@ -654,6 +703,8 @@ class AssetRevisionView(InsightsModel):
     applicability: str | None = None
     status: str
     sources: list["AssetSourceRef"] = Field(default_factory=list)
+    # 方法卡/证据组的类型化内容（宽松 dict 以兼容旧回执重放）；无则 None。
+    typed: dict[str, object] | None = None
 
 
 class AssetRevisionSummary(InsightsModel):
@@ -889,3 +940,81 @@ class AnalysisRunSummary(InsightsModel):
     candidate_count: int = 0
     rejected_count: int = 0
     stopped_reason: str | None = None
+
+
+class CandidateDecisionInput(InsightsModel):
+    """候选的用户决定输入；confirm 携带资产内容，merge 携带目标资产。
+
+    ``decision=confirm`` 时 kind/title/body/sources 必填（typed 按 kind 一致性
+    校验）；``merge`` 时 target_asset_id/expected_revision 必填；``dismiss``
+    只需标识。幂等键绑定完整决定（重复提交重放同一结果）。
+    """
+
+    candidate_id: str = Field(min_length=1, max_length=64)
+    decision: Literal["confirm", "dismiss", "merge"]
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    note: str | None = Field(default=None, max_length=2000)
+    # confirm 分支
+    kind: AssetKind | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    body: str | None = Field(default=None, min_length=1, max_length=20000)
+    applicability: str | None = Field(default=None, max_length=2000)
+    typed: AssetTypedContent | None = None
+    sources: list[AssetSourceInput] | None = Field(default=None, min_length=1, max_length=20)
+    # merge 分支
+    target_asset_id: str | None = Field(default=None, min_length=1, max_length=64)
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    status: AssetStatus = "active"
+
+    @model_validator(mode="after")
+    def branch_coherent(self) -> "CandidateDecisionInput":
+        if self.decision == "confirm":
+            missing = [
+                name
+                for name, value in (
+                    ("kind", self.kind),
+                    ("title", self.title),
+                    ("body", self.body),
+                    ("sources", self.sources),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"确认候选需要资产内容：缺少 {', '.join(missing)}")
+            if self.target_asset_id is not None or self.expected_revision is not None:
+                raise ValueError("确认候选不使用合并目标字段")
+        elif self.decision == "merge":
+            if self.target_asset_id is None or self.expected_revision is None:
+                raise ValueError("合并候选需要目标资产与预期版本")
+            if self.title is None or self.body is None:
+                raise ValueError("合并候选需要追加的内容")
+        else:
+            extra = [
+                name
+                for name, value in (
+                    ("kind", self.kind),
+                    ("title", self.title),
+                    ("body", self.body),
+                    ("typed", self.typed),
+                    ("sources", self.sources),
+                    ("target_asset_id", self.target_asset_id),
+                )
+                if value is not None
+            ]
+            if extra:
+                raise ValueError(f"忽略候选不接受内容字段：{', '.join(extra)}")
+        return self
+
+
+class CandidateDecisionView(InsightsModel):
+    """候选决定的属主视图；确认/合并指向目标资产。"""
+
+    decision_id: str
+    candidate_id: str
+    decision: Literal["confirmed", "dismissed", "merged"]
+    asset_id: str | None = None
+    asset_revision: int | None = None
+    paper_id: str
+    kind: str
+    note: str | None = None
+    decided_at: AwareDatetime

@@ -17,12 +17,14 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from papersteward.core.errors import DomainValidationError, InvariantViolation
 from papersteward.errors import ConflictError, InvalidRequestError, NotFoundError
 from papersteward.reading.insights.contracts import (
+    TYPED_ASSET_KINDS,
     AssetCreateInput,
     AssetRevisionDetail,
     AssetRevisionInput,
@@ -31,6 +33,8 @@ from papersteward.reading.insights.contracts import (
     AssetSourceRef,
     AssetSourceStatus,
     AssetView,
+    EvidenceGroupContent,
+    MethodCardContent,
 )
 from papersteward.reading.insights.idempotency import (
     ASSET_CREATE,
@@ -43,7 +47,10 @@ from papersteward.reading.insights.idempotency import (
     open_keyed_write,
 )
 from papersteward.reading.insights.reports import delete_report, list_reports, read_report
-from papersteward.storage.insights import ReadingAssetRepository
+from papersteward.storage.insights import (
+    ReadingAssetRepository,
+    ReadingAssetTypedRepository,
+)
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
@@ -54,12 +61,19 @@ from papersteward.storage.models import (
     ReadingAssetSourceRow,
 )
 
-_KIND_DEFAULT_STATUS = {"harvest": "active", "problem": "open"}
+_KIND_DEFAULT_STATUS = {
+    "harvest": "active",
+    "problem": "open",
+    "method": "active",
+    "evidence": "active",
+}
 _KIND_ALLOWED_STATUS = {
     "harvest": {"active", "archived"},
     "problem": {"open", "resolved", "archived"},
+    "method": {"active", "archived"},
+    "evidence": {"active", "archived"},
 }
-_KIND_LABELS = {"harvest": "收获", "problem": "问题"}
+_KIND_LABELS = {"harvest": "收获", "problem": "问题", "method": "方法卡", "evidence": "证据组"}
 
 
 def create_asset(session: Session, spec: AssetCreateInput, *, now: datetime) -> AssetView:
@@ -78,6 +92,7 @@ def create_asset(session: Session, spec: AssetCreateInput, *, now: datetime) -> 
             body=spec.body,
             applicability=spec.applicability,
             sources=_request_sources(spec.sources),
+            typed=_typed_payload(spec.typed),
         ),
         now=as_utc(now),
     )
@@ -107,6 +122,7 @@ def create_asset(session: Session, spec: AssetCreateInput, *, now: datetime) -> 
         ),
         _source_rows(asset_id, 1, resolved),
     )
+    _put_typed(session, asset_id, 1, spec.kind, spec.typed)
     view = get_asset_view(session, asset_id)
     complete_keyed_write(outcome, target_id=asset_id, result=view.model_dump(mode="json"))
     return view
@@ -165,6 +181,7 @@ def _append_revision(
         if spec.sources is None
         else _resolve_sources(session, spec.sources)
     )
+    typed_payload = _typed_for_revision(session, asset_id, current, spec.typed)
     outcome = open_keyed_write(
         session,
         operation=operation,
@@ -179,6 +196,7 @@ def _append_revision(
                 (paper_id, as_utc(rating_at).isoformat() if rating_at else None)
                 for paper_id, _, rating_at in resolved
             ],
+            typed=typed_payload,
         ),
         now=as_utc(now),
     )
@@ -213,6 +231,7 @@ def _append_revision(
             "资产正被其他请求同时修订，请基于最新版本重试",
             details={"current_revision": current},
         ) from None
+    _put_typed(session, asset_id, current + 1, asset.kind, typed_payload)
     view = get_asset_view(session, asset_id)
     complete_keyed_write(outcome, result=view.model_dump(mode="json"))
     return view
@@ -508,7 +527,10 @@ def _check_status(kind: str, status: str) -> None:
 
 
 def _revision_view(repository: ReadingAssetRepository, row: ReadingAssetRevisionRow) -> Any:
-    """当前版本视图；来源按 (asset_id, revision) 取当时集合。"""
+    """当前版本视图；来源按 (asset_id, revision) 取当时集合，含类型化内容。"""
+    typed_row = ReadingAssetTypedRepository(repository._session).get(  # noqa: SLF001 - 同包仓储协作
+        row.asset_id, row.revision
+    )
     return {
         "revision": row.revision,
         "recorded_at": as_utc(row.recorded_at),
@@ -524,4 +546,42 @@ def _revision_view(repository: ReadingAssetRepository, row: ReadingAssetRevision
             )
             for source in repository.sources(row.asset_id, row.revision)
         ],
+        "typed": dict(typed_row.content_json) if typed_row is not None else None,
     }
+
+
+def _typed_payload(typed: MethodCardContent | EvidenceGroupContent | None) -> dict[str, Any] | None:
+    """类型化内容的幂等载荷：规范化 dict；None 不进哈希。"""
+    if typed is None:
+        return None
+    return typed.model_dump(mode="json")
+
+
+def _put_typed(
+    session: Session,
+    asset_id: str,
+    revision: int,
+    kind: str,
+    typed: MethodCardContent | EvidenceGroupContent | dict[str, Any] | None,
+) -> None:
+    """写入类型化内容行；非类型化 kind 或 None（保留原样）不写。
+
+    ``typed`` 可为契约对象或已解析的规范化 dict（修订路径）。
+    """
+    if kind not in TYPED_ASSET_KINDS or typed is None:
+        return
+    content = typed.model_dump(mode="json") if isinstance(typed, BaseModel) else dict(typed)
+    ReadingAssetTypedRepository(session).put(asset_id, revision, content)
+
+
+def _typed_for_revision(
+    session: Session,
+    asset_id: str,
+    revision: int,
+    typed: MethodCardContent | EvidenceGroupContent | None,
+) -> dict[str, Any] | None:
+    """修订的 typed 解析：显式给出生效，省略（None）保留当前版本内容。"""
+    if typed is not None:
+        return typed.model_dump(mode="json")
+    current = ReadingAssetTypedRepository(session).get(asset_id, revision)
+    return dict(current.content_json) if current is not None else None
