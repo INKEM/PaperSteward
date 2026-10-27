@@ -305,3 +305,120 @@ def test_candidate_decision_input_strictness():
     ]:
         with pytest.raises(ValidationError):
             CandidateDecisionInput.model_validate(payload)
+
+
+def test_grant_input_purpose_is_explicit_and_validated():
+    default = AnalysisGrantInput.model_validate(
+        {"scope_mode": "workspace", "material_classes": ["user_notes"], "acknowledged": True}
+    )
+    assert default.purpose == "reading_reflection"
+    synthesis = AnalysisGrantInput.model_validate(
+        {
+            "purpose": "reading_synthesis",
+            "scope_mode": "once",
+            "material_classes": ["archive_metadata", "verified_candidate"],
+            "acknowledged": True,
+        }
+    )
+    assert synthesis.purpose == "reading_synthesis"
+    with pytest.raises(ValidationError):
+        AnalysisGrantInput.model_validate(
+            {
+                "purpose": "other_purpose",
+                "scope_mode": "workspace",
+                "material_classes": ["user_notes"],
+                "acknowledged": True,
+            }
+        )
+
+
+def test_synthesis_manifest_input_freezes_scope_and_kinds():
+    from papersteward.reading.insights.contracts import SynthesisManifestInput
+
+    good = SynthesisManifestInput.model_validate(
+        {
+            "period": {"kind": "week", "timezone": "Asia/Shanghai", "anchor_date": "2026-10-22"},
+            "mode": "as_recorded",
+            "kinds": ["archive_metadata", "asset_content", "verified_candidate"],
+        }
+    )
+    assert good.query.period.kind.value == "week"
+    assert good.query.mode.value == "as_recorded"
+    with pytest.raises(ValidationError):
+        SynthesisManifestInput.model_validate(
+            {
+                "period": {
+                    "kind": "week",
+                    "timezone": "Asia/Shanghai",
+                    "anchor_date": "2026-10-22",
+                },
+                "kinds": [],
+            }
+        )
+    with pytest.raises(ValidationError):
+        SynthesisManifestInput.model_validate(
+            {
+                "period": {"kind": "custom", "timezone": "Asia/Shanghai"},
+                "kinds": ["archive_metadata"],
+            }
+        )
+
+
+def test_flow_request_synthesis_coherence():
+    from papersteward.jobs.ui_flow import FlowRequest
+
+    good = FlowRequest.model_validate(
+        {
+            "run_id": "run-syn",
+            "kind": "insight_synthesis",
+            "synthesis": {
+                "period": "month",
+                "anchor_date": "2026-10-15",
+                "manifest_id": "m1",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g1",
+            },
+        }
+    )
+    assert good.synthesis is not None
+    assert good.synthesis.purpose == "reading_synthesis"
+    assert good.analysis is None and good.review is None
+    for payload in [
+        {"run_id": "r", "kind": "insight_synthesis"},
+        {
+            "run_id": "r",
+            "kind": "insight_synthesis",
+            "synthesis": {
+                "period": "week",
+                "manifest_id": "m",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g",
+            },
+        },
+        {
+            "run_id": "r",
+            "kind": "insight_synthesis",
+            "synthesis": {
+                "period": "month",
+                "anchor_date": "2026-10-15",
+                "manifest_id": "m",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g",
+            },
+            "focus": "关注点",
+        },
+        {
+            "run_id": "r",
+            "kind": "review",
+            "review": {"period": "week", "anchor_date": "2026-10-22"},
+            "synthesis": {
+                "period": "month",
+                "anchor_date": "2026-10-15",
+                "manifest_id": "m",
+                "manifest_hash": "a" * 64,
+                "grant_id": "g",
+            },
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            FlowRequest.model_validate(payload)

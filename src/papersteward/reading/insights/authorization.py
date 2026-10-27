@@ -23,6 +23,7 @@ from papersteward.llm.runtime import CONFIG_KEY, LLMRuntimeConfig, resolve_llm_c
 from papersteward.reading.insights.contracts import (
     ANALYSIS_CONSENT_VERSION,
     ANALYSIS_PURPOSE,
+    SYNTHESIS_PURPOSE,
     AnalysisAuthorizationStatus,
     AnalysisGrantView,
     MaterialKind,
@@ -40,6 +41,7 @@ from papersteward.storage.repositories import ConfigRepository
 
 __all__ = [
     "ResolvedSendConfig",
+    "active_grant_for_purpose",
     "analysis_authorization_status",
     "build_analysis_gateway",
     "ensure_send_authorized",
@@ -75,6 +77,8 @@ def grant_analysis_authorization(
     manifest_hash: str | None = None,
 ) -> AnalysisGrantView:
     """新授权一条阅读分析用途；模型连接缺失或不可用时不接受授权。"""
+    if purpose not in {ANALYSIS_PURPOSE, SYNTHESIS_PURPOSE}:
+        raise InvalidRequestError("阅读分析用途无效", details={"field": "purpose"})
     runtime = resolve_llm_config(session, settings)
     if (problem := runtime.readiness_problem()) is not None:
         raise InvalidRequestError(f"请先在设置页完成模型连接，再授权阅读分析（{problem}）")
@@ -120,6 +124,24 @@ def revoke_analysis_authorization(
     return _grant_view(grant)
 
 
+def active_grant_for_purpose(
+    session: Session, *, purpose: str, manifest_hash: str | None = None
+) -> ReadingAnalysisGrantRow | None:
+    """当前用途的活动授权：优先工作区持续授权，其次绑定该清单的本次授权。"""
+    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(purpose)
+    grant = next((item for item in grants if item.scope_mode == "workspace"), None)
+    if grant is not None or manifest_hash is None:
+        return grant
+    return next(
+        (
+            item
+            for item in grants
+            if item.scope_mode == "once" and item.manifest_hash == manifest_hash
+        ),
+        None,
+    )
+
+
 def ensure_send_authorized(
     session: Session,
     *,
@@ -132,17 +154,7 @@ def ensure_send_authorized(
 
     每次实际发送前与结果落库前都应调用；本函数只读库，不做任何网络请求。
     """
-    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(purpose)
-    grant = next((item for item in grants if item.scope_mode == "workspace"), None)
-    if grant is None and manifest_hash is not None:
-        grant = next(
-            (
-                item
-                for item in grants
-                if item.scope_mode == "once" and item.manifest_hash == manifest_hash
-            ),
-            None,
-        )
+    grant = active_grant_for_purpose(session, purpose=purpose, manifest_hash=manifest_hash)
     if grant is None:
         raise NotAuthorizedError(
             "阅读分析尚未授权：分析前请先在阅读分析设置中核对材料与数据去向并授权"

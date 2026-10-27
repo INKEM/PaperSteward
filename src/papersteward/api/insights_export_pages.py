@@ -1,6 +1,7 @@
 """阅读回顾统一导出选择；下载私人原文前明确说明范围。"""
 
 import json
+from html import escape
 from typing import Literal
 
 from fastapi import APIRouter
@@ -14,12 +15,21 @@ from papersteward.core.entities import utc_now
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError
 from papersteward.reading.insights.backup import personal_copy
-from papersteward.reading.insights.contracts import ReportDetail
-from papersteward.reading.insights.export import export_report
+from papersteward.reading.insights.contracts import (
+    MATERIAL_KIND_LABELS,
+    SYNTHESIS_REPORT_CONTRACT,
+    ReportDetail,
+)
+from papersteward.reading.insights.export import export_report, private_content_summary
 from papersteward.reading.insights.reports import prepare_report, read_report
 from papersteward.storage.onboarding import get_onboarding
 
 router = APIRouter(prefix="/ui/reading-insights/export", include_in_schema=False)
+
+
+def _summary_int(summary: dict[str, object], key: str) -> int:
+    value = summary.get(key)
+    return value if isinstance(value, int) else 0
 
 
 @router.get("")
@@ -28,15 +38,41 @@ def export_page(session: SessionDep, report_id: str = "") -> Response:
 
     if get_onboarding(session).stage.value != "active":
         return RedirectResponse("/ui/setup", status_code=303)
+    detail = None
     if report_id:
         try:
-            read_report(session, report_id)
+            detail = read_report(session, report_id)
         except (DomainError, AppError) as exc:
             return failure(exc, back="/ui/reading-insights/reports")
+    private_note = ""
+    if detail is not None:
+        summary = private_content_summary(detail.content)
+        private_items = _summary_int(summary, "private_items")
+        asset_titles = _summary_int(summary, "asset_titles")
+        asset_bodies = _summary_int(summary, "asset_bodies")
+        raw_kinds = summary.get("material_kinds")
+        kinds = [
+            MATERIAL_KIND_LABELS.get(str(kind), str(kind))
+            for kind in (raw_kinds if isinstance(raw_kinds, list) else [])
+        ]
+        if detail.contract == SYNTHESIS_REPORT_CONTRACT:
+            private_note += (
+                "这份知识版报告有 "
+                f"{private_items} 条归纳依赖私人材料；分享副本会按来源链整条排除，"
+                "个人副本包含这些归纳。"
+            )
+            if kinds:
+                private_note += "涉及的私人材料类别：" + "、".join(kinds) + "。"
+        if asset_titles or asset_bodies:
+            private_note += (
+                f"报告另含资产标题 {asset_titles} 处、资产正文 {asset_bodies} 处；"
+                "分享副本不包含这些私人原文。"
+            )
     body = (
         "<h2>导出副本</h2><p>事实分享副本默认不含私人备注、资产标题和正文。"
         "报告副本只使用保存快照；全部历史副本读取当前完整事实，不受页面分页限制。</p>"
-        '<form method="get" action="/ui/reading-insights/export/download" class="stacked-form">'
+        + (f'<p class="notice">{escape(private_note)}</p>' if private_note else "")
+        + '<form method="get" action="/ui/reading-insights/export/download" class="stacked-form">'
         + hidden("report_id", report_id)
         + '<label>导出范围<select name="scope">'
         + select_options(
@@ -48,7 +84,7 @@ def export_page(session: SessionDep, report_id: str = "") -> Response:
         )
         + '</select></label><p class="notice">个人完整副本包含私人原文：'
         + (
-            "报告中已保存的资产正文；不会拼接最新资产修订。"
+            "报告中已保存的资产正文与私人知识归纳；不会拼接最新资产修订。"
             if report_id
             else "全部阅读反馈备注、阅读日期修订、资产正文、适用说明及各次修订和来源；仅支持 JSON。"
         )

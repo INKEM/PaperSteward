@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Collection
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -482,6 +483,29 @@ class ReadingAnalysisDecisionRepository(_Repository):
         ).all()
         return set(rows)
 
+    def list_confirmed_for_papers(
+        self, paper_ids: Collection[str], *, before: datetime
+    ) -> list[ReadingAnalysisDecisionRow]:
+        """已确认/已并入的单篇结果（专题综合的材料来源）；忽略与待核对不选入。"""
+        ids = list(paper_ids)
+        if not ids:
+            return []
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisDecisionRow)
+                .where(
+                    ReadingAnalysisDecisionRow.paper_id.in_(ids),
+                    ReadingAnalysisDecisionRow.decision.in_(("confirmed", "merged")),
+                    ReadingAnalysisDecisionRow.decided_at < before,
+                )
+                .order_by(
+                    ReadingAnalysisDecisionRow.paper_id,
+                    ReadingAnalysisDecisionRow.decided_at,
+                    ReadingAnalysisDecisionRow.id,
+                )
+            ).all()
+        )
+
     def by_asset(self, asset_id: str) -> list[ReadingAnalysisDecisionRow]:
         """以某资产为决定目标的记录（确认生成/合并追加），按时间排序。"""
         return list(
@@ -650,6 +674,45 @@ class ReadingAssetRepository(_Repository):
             .limit(limit)
         ).all()
         return [(row[0], row[1]) for row in rows], int(total)
+
+    def asset_ids_sourced_from_papers(
+        self, paper_ids: Collection[str], *, before: datetime
+    ) -> list[str]:
+        """在截止前引用了这些论文的资产 ID（任一名义版本），稳定排序。"""
+        ids = list(paper_ids)
+        if not ids:
+            return []
+        statements = list(
+            self._session.scalars(
+                select(ReadingAssetSourceRow.asset_id)
+                .join(
+                    ReadingAssetRevisionRow,
+                    (ReadingAssetSourceRow.asset_id == ReadingAssetRevisionRow.asset_id)
+                    & (ReadingAssetSourceRow.revision == ReadingAssetRevisionRow.revision),
+                )
+                .where(
+                    ReadingAssetSourceRow.paper_id.in_(ids),
+                    ReadingAssetRevisionRow.recorded_at < before,
+                )
+                .distinct()
+                .order_by(ReadingAssetSourceRow.asset_id)
+            ).all()
+        )
+        return list(dict.fromkeys(statements))
+
+    def latest_revision_before(
+        self, asset_id: str, cutoff: datetime
+    ) -> ReadingAssetRevisionRow | None:
+        """截止前最后一个版本；用于历史回顾，不把之后修订倒灌旧范围。"""
+        return self._session.scalars(
+            select(ReadingAssetRevisionRow)
+            .where(
+                ReadingAssetRevisionRow.asset_id == asset_id,
+                ReadingAssetRevisionRow.recorded_at < cutoff,
+            )
+            .order_by(ReadingAssetRevisionRow.revision.desc())
+            .limit(1)
+        ).first()
 
     def assets_for_paper(
         self, paper_id: str

@@ -29,6 +29,7 @@ SchemaName = Literal[
     "profile_extraction",
     "query_planning",
     "reading_reflection",
+    "reading_synthesis",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -384,6 +385,52 @@ class ReadingReflectionOutput(_OutputModel):
         return self
 
 
+class SynthesisTopicOutput(_OutputModel):
+    """跨文献专题的一条条件对照；来源编号指向 prompt 中的材料列表。"""
+
+    question: str = Field(min_length=1, max_length=500)
+    understanding: str = Field(min_length=1, max_length=2000)
+    supporting_indexes: list[int] = Field(min_length=1, max_length=12)
+    limiting_indexes: list[int] = Field(default_factory=list, max_length=12)
+    comparison: str | None = Field(default=None, max_length=1000)
+    unverified: str | None = Field(default=None, max_length=1000)
+
+
+class SynthesisOpenQuestionOutput(_OutputModel):
+    """仍未解决的问题；来源指向引发该问题的材料。"""
+
+    question: str = Field(min_length=1, max_length=500)
+    status: Literal["unresolved", "needs_evidence", "depends_on_conditions"]
+    source_indexes: list[int] = Field(min_length=1, max_length=12)
+
+
+class SynthesisLinkOutput(_OutputModel):
+    """候选联系：跨领域迁移或研究机会，不得写成已确认结论。"""
+
+    statement: str = Field(min_length=1, max_length=1000)
+    link_kind: Literal["cross_domain_transfer", "research_opportunity"]
+    source_indexes: list[int] = Field(min_length=1, max_length=12)
+    caution: str | None = Field(default=None, max_length=1000)
+
+
+class ReadingSynthesisOutput(_OutputModel):
+    """跨文献专题综合输出；「材料不足」时不得凭空生成专题。"""
+
+    topics: list[SynthesisTopicOutput] = Field(default_factory=list, max_length=4)
+    open_questions: list[SynthesisOpenQuestionOutput] = Field(default_factory=list, max_length=6)
+    candidate_links: list[SynthesisLinkOutput] = Field(default_factory=list, max_length=4)
+    insufficient_material: bool
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def coherent(self) -> ReadingSynthesisOutput:
+        if self.insufficient_material and (self.topics or self.candidate_links):
+            raise ValueError("insufficient_material 为真时不得同时给出专题或候选联系")
+        if not self.insufficient_material and not self.topics:
+            raise ValueError("材料足够时必须至少给出一条专题归纳；材料不足请显式说明")
+        return self
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -396,6 +443,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "profile_extraction": ProfileExtractionOutput,
         "query_planning": QueryPlanningOutput,
         "reading_reflection": ReadingReflectionOutput,
+        "reading_synthesis": ReadingSynthesisOutput,
     }
 )
 
@@ -500,7 +548,11 @@ __all__ = [
     "PlannedQueryOutput",
     "QueryPlanningOutput",
     "ReadingReflectionOutput",
+    "ReadingSynthesisOutput",
     "ReflectionCandidateOutput",
+    "SynthesisLinkOutput",
+    "SynthesisOpenQuestionOutput",
+    "SynthesisTopicOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
     "SpecialEvidenceOutput",

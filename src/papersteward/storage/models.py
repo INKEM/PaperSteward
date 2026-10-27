@@ -875,11 +875,12 @@ class ReadingDerivedCopyRow(Base):
     __tablename__ = "reading_derived_copy"
     __table_args__ = (
         CheckConstraint(
-            "source_kind IN ('asset', 'report', 'paper')", name="derived_source_allowed"
+            "source_kind IN ('asset', 'report', 'paper', 'candidate')",
+            name="derived_source_allowed",
         ),
         CheckConstraint("derived_kind IN ('report', 'candidate')", name="derived_target_allowed"),
         CheckConstraint(
-            "field_kind IN ('title', 'body', 'sanitized', 'statement', 'quote')",
+            "field_kind IN ('title', 'body', 'sanitized', 'statement', 'quote', 'synthesis')",
             name="derived_field_allowed",
         ),
         Index("ix_reading_derived_copy_source", "source_kind", "source_id", "source_revision"),
@@ -948,7 +949,10 @@ class ReadingAnalysisGrantRow(Base):
 
     __tablename__ = "reading_analysis_grant"
     __table_args__ = (
-        CheckConstraint("purpose IN ('reading_reflection')", name="grant_purpose_allowed"),
+        CheckConstraint(
+            "purpose IN ('reading_reflection', 'reading_synthesis')",
+            name="grant_purpose_allowed",
+        ),
         CheckConstraint("scope_mode IN ('once', 'workspace')", name="grant_scope_allowed"),
         Index("ix_reading_analysis_grant_purpose", "purpose", "revoked_at"),
     )

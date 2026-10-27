@@ -75,6 +75,7 @@ _DERIVED_SOURCE_KIND = {
     "user_rating": "paper",
     "user_excerpt": "paper",
     "asset_content": "asset",
+    "verified_candidate": "candidate",
 }
 
 
@@ -251,6 +252,7 @@ def _prepare(
                         target_id=ref.target_id,
                         version_key=ref.version_key,
                         content_text=resolved.text,
+                        paper_id=ref.paper_id,
                     )
                 )
                 batch.input_chars += len(resolved.text)

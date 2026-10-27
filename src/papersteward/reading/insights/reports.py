@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,10 +23,12 @@ from papersteward.errors import InvalidRequestError, NotFoundError
 from papersteward.reading.insights.contracts import (
     FACTS_ALGORITHM,
     REPORT_CONTRACT,
+    SYNTHESIS_REPORT_CONTRACT,
     InsightOverview,
     InsightPeriodRequest,
     InsightQueryRequest,
     InsightReportContent,
+    InsightReportContentV2,
     NoteFeedbackChange,
     PaperProjection,
     ReportAssetRef,
@@ -42,6 +45,7 @@ from papersteward.reading.insights.contracts import (
 from papersteward.reading.insights.periods import knowledge_cutoff, resolve_period
 from papersteward.reading.insights.scope import (
     collect_scope,
+    effective_papers,
     input_fingerprint,
     series_key,
 )
@@ -90,6 +94,8 @@ class PreparedReport:
     content: InsightReportContent
     fingerprint: str
     context: ReportContext
+    # 本范围的当期活动论文（专题综合据此披露缺失材料）；事实报告不使用。
+    paper_ids: list[str] = field(default_factory=list)
 
 
 def prepare_report(
@@ -148,6 +154,7 @@ def prepare_report(
         content=build_report_content(selected.overview, assets=selected.overview.assets),
         fingerprint=input_fingerprint(selected.context),
         context=selected.context,
+        paper_ids=[paper.paper_id for paper in effective_papers(selected.projection)],
     )
 
 
@@ -299,7 +306,7 @@ def save_sanitized_report(session: Session, report_id: str, *, now: datetime) ->
     lineage = ReadingDerivedCopyRepository(session).lineage_for_report(report_id)
     if any(item.field_kind == "sanitized" for item in lineage):
         raise InvalidRequestError("该报告本身已是脱敏版本，无需再次另存")
-    if not any(ref.title or ref.body is not None for ref in original.content.assets):
+    if not has_private_report_content(original.content):
         raise InvalidRequestError("该报告不含可脱敏的私人内容")
     repository = ReadingReportRepository(session)
     original_row = repository.get(report_id)
@@ -312,6 +319,8 @@ def save_sanitized_report(session: Session, report_id: str, *, now: datetime) ->
     for ref in content.assets:
         ref.title = ""
         ref.body = None
+    if isinstance(content, InsightReportContentV2):
+        _redact_private_synthesis(content.synthesis)
     content_json = content.model_dump(mode="json")
     row = ReadingReportRow(
         id=uuid4().hex,
@@ -355,6 +364,35 @@ def save_sanitized_report(session: Session, report_id: str, *, now: datetime) ->
         ]
     )
     return read_report(session, row.id)
+
+
+def has_private_report_content(
+    content: InsightReportContent | InsightReportContentV2,
+) -> bool:
+    """报告是否含需要脱敏/分享排除的私人副本（资产标题正文或私人归纳）。"""
+    if any(ref.title or ref.body is not None for ref in content.assets):
+        return True
+    return isinstance(content, InsightReportContentV2) and bool(
+        content.synthesis.private_items
+        or any(item.private for item in content.synthesis.topics)
+        or any(item.private for item in content.synthesis.open_questions)
+        or any(item.private for item in content.synthesis.candidate_links)
+    )
+
+
+def _redact_private_synthesis(section: Any) -> int:
+    """删除依赖私人材料的整条归纳；保留可公开条目与原报告不变。"""
+    removed = 0
+    for name in ("topics", "open_questions", "candidate_links"):
+        items = list(getattr(section, name))
+        kept = [item for item in items if not item.private]
+        removed += len(items) - len(kept)
+        setattr(section, name, kept)
+    if removed and section.note:
+        section.note = "（模型说明因涉及私人材料已省略）"
+    section.private_items = 0
+    section.redacted_private_items += removed
+    return removed
 
 
 def list_reports(session: Session, *, limit: int, offset: int) -> dict[str, Any]:
@@ -446,8 +484,29 @@ def _row_to_summary(row: ReadingReportRow, context: ReportContext | None = None)
 def _row_to_detail(row: ReadingReportRow, context: ReportContext) -> ReportDetail:
     if content_hash(row.content_json) != row.content_hash:
         raise InvariantViolation("reading_report.hash", "报告内容校验失败")
-    content = InsightReportContent.model_validate(row.content_json)
+    content = parse_report_content(row.contract, row.content_json)
     return ReportDetail(content=content, **_row_to_summary(row, context).model_dump())
+
+
+def parse_report_content(
+    contract: str, payload: dict[str, Any]
+) -> InsightReportContent | InsightReportContentV2:
+    """按存储 contract 分派正文模型；未知版本明确报错，不做宽松猜测。"""
+    if contract == REPORT_CONTRACT:
+        model: type[InsightReportContent] | type[InsightReportContentV2] = InsightReportContent
+    elif contract == SYNTHESIS_REPORT_CONTRACT:
+        model = InsightReportContentV2
+    else:
+        raise InvariantViolation(
+            "reading_report.contract",
+            f"未知报告契约版本「{contract}」；请升级应用后再打开这份报告",
+        )
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise InvariantViolation(
+            "reading_report.contract", "报告内容与保存的契约版本不一致，无法安全读取"
+        ) from exc
 
 
 def report_input_status(session: Session, detail: ReportDetail, *, now: datetime) -> dict[str, Any]:
@@ -487,12 +546,12 @@ def report_input_status(session: Session, detail: ReportDetail, *, now: datetime
 def _effective_facts(content: InsightReportContent) -> dict[str, Any]:
     """旧审计探针的事实视图；业务去重和变化提示已统一使用输入清单。"""
     payload = content.model_dump(mode="json")
-    for field in (
+    for key in (
         "collected_at",
         "knowledge_cutoff",
         "all_history_total",
         "source_distribution",
         "date_precision_distribution",
     ):
-        payload["metrics"].pop(field, None)
+        payload["metrics"].pop(key, None)
     return payload

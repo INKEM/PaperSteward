@@ -50,6 +50,7 @@ from papersteward.reading.insights.reports import delete_report, list_reports, r
 from papersteward.storage.insights import (
     ReadingAssetRepository,
     ReadingAssetTypedRepository,
+    ReadingDerivedCopyRepository,
 )
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import (
@@ -399,7 +400,8 @@ def _private_copies_for_asset(
     """扫描报告冻结正文：含私人副本的清单与不含副本的普通引用。
 
     以实际内容为准（保存路径同时维护 reading_derived_copy 登记表供撤回复用）；
-    清单按报告生成时间倒序，字段类别区分标题与正文，仅标题副本必须入选。
+    清单按报告生成时间倒序，字段类别区分标题、正文与知识整理，仅标题副本必须入选。
+    知识版报告的私人归纳登记在派生链中，即使事实正文没有该资产引用也要列出。
     """
     summaries = []
     offset = 0
@@ -412,7 +414,11 @@ def _private_copies_for_asset(
     copies: list[dict[str, Any]] = []
     referenced: list[str] = []
     for summary in summaries:
-        detail = read_report(session, summary.report_id)
+        try:
+            detail = read_report(session, summary.report_id)
+        except (InvariantViolation, NotFoundError):
+            # 未知契约或损坏报告无法扫描；不因它阻断删除预览。
+            continue
         refs = [ref for ref in detail.content.assets if ref.asset_id == asset_id]
         if not refs:
             continue
@@ -436,6 +442,25 @@ def _private_copies_for_asset(
             )
         else:
             referenced.append(detail.report_id)
+    known = {item["report_id"] for item in copies} | set(referenced)
+    for lineage in ReadingDerivedCopyRepository(session).for_source("asset", asset_id):
+        if lineage.derived_kind != "report" or lineage.field_kind != "synthesis":
+            continue
+        if lineage.derived_id in known:
+            continue
+        try:
+            detail = read_report(session, lineage.derived_id)
+        except (InvariantViolation, NotFoundError):
+            continue
+        known.add(detail.report_id)
+        copies.append(
+            {
+                "report_id": detail.report_id,
+                "fields": ["synthesis"],
+                "source_revision": lineage.source_revision,
+                "generated_at": detail.generated_at,
+            }
+        )
     return copies, referenced
 
 

@@ -30,6 +30,8 @@ class MaterialEntry:
     target_id: str
     version_key: str
     content_text: str
+    # 专题综合按论文归并独立来源；单篇反思不填（None 表示按 target 计）。
+    paper_id: str | None = None
 
 
 def verify_candidates(

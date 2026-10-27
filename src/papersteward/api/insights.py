@@ -32,11 +32,13 @@ from papersteward.reading.insights.assets import (
     list_assets,
 )
 from papersteward.reading.insights.authorization import (
+    active_grant_for_purpose,
     analysis_authorization_status,
     grant_analysis_authorization,
     revoke_analysis_authorization,
 )
 from papersteward.reading.insights.contracts import (
+    SYNTHESIS_PURPOSE,
     AnalysisAuthorizationStatus,
     AnalysisGrantInput,
     AnalysisGrantView,
@@ -58,6 +60,7 @@ from papersteward.reading.insights.contracts import (
     ReviewMode,
     StructuredFeedbackInput,
     StructuredFeedbackView,
+    SynthesisManifestInput,
 )
 from papersteward.reading.insights.decisions import (
     candidate_with_decision,
@@ -66,12 +69,14 @@ from papersteward.reading.insights.decisions import (
 )
 from papersteward.reading.insights.materials import (
     add_excerpt,
+    build_synthesis_manifest,
     consume_preview_token,
     create_manifest,
     create_preview_token,
     delete_excerpt,
     list_excerpts,
     manifest_content_of,
+    store_manifest,
     validate_preview_token,
 )
 from papersteward.reading.insights.structured_feedback import (
@@ -499,9 +504,11 @@ def compare_reports(report_id: str, other_id: str, session: SessionDep) -> Any:
     response_model=AnalysisAuthorizationStatus,
     summary="查看阅读分析授权现状",
 )
-def get_analysis_authorization(session: SessionDep) -> Any:
+def get_analysis_authorization(session: SessionDep, purpose: str = "reading_reflection") -> Any:
     with domain_errors():
-        return analysis_authorization_status(session, settings=get_settings())
+        if purpose not in {"reading_reflection", SYNTHESIS_PURPOSE}:
+            raise InvalidRequestError("用途无效", details={"field": "purpose"})
+        return analysis_authorization_status(session, settings=get_settings(), purpose=purpose)
 
 
 @router.post(
@@ -518,6 +525,7 @@ def post_analysis_grant(body: AnalysisGrantInput, session: SessionDep) -> Any:
             material_classes=list(body.material_classes),
             settings=get_settings(),
             now=utc_now(),
+            purpose=body.purpose,
         )
 
 
@@ -658,6 +666,105 @@ def post_analysis_run(
 ) -> dict[str, Any]:
     with domain_errors():
         return submit_analysis(request, body, session)
+
+
+# —— 跨文献知识版回顾（R2-05）—————————————————————————————————————
+
+
+class SynthesisSubmitInput(InsightsModel):
+    """提交知识版回顾：预览令牌绑定清单与模型配置版本，提交时核对并消费。"""
+
+    preview_token: str = Field(min_length=1, max_length=64)
+    run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def submit_synthesis(
+    request: Request, body: SynthesisSubmitInput, session: Session
+) -> dict[str, str]:
+    """校验令牌与授权 → 提交 ui.insight_synthesis → 消费令牌。
+
+    回顾范围取自清单冻结的 ``scope_request``，不能只凭界面参数改范围；
+    任务预约成功后才消费令牌，提交冲突时不消耗，可重试。
+    """
+    from papersteward.jobs.ui_flow import FlowRequest, SynthesisRunParams
+
+    token_row = validate_preview_token(
+        session, token=body.preview_token, purpose=SYNTHESIS_PURPOSE, now=utc_now()
+    )
+    grant = active_grant_for_purpose(
+        session, purpose=token_row.purpose, manifest_hash=token_row.manifest_hash
+    )
+    if grant is None:
+        raise NotAuthorizedError("知识版回顾尚未授权：请先核对数据去向并授权")
+    manifest = ReadingAnalysisManifestRepository(session).get(token_row.manifest_id)
+    if manifest is None or manifest.manifest_hash != token_row.manifest_hash:
+        raise InvalidRequestError("清单与令牌不一致，请重新生成预览")
+    content = manifest_content_of(manifest)
+    query = content.scope_request
+    if query is None:
+        raise InvalidRequestError("清单缺少回顾范围，请重新生成预览")
+    period = query.period
+    run_id = body.run_id or uuid4().hex
+    spec = FlowRequest(
+        run_id=run_id,
+        kind="insight_synthesis",
+        synthesis=SynthesisRunParams(
+            period=period.kind.value,
+            mode=query.mode.value,
+            anchor_date=period.anchor_date,
+            start_date=period.start_date,
+            end_date=period.end_date,
+            tag=query.tag,
+            manifest_id=token_row.manifest_id,
+            manifest_hash=token_row.manifest_hash,
+            grant_id=grant.id,
+            purpose=SYNTHESIS_PURPOSE,
+        ),
+    )
+    resolve_workspace(request).ui_flows.submit(spec)
+    with write_tx(session):
+        consume_preview_token(session, token_row, now=utc_now())
+    return {"run_id": run_id, "run_url": f"/ui/runs/{run_id}"}
+
+
+@router.post(
+    "/synthesis/manifests",
+    status_code=status.HTTP_201_CREATED,
+    summary="按回顾范围生成知识版材料清单与短期预览令牌（不发送任何请求）",
+)
+def post_synthesis_manifest(body: SynthesisManifestInput, session: SessionDep) -> dict[str, Any]:
+    with domain_errors():
+        ensure_active(session, action="reading_insights.synthesis")
+        now = utc_now()
+        content = build_synthesis_manifest(
+            session,
+            query=body.query,
+            kinds=list(body.kinds),
+            exclusions=list(body.exclusions),
+            now=now,
+        )
+        with write_tx(session):
+            row, _created = store_manifest(session, content, now=now)
+            token = create_preview_token(
+                session, manifest_id=row.id, now=now, purpose=SYNTHESIS_PURPOSE
+            )
+    return {
+        "manifest": content.model_dump(mode="json"),
+        "manifest_id": row.id,
+        "preview": token.model_dump(mode="json"),
+    }
+
+
+@router.post(
+    "/synthesis/runs",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="提交知识版回顾任务（消费预览令牌；发送边界在运行内核对）",
+)
+def post_synthesis_run(
+    body: SynthesisSubmitInput, request: Request, session: SessionDep
+) -> dict[str, Any]:
+    with domain_errors():
+        return submit_synthesis(request, body, session)
 
 
 @router.get(

@@ -28,46 +28,65 @@ from papersteward.reading.insights.contracts import (
     ANALYSIS_PURPOSE,
     LIMITED_REASON_LABELS,
     PREVIEW_TTL_SECONDS,
+    SYNTHESIS_PURPOSE,
     VALUE_SOURCE_LABELS,
     AnalysisManifestContent,
     AnalysisPreviewView,
     ExcerptInput,
     ExcerptView,
+    InsightQueryRequest,
     ManifestCoverage,
     MaterialExclusion,
     MaterialKind,
     MaterialRef,
+    ReportAssetRef,
 )
+from papersteward.reading.insights.scope import collect_scope, effective_papers, normalized_query
 from papersteward.storage.delivery import content_hash
 from papersteward.storage.insights import (
+    ReadingAnalysisDecisionRepository,
     ReadingAnalysisExcerptRepository,
     ReadingAnalysisManifestRepository,
     ReadingAnalysisPreviewRepository,
+    ReadingAssetRepository,
+    ReadingAssetTypedRepository,
     ReadingStructuredFeedbackRepository,
 )
 from papersteward.storage.mappers import as_utc
 from papersteward.storage.models import (
     ArchiveSnapshotRow,
     RatingRow,
+    ReadingAnalysisCandidateRow,
+    ReadingAnalysisDecisionRow,
     ReadingAnalysisExcerptRow,
     ReadingAnalysisManifestRow,
     ReadingAnalysisPreviewRow,
     ReadingAssetRevisionRow,
     ReadingAssetRow,
+    ReadingAssetSourceRow,
     ReadingStructuredFeedbackRow,
 )
 from papersteward.storage.repositories import ConfigRepository
 
 __all__ = [
+    "SYNTHESIS_MAX_MATERIALS",
+    "SYNTHESIS_MAX_PAPERS",
     "add_excerpt",
+    "build_synthesis_manifest",
     "create_manifest",
     "create_preview_token",
     "delete_excerpt",
     "list_excerpts",
     "manifest_content_of",
     "preview_materials",
+    "store_manifest",
     "validate_preview_token",
 ]
+
+# 专题综合的预算：按论文与材料条数在构建清单时生效；超出部分写入
+# coverage.omitted_*，报告正文必须披露，不静默截断。
+SYNTHESIS_MAX_PAPERS = 200
+SYNTHESIS_MAX_MATERIALS = 2000
 
 
 def manifest_content_of(row: ReadingAnalysisManifestRow) -> AnalysisManifestContent:
@@ -137,20 +156,113 @@ def create_manifest(
     content = preview_materials(
         session, paper_ids=paper_ids, kinds=kinds, exclusions=exclusions, now=now, purpose=purpose
     )
+    return store_manifest(session, content, now=now)
+
+
+def store_manifest(
+    session: Session, content: AnalysisManifestContent, *, now: datetime
+) -> tuple[ReadingAnalysisManifestRow, bool]:
+    """冻结并保存清单正文；同用途同哈希复用既有行。调用方持写事务。"""
     manifest_hash = content_hash(content.model_dump(mode="json"))
-    existing = ReadingAnalysisManifestRepository(session).by_hash(purpose, manifest_hash)
+    repository = ReadingAnalysisManifestRepository(session)
+    existing = repository.by_hash(content.purpose, manifest_hash)
     if existing is not None:
         return existing, False
-    row = ReadingAnalysisManifestRepository(session).add(
+    row = repository.add(
         ReadingAnalysisManifestRow(
             id=uuid4().hex,
-            purpose=purpose,
+            purpose=content.purpose,
             manifest_hash=manifest_hash,
             content_json=content.model_dump(mode="json"),
             created_at=as_utc(now),
         )
     )
     return row, True
+
+
+def build_synthesis_manifest(
+    session: Session,
+    *,
+    query: InsightQueryRequest,
+    kinds: list[MaterialKind],
+    exclusions: list[MaterialExclusion] | None = None,
+    now: datetime,
+    max_papers: int = SYNTHESIS_MAX_PAPERS,
+    max_materials: int = SYNTHESIS_MAX_MATERIALS,
+) -> AnalysisManifestContent:
+    """为知识版回顾构建材料清单：当期活动论文＋相关资产＋已核对单篇候选。
+
+    事实投影与资产选择沿用 R2-00A 的同一有效范围；超出预算的论文与材料
+    写入 ``coverage.omitted_*``，由报告正文披露，不静默冒充全量。
+    """
+    exclusions = list(exclusions or [])
+    exclusion_map = _exclusion_map(exclusions)
+    selected_kinds = list(dict.fromkeys(kinds))
+    scoped = collect_scope(session, query, collected_at=now, include_asset_bodies=False)
+    papers = sorted(effective_papers(scoped.projection), key=lambda item: item.paper_id)
+    all_ids = [paper.paper_id for paper in papers]
+    limited_ids = all_ids[: max(0, max_papers)]
+    omitted_papers = len(all_ids) - len(limited_ids)
+
+    paper_kinds = [
+        kind for kind in selected_kinds if kind not in {"asset_content", "verified_candidate"}
+    ]
+    materials: list[MaterialRef] = []
+    archived_total = int(session.scalar(select(func.count()).select_from(ArchiveSnapshotRow)) or 0)
+    if limited_ids and paper_kinds:
+        scoped_materials = preview_materials(
+            session,
+            paper_ids=limited_ids,
+            kinds=paper_kinds,
+            exclusions=exclusions,
+            now=now,
+            purpose=SYNTHESIS_PURPOSE,
+        )
+        materials.extend(scoped_materials.materials)
+        archived_total = scoped_materials.coverage.archived_total
+    if "asset_content" in selected_kinds:
+        materials.extend(
+            _synthesis_asset_materials(
+                session,
+                asset_refs=scoped.overview.assets,
+                selected_ids=set(limited_ids),
+                cutoff=scoped.context.scope.knowledge_cutoff,
+                exclusions=exclusion_map,
+            )
+        )
+    if "verified_candidate" in selected_kinds:
+        materials.extend(
+            _verified_candidate_materials(
+                session,
+                paper_ids=limited_ids,
+                cutoff=scoped.context.scope.knowledge_cutoff,
+                exclusions=exclusion_map,
+            )
+        )
+    materials = _dedupe_materials(materials)
+    if len(materials) > max_materials:
+        omitted_materials = len(materials) - max_materials
+        materials = materials[:max_materials]
+    else:
+        omitted_materials = 0
+    by_kind: dict[str, int] = {}
+    for ref in materials:
+        by_kind[ref.kind] = by_kind.get(ref.kind, 0) + 1
+    covered = _covered_paper_ids(session, materials, set(limited_ids))
+    return AnalysisManifestContent(
+        purpose=SYNTHESIS_PURPOSE,
+        built_at=as_utc(now),
+        materials=materials,
+        exclusions=exclusions,
+        coverage=ManifestCoverage(
+            archived_total=archived_total,
+            selected_papers=len(covered),
+            by_kind=by_kind,
+            omitted_papers=omitted_papers,
+            omitted_materials=omitted_materials,
+        ),
+        scope_request=normalized_query(query),
+    )
 
 
 def create_preview_token(
@@ -341,20 +453,8 @@ def _paper_materials(
         elif kind == "asset_content":
             for asset, revision in assets:
                 refs.append(
-                    MaterialRef(
-                        kind=kind,
-                        target_id=asset.id,
-                        paper_id=paper_id,
-                        version_key=f"revision:{revision.revision}",
-                        fields=["title", "body", "applicability", "status"],
-                        ref_hash=content_hash(
-                            {
-                                "title": revision.title,
-                                "body": revision.body,
-                                "applicability": revision.applicability,
-                                "status": revision.status,
-                            }
-                        ),
+                    _asset_material_ref(
+                        session, asset.id, revision, paper_id=paper_id, kind="asset_content"
                     )
                 )
         elif kind == "user_excerpt":
@@ -372,6 +472,177 @@ def _paper_materials(
                 for excerpt in excerpts
             )
     return refs
+
+
+def _asset_material_ref(
+    session: Session,
+    asset_id: str,
+    revision: ReadingAssetRevisionRow,
+    *,
+    paper_id: str | None,
+    kind: MaterialKind = "asset_content",
+) -> MaterialRef:
+    """资产版本引用：类型化内容与来源链也进入哈希，核对时逐项对照。"""
+    payload = _asset_payload(session, revision)
+    return MaterialRef(
+        kind=kind,
+        target_id=asset_id,
+        paper_id=paper_id,
+        version_key=f"revision:{revision.revision}",
+        fields=["title", "body", "applicability", "status", "typed", "sources"],
+        ref_hash=content_hash(payload),
+    )
+
+
+def _asset_payload(session: Session, revision: ReadingAssetRevisionRow) -> dict[str, Any]:
+    typed = ReadingAssetTypedRepository(session).get(revision.asset_id, revision.revision)
+    sources = _asset_sources(session, revision.asset_id, revision.revision)
+    return {
+        "title": revision.title,
+        "body": revision.body,
+        "applicability": revision.applicability,
+        "status": revision.status,
+        "typed": dict(typed.content_json) if typed is not None else None,
+        "sources": [_asset_source_payload(source) for source in sources],
+    }
+
+
+def _asset_source_payload(source: ReadingAssetSourceRow) -> dict[str, Any]:
+    return {
+        "paper_id": source.paper_id,
+        "archive_hash": source.archive_hash,
+        "rating_at": as_utc(source.rating_at).isoformat() if source.rating_at else None,
+    }
+
+
+def _asset_sources(session: Session, asset_id: str, revision: int) -> list[ReadingAssetSourceRow]:
+    return sorted(
+        ReadingAssetRepository(session).sources(asset_id, revision),
+        key=lambda source: (source.paper_id, source.id),
+    )
+
+
+def _synthesis_asset_materials(
+    session: Session,
+    *,
+    asset_refs: list[ReportAssetRef],
+    selected_ids: set[str],
+    cutoff: datetime,
+    exclusions: dict[tuple[str, str | None], MaterialExclusion],
+) -> list[MaterialRef]:
+    """本期活动资产＋被选中论文引用过的资产；取截止前最后版本。"""
+    repository = ReadingAssetRepository(session)
+    refs: list[MaterialRef] = []
+    seen: set[str] = set()
+    for item in asset_refs:
+        version = getattr(item, "revision", None)
+        asset_id = getattr(item, "asset_id", None)
+        if version is None or not isinstance(asset_id, str):
+            continue
+        revision = repository.revision(asset_id, int(version))
+        if revision is None or as_utc(revision.recorded_at) >= cutoff:
+            continue
+        if _asset_excluded(session, revision, exclusions):
+            continue
+        refs.append(_asset_material_ref(session, asset_id, revision, paper_id=None))
+        seen.add(asset_id)
+    for asset_id in repository.asset_ids_sourced_from_papers(sorted(selected_ids), before=cutoff):
+        if asset_id in seen:
+            continue
+        revision = repository.latest_revision_before(asset_id, cutoff)
+        if revision is None or _asset_excluded(session, revision, exclusions):
+            continue
+        refs.append(_asset_material_ref(session, asset_id, revision, paper_id=None))
+        seen.add(asset_id)
+    return refs
+
+
+def _asset_excluded(
+    session: Session,
+    revision: ReadingAssetRevisionRow,
+    exclusions: dict[tuple[str, str | None], MaterialExclusion],
+) -> bool:
+    sources = _asset_sources(session, revision.asset_id, revision.revision)
+    if not sources:
+        return False
+    return all(
+        (source.paper_id, None) in exclusions or (source.paper_id, "asset_content") in exclusions
+        for source in sources
+    )
+
+
+def _verified_candidate_materials(
+    session: Session,
+    *,
+    paper_ids: list[str],
+    cutoff: datetime,
+    exclusions: dict[tuple[str, str | None], MaterialExclusion],
+) -> list[MaterialRef]:
+    """已核对/已并入的单篇结果；pending 与 ignored 候选不进入综合材料。"""
+    if not paper_ids:
+        return []
+    refs: list[MaterialRef] = []
+    for decision in ReadingAnalysisDecisionRepository(session).list_confirmed_for_papers(
+        paper_ids, before=cutoff
+    ):
+        if (decision.paper_id, None) in exclusions or (
+            decision.paper_id,
+            "verified_candidate",
+        ) in exclusions:
+            continue
+        candidate = session.get(ReadingAnalysisCandidateRow, decision.candidate_id)
+        if candidate is None or candidate.stale:
+            continue
+        payload = _candidate_payload(candidate, decision)
+        refs.append(
+            MaterialRef(
+                kind="verified_candidate",
+                target_id=candidate.id,
+                paper_id=candidate.paper_id,
+                version_key=f"decision:{decision.id}",
+                fields=["statement", "conditions", "limitations", "decision"],
+                ref_hash=content_hash(payload),
+            )
+        )
+    return refs
+
+
+def _candidate_payload(
+    candidate: ReadingAnalysisCandidateRow, decision: ReadingAnalysisDecisionRow
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate.id,
+        "paper_id": candidate.paper_id,
+        "kind": candidate.kind,
+        "nature": candidate.nature,
+        "statement": candidate.statement,
+        "conditions": candidate.conditions,
+        "limitations": candidate.limitations,
+        "decision": decision.decision,
+        "asset_id": decision.asset_id,
+    }
+
+
+def _dedupe_materials(materials: list[MaterialRef]) -> list[MaterialRef]:
+    """同一资产可能经多条来源路径重复出现；按引用键去重并稳定排序。"""
+    unique: dict[tuple[str, str, str, str], MaterialRef] = {}
+    for ref in materials:
+        unique.setdefault((ref.kind, ref.target_id, ref.version_key, ref.ref_hash), ref)
+    return [unique[key] for key in sorted(unique)]
+
+
+def _covered_paper_ids(
+    session: Session, materials: list[MaterialRef], selected_ids: set[str]
+) -> set[str]:
+    covered = {ref.paper_id for ref in materials if ref.paper_id}
+    for ref in materials:
+        if ref.kind != "asset_content":
+            continue
+        covered.update(
+            source.paper_id
+            for source in _asset_sources(session, ref.target_id, _asset_revision(ref.version_key))
+        )
+    return {paper_id for paper_id in covered if paper_id in selected_ids}
 
 
 def _exclusion_map(
@@ -524,18 +795,19 @@ def resolve_material_content(
         )
         if revision is None:
             return MaterialContent(ref=ref, text="", ok=False)
-        ok = (
-            content_hash(
-                {
-                    "title": revision.title,
-                    "body": revision.body,
-                    "applicability": revision.applicability,
-                    "status": revision.status,
-                }
-            )
-            == ref.ref_hash
+        ok = content_hash(_asset_payload(session, revision)) == ref.ref_hash
+        return MaterialContent(ref=ref, text=_asset_text(session, revision), ok=ok)
+    if ref.kind == "verified_candidate":
+        decision = session.get(
+            ReadingAnalysisDecisionRow, ref.version_key.removeprefix("decision:")
         )
-        return MaterialContent(ref=ref, text=_asset_text(revision), ok=ok)
+        if decision is None or decision.candidate_id != ref.target_id:
+            return MaterialContent(ref=ref, text="", ok=False)
+        candidate = session.get(ReadingAnalysisCandidateRow, ref.target_id)
+        if candidate is None or candidate.stale:
+            return MaterialContent(ref=ref, text="", ok=False)
+        ok = content_hash(_candidate_payload(candidate, decision)) == ref.ref_hash
+        return MaterialContent(ref=ref, text=_candidate_text(candidate, decision), ok=ok)
     if ref.kind == "user_excerpt":
         erow = session.get(ReadingAnalysisExcerptRow, ref.target_id)
         if erow is None:
@@ -588,12 +860,42 @@ def _structured_text(row: ReadingStructuredFeedbackRow) -> str:
     )
 
 
-def _asset_text(revision: ReadingAssetRevisionRow) -> str:
-    return (
-        f"标题：{revision.title}\n状态：{revision.status}\n"
-        f"正文：{revision.body}\n"
-        f"适用说明：{revision.applicability or '无'}"
+def _asset_text(session: Session, revision: ReadingAssetRevisionRow) -> str:
+    payload = _asset_payload(session, revision)
+    parts = [
+        f"标题：{revision.title}",
+        f"状态：{revision.status}",
+        f"正文：{revision.body}",
+        f"适用说明：{revision.applicability or '无'}",
+    ]
+    typed = payload.get("typed")
+    if isinstance(typed, dict) and typed:
+        parts.append("类型化内容：" + json.dumps(typed, ensure_ascii=False, sort_keys=True))
+    sources = payload.get("sources")
+    if isinstance(sources, list) and sources:
+        parts.append(
+            "来源论文：" + "、".join(str(item.get("paper_id")) for item in sources if item)
+        )
+    return "\n".join(parts)
+
+
+def _candidate_text(
+    candidate: ReadingAnalysisCandidateRow, decision: ReadingAnalysisDecisionRow
+) -> str:
+    decision_label = {"confirmed": "用户已确认", "merged": "已并入资产"}.get(
+        decision.decision, decision.decision
     )
+    parts = [
+        f"类型：{candidate.kind}",
+        f"结论性质：{candidate.nature}",
+        f"用户决定：{decision_label}",
+        f"陈述：{candidate.statement}",
+        f"适用条件：{candidate.conditions or '未填写'}",
+        f"限制：{candidate.limitations or '未填写'}",
+    ]
+    if decision.asset_id:
+        parts.append(f"关联资产：{decision.asset_id}")
+    return "\n".join(parts)
 
 
 def _excerpt_text(row: ReadingAnalysisExcerptRow) -> str:

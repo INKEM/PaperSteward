@@ -133,6 +133,38 @@ def _reading_reflection() -> dict[str, object]:
     }
 
 
+def _reading_synthesis() -> dict[str, object]:
+    return {
+        "topics": [
+            {
+                "question": "方法在低资源场景是否仍有效？",
+                "understanding": "材料只支持特定实验设置下有效，尚无可比部署测量。",
+                "supporting_indexes": [0, 2],
+                "limiting_indexes": [1],
+                "comparison": "两篇的样本与指标不同，暂不能直接比较。",
+                "unverified": None,
+            }
+        ],
+        "open_questions": [
+            {
+                "question": "需要补充哪些可比指标？",
+                "status": "needs_evidence",
+                "source_indexes": [1],
+            }
+        ],
+        "candidate_links": [
+            {
+                "statement": "该评估流程可能迁移到多语言设置，尚待验证。",
+                "link_kind": "cross_domain_transfer",
+                "source_indexes": [0],
+                "caution": "仅基于单篇材料，迁移条件未知。",
+            }
+        ],
+        "insufficient_material": False,
+        "note": None,
+    }
+
+
 def _event() -> dict[str, object]:
     return {
         "type": "paper.done",
@@ -154,6 +186,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         "profile_extraction",
         "query_planning",
         "reading_reflection",
+        "reading_synthesis",
     }
 
     classification = schema_for("classification")
@@ -177,6 +210,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         ("special_nomination", _special_nomination()),
         ("event", _event()),
         ("reading_reflection", _reading_reflection()),
+        ("reading_synthesis", _reading_synthesis()),
     ],
 )
 def test_valid_payloads(name: str, payload: dict[str, object]) -> None:
@@ -377,6 +411,35 @@ def test_reading_reflection_fixture_validates() -> None:
     data = model.model_dump(mode="json")
     assert data["insufficient_material"] is False
     assert data["candidates"][0]["quote_source_index"] == 0
+
+
+def test_reading_synthesis_requires_traceable_topics() -> None:
+    """材料足够时必须给出专题；材料不足时不得同时给专题。"""
+    payload = _reading_synthesis()
+    payload["topics"] = []
+    with pytest.raises(SchemaError, match="至少给出一条专题"):
+        validate_mapping("reading_synthesis", payload)
+
+    payload = _reading_synthesis()
+    payload["insufficient_material"] = True
+    with pytest.raises(SchemaError, match="不得同时给出专题"):
+        validate_mapping("reading_synthesis", payload)
+
+    payload = _reading_synthesis()
+    payload["topics"][0]["supporting_indexes"] = []
+    with pytest.raises(SchemaError):
+        validate_mapping("reading_synthesis", payload)
+
+
+def test_reading_synthesis_fixture_validates() -> None:
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/llm/reading_synthesis.valid.json"
+    model = validate_json_text("reading_synthesis", fixture.read_text(encoding="utf-8"))
+    data = model.model_dump(mode="json")
+    assert data["insufficient_material"] is False
+    assert data["topics"][0]["supporting_indexes"] == [0, 2]
+    assert data["candidate_links"][0]["link_kind"] == "cross_domain_transfer"
 
 
 def test_profile_extraction_fixture_validates() -> None:

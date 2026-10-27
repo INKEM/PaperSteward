@@ -24,6 +24,7 @@ def test_default_registry_is_versioned() -> None:
         "profile_extraction",
         "query_planning",
         "reading_reflection",
+        "reading_synthesis",
         "repair",
     )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")
@@ -106,6 +107,35 @@ def test_reading_reflection_prompt_rules() -> None:
     # 材料标注为不可信数据；JSON 示例花括号已转义、变量已全部替换。
     assert "不可信数据" in rendered
     assert "{paper_id}" not in rendered and "{{" not in rendered
+
+
+def test_reading_synthesis_prompt_rules() -> None:
+    from papersteward.llm import READING_SYNTHESIS_V1
+
+    assert READING_SYNTHESIS_V1.schema == "reading_synthesis"
+    assert READING_SYNTHESIS_V1.version == "reading_synthesis/v1"
+    rendered = READING_SYNTHESIS_V1.render(
+        {
+            "report_kind": "月报",
+            "period_label": "2026-10",
+            "review_mode": "当时记录",
+            "facts": "本期阅读 2 篇",
+            "materials": "[0] 元数据\n[1] 用户备注",
+        }
+    )
+    # 相似主题不等于矛盾、条件并列、不得把未读到说成领域空白。
+    assert "相似主题不等于矛盾" in rendered
+    assert "条件对照" in rendered
+    assert "领域空白" in rendered
+    # 跨领域迁移只是候选联系；已有概括不能重复计数。
+    assert "cross_domain_transfer" in rendered
+    assert "候选联系" in rendered
+    assert "重复计数" in rendered
+    # 来源编号、材料不足合法与不可信数据边界。
+    assert "supporting_indexes" in rendered
+    assert "insufficient_material" in rendered
+    assert "不可信数据" in rendered
+    assert "{period_label}" not in rendered and "{{" not in rendered
 
 
 def test_relevance_v2_prompt_requires_evidence_and_confidence() -> None:

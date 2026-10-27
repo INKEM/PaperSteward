@@ -15,6 +15,50 @@ from papersteward.core.enums import TimePrecision as TimePrecision
 
 PROJECTION_VERSION = "reading-insights.projection/1"
 
+MaterialKind = Literal[
+    "archive_metadata",
+    "model_summary",
+    "user_rating",
+    "structured_reasons",
+    "user_notes",
+    "asset_content",
+    "user_excerpt",
+    "verified_candidate",
+]
+
+MATERIAL_KIND_LABELS: dict[str, str] = {
+    "archive_metadata": "冻结元数据／导入摘要",
+    "model_summary": "既有模型概括与评分依据",
+    "user_rating": "主观评分",
+    "structured_reasons": "结构化理由",
+    "user_notes": "备注与个人说明",
+    "asset_content": "已确认资产内容",
+    "user_excerpt": "用户补充摘录",
+    "verified_candidate": "已核对单篇候选",
+}
+
+MATERIAL_KIND_LIMITS: dict[str, str] = {
+    "archive_metadata": "只有摘要与元数据，不能宣称验证全文结论",
+    "model_summary": "历史模型概括；无法对照原文时不作为已核验原文证据",
+    "user_rating": "用户评价，不是论文客观质量",
+    "structured_reasons": "用户在截止前记录的理由版本，不是论文客观质量",
+    "user_notes": "私人文本，单独授权后才会进入分析",
+    "asset_content": "用户确认的个人整理；确认不消除私人属性",
+    "user_excerpt": "用户提供；未核对全文时不自动承诺引文真实",
+    "verified_candidate": "用户已核对或并入的单篇结果；仍属个人整理，不证明学术结论正确",
+}
+
+# 私人材料类别：含这些来源的综合归纳在分享副本中默认整条排除。
+PRIVATE_MATERIAL_KINDS: frozenset[str] = frozenset(
+    {
+        "structured_reasons",
+        "user_notes",
+        "asset_content",
+        "user_excerpt",
+        "verified_candidate",
+    }
+)
+
 
 class InsightsModel(BaseModel):
     """回顾契约基类；与 delivery.InputModel 同配置但保持模块独立。"""
@@ -516,10 +560,9 @@ class ReportAssetRef(InsightsModel):
     cross_topic: bool = False
 
 
-class InsightReportContent(InsightsModel):
-    """报告快照的冻结正文；读取时的唯一内容来源。"""
+class _ReportBody(InsightsModel):
+    """报告正文的公共事实章节；/1 与 /2 共用同一冻结口径。"""
 
-    contract: Literal["reading-insights.report/1"]
     metrics: InsightMetrics
     readings: list[ReportPaper] = Field(default_factory=list)
     backfills: list[ReportPaper] = Field(default_factory=list)
@@ -527,6 +570,122 @@ class InsightReportContent(InsightsModel):
     structured_changes: list[StructuredFeedbackChange] = Field(default_factory=list)
     unassigned: list[ReportPaper] = Field(default_factory=list)
     assets: list["ReportAssetRef"] = Field(default_factory=list)
+
+
+class InsightReportContent(_ReportBody):
+    """报告快照的冻结正文；读取时的唯一内容来源。"""
+
+    contract: Literal["reading-insights.report/1"]
+
+
+# —— 知识版报告（R2-05）：确定性事实＋模型综合的固定快照 ————————————————————
+# 综合内容只保存结论与服务端核对过的材料引用；数字全部来自事实层。
+
+SYNTHESIS_REPORT_CONTRACT = "reading-insights.report/2"
+SynthesisOpenQuestionStatus = Literal["unresolved", "needs_evidence", "depends_on_conditions"]
+SynthesisLinkKind = Literal["cross_domain_transfer", "research_opportunity"]
+
+
+class SynthesisSourceRef(InsightsModel):
+    """综合判断引用的材料（与清单一致的类别/目标/版本锚点）。"""
+
+    kind: MaterialKind
+    target_id: str
+    version_key: str
+    paper_id: str | None = None
+    private: bool = False
+
+
+class SynthesisTopic(InsightsModel):
+    """问题—方法—场景的条件对照；每条都可追到实际材料。"""
+
+    topic_id: str
+    question: str
+    understanding: str
+    supporting_refs: list[SynthesisSourceRef] = Field(min_length=1)
+    limiting_refs: list[SynthesisSourceRef] = Field(default_factory=list)
+    independent_sources: int = Field(ge=0)
+    comparison: str | None = None
+    unverified: str | None = None
+    private: bool = False
+
+
+class SynthesisOpenQuestion(InsightsModel):
+    """仍未解决的问题；status 说明是缺证据还是条件未可比。"""
+
+    question_id: str
+    question: str
+    status: SynthesisOpenQuestionStatus
+    source_refs: list[SynthesisSourceRef] = Field(min_length=1)
+    independent_sources: int = Field(ge=0)
+    private: bool = False
+
+
+class SynthesisCandidateLink(InsightsModel):
+    """跨领域迁移或研究机会：候选联系，不是已确认结论。"""
+
+    link_id: str
+    statement: str
+    link_kind: SynthesisLinkKind
+    source_refs: list[SynthesisSourceRef] = Field(min_length=1)
+    independent_sources: int = Field(ge=0)
+    caution: str | None = None
+    private: bool = False
+
+
+class SynthesisSection(InsightsModel):
+    """知识整理章节；私人条目数供分享副本披露排除范围。"""
+
+    topics: list[SynthesisTopic] = Field(default_factory=list)
+    open_questions: list[SynthesisOpenQuestion] = Field(default_factory=list)
+    candidate_links: list[SynthesisCandidateLink] = Field(default_factory=list)
+    note: str | None = None
+    insufficient_material: bool = False
+    private_items: int = Field(default=0, ge=0)
+    # 脱敏另存或分享导出时被排除的私人条目数（原报告行不变）。
+    redacted_private_items: int = Field(default=0, ge=0)
+
+
+class SynthesisAnalysisContext(InsightsModel):
+    """本次综合实际使用的材料与覆盖；用于核对「分析到了什么」。"""
+
+    purpose: str
+    manifest_id: str
+    manifest_hash: str
+    grant_id: str
+    model_config_version: str
+    prompt_version: str
+    built_at: AwareDatetime
+    materials_total: int = Field(ge=0)
+    materials_used: int = Field(ge=0)
+    materials_stale: int = Field(default=0, ge=0)
+    selected_papers: int = Field(ge=0)
+    papers_in_scope: int = Field(ge=0)
+    papers_with_materials: int = Field(ge=0)
+    missing_paper_ids: list[str] = Field(default_factory=list)
+    missing_papers_total: int = Field(default=0, ge=0)
+    material_kinds: list[str] = Field(default_factory=list)
+    omitted_papers: int = Field(default=0, ge=0)
+    omitted_materials: int = Field(default=0, ge=0)
+    verified_candidates: int = Field(default=0, ge=0)
+    assets_used: int = Field(default=0, ge=0)
+    rejected_items: int = Field(default=0, ge=0)
+    rejected_refs: int = Field(default=0, ge=0)
+    partial: bool = False
+    sources_changed_after_send: bool = False
+
+
+class InsightReportContentV2(_ReportBody):
+    """知识版报告：事实章节与 /1 同口径，另加知识整理与实际分析上下文。"""
+
+    contract: Literal["reading-insights.report/2"] = "reading-insights.report/2"
+    synthesis: SynthesisSection
+    analysis: SynthesisAnalysisContext
+
+
+ReportContent = Annotated[
+    InsightReportContent | InsightReportContentV2, Field(discriminator="contract")
+]
 
 
 FACTS_ALGORITHM = "reading-insights.facts/2"
@@ -597,9 +756,9 @@ class ReportSummary(InsightsModel):
 
 
 class ReportDetail(ReportSummary):
-    """报告详情：元信息 + 冻结正文。"""
+    """报告详情：元信息 + 冻结正文；正文按存储 contract 分派解析。"""
 
-    content: InsightReportContent
+    content: ReportContent
 
 
 # —— 手工资产契约 ————————————————————————————————————————————
@@ -748,37 +907,9 @@ class AssetRevisionDetail(InsightsModel):
 
 ANALYSIS_CONSENT_VERSION = "reading-analysis.consent/1"
 ANALYSIS_PURPOSE = "reading_reflection"
+SYNTHESIS_PURPOSE = "reading_synthesis"
+AnalysisPurpose = Literal["reading_reflection", "reading_synthesis"]
 PREVIEW_TTL_SECONDS = 15 * 60
-
-MaterialKind = Literal[
-    "archive_metadata",
-    "model_summary",
-    "user_rating",
-    "structured_reasons",
-    "user_notes",
-    "asset_content",
-    "user_excerpt",
-]
-
-MATERIAL_KIND_LABELS: dict[str, str] = {
-    "archive_metadata": "冻结元数据／导入摘要",
-    "model_summary": "既有模型概括与评分依据",
-    "user_rating": "主观评分",
-    "structured_reasons": "结构化理由",
-    "user_notes": "备注与个人说明",
-    "asset_content": "已确认资产内容",
-    "user_excerpt": "用户补充摘录",
-}
-
-MATERIAL_KIND_LIMITS: dict[str, str] = {
-    "archive_metadata": "只有摘要与元数据，不能宣称验证全文结论",
-    "model_summary": "历史模型概括；无法对照原文时不作为已核验原文证据",
-    "user_rating": "用户评价，不是论文客观质量",
-    "structured_reasons": "用户在截止前记录的理由版本，不是论文客观质量",
-    "user_notes": "私人文本，单独授权后才会进入分析",
-    "asset_content": "用户确认的个人整理；确认不消除私人属性",
-    "user_excerpt": "用户提供；未核对全文时不自动承诺引文真实",
-}
 
 
 class MaterialRef(InsightsModel):
@@ -801,28 +932,41 @@ class MaterialExclusion(InsightsModel):
 
 
 class ManifestCoverage(InsightsModel):
-    """覆盖统计：归档库存与本次实际选中分开展示。"""
+    """覆盖统计：归档库存、本次实际选中与因预算省略的部分分开展示。"""
 
     archived_total: int = Field(ge=0)
     selected_papers: int = Field(ge=0)
     by_kind: dict[str, int] = Field(default_factory=dict)
+    # 专题综合按预算截断时显式披露，不静默冒充全量。
+    omitted_papers: int = Field(default=0, ge=0)
+    omitted_materials: int = Field(default=0, ge=0)
 
 
 class AnalysisManifestContent(InsightsModel):
-    """一次分析的材料清单正文；构建后冻结，预览令牌与提交按哈希绑定。"""
+    """一次分析的材料清单正文；构建后冻结，预览令牌与提交按哈希绑定。
+
+    ``scope_request`` 仅知识版回顾使用：冻结周期、时区、模式与主题，
+    提交时据此重算同一事实范围，不能只凭界面参数改范围。
+    """
 
     purpose: str
     built_at: AwareDatetime
     materials: list[MaterialRef] = Field(max_length=2000)
     exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
     coverage: ManifestCoverage
+    scope_request: InsightQueryRequest | None = None
 
 
 class AnalysisGrantInput(InsightsModel):
-    """授权请求：范围模式＋覆盖的材料类别＋显式知情确认。"""
+    """授权请求：用途＋范围模式＋覆盖的材料类别＋显式知情确认。
 
+    「阅读反思」与「跨文献专题综合」是独立用途：任一设置变化都会使旧授权
+    失效，授权不能跨用途沿用。
+    """
+
+    purpose: AnalysisPurpose = "reading_reflection"
     scope_mode: Literal["once", "workspace"]
-    material_classes: list[MaterialKind] = Field(min_length=1, max_length=7)
+    material_classes: list[MaterialKind] = Field(min_length=1, max_length=8)
     acknowledged: bool
 
     @model_validator(mode="after")
@@ -881,8 +1025,22 @@ class ManifestSelectionInput(InsightsModel):
 
     purpose: str = ANALYSIS_PURPOSE
     paper_ids: list[str] = Field(min_length=1, max_length=500)
-    kinds: list[MaterialKind] = Field(min_length=1, max_length=7)
+    kinds: list[MaterialKind] = Field(min_length=1, max_length=8)
     exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
+
+
+class SynthesisManifestInput(InsightsModel):
+    """知识版回顾的选材输入：回顾范围＋材料类别＋逐篇排除（用途固定）。"""
+
+    period: InsightPeriodRequest
+    mode: ReviewMode = ReviewMode.AS_RECORDED
+    tag: str | None = None
+    kinds: list[MaterialKind] = Field(min_length=1, max_length=8)
+    exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
+
+    @property
+    def query(self) -> InsightQueryRequest:
+        return InsightQueryRequest(period=self.period, mode=self.mode, tag=self.tag)
 
 
 class AnalysisPreviewView(InsightsModel):

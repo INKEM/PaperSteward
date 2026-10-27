@@ -1,0 +1,29 @@
+{
+  "topics": [
+    {
+      "question": "方法在低资源场景是否仍有效？",
+      "understanding": "材料只支持特定实验设置下有效，尚无可比部署测量。",
+      "supporting_indexes": [0, 2],
+      "limiting_indexes": [1],
+      "comparison": "两篇的样本与指标不同，暂不能直接比较。",
+      "unverified": null
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "需要补充哪些可比指标？",
+      "status": "needs_evidence",
+      "source_indexes": [1]
+    }
+  ],
+  "candidate_links": [
+    {
+      "statement": "该评估流程可能迁移到多语言设置，尚待验证。",
+      "link_kind": "cross_domain_transfer",
+      "source_indexes": [0],
+      "caution": "仅基于单篇材料，迁移条件未知。"
+    }
+  ],
+  "insufficient_material": false,
+  "note": null
+}

@@ -437,7 +437,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "ix_reading_analysis_decision_asset",
         } <= decision_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0030"
+        assert current == "0031"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1658,3 +1658,123 @@ def test_0030_asset_rebuild_and_decisions_roundtrip(sqlite_engine: Engine) -> No
 
     _upgrade(sqlite_engine, "0030")
     assert asset_state() == before
+
+
+def test_0031_synthesis_grant_and_derived_copy_roundtrip(sqlite_engine: Engine) -> None:
+    """授权用途与私人综合登记扩展：旧行保留，新值可写，降级遇新值拒绝。"""
+    _upgrade(sqlite_engine, "0030")
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-old', 'reading_reflection', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"user_notes\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-old', 'asset', 'asset-1', 1, 'report', 'report-1',"
+                " 'title', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+    # 0030 的 CHECK 拒绝新用途与新登记值（验证扩展确由本迁移引入）。
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-new', 'reading_synthesis', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-new', 'candidate', 'cand-1', NULL, 'report', 'report-1',"
+                " 'synthesis', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    _upgrade(sqlite_engine, "0031")
+
+    def rows() -> tuple[list[tuple], list[tuple]]:
+        with sqlite_engine.connect() as connection:
+            grants = [
+                tuple(row)
+                for row in connection.execute(
+                    text("SELECT id, purpose FROM reading_analysis_grant ORDER BY id")
+                )
+            ]
+            copies = [
+                tuple(row)
+                for row in connection.execute(
+                    text("SELECT id, source_kind, field_kind FROM reading_derived_copy ORDER BY id")
+                )
+            ]
+        return grants, copies
+
+    grants, copies = rows()
+    assert grants == [("g-old", "reading_reflection")]
+    assert copies == [("d-old", "asset", "title")]
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-new', 'reading_synthesis', 'once',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', :hash, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat(), "hash": "a" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-new', 'candidate', 'cand-1', NULL, 'report', 'report-1',"
+                " 'synthesis', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+    assert rows()[0] == [("g-new", "reading_synthesis"), ("g-old", "reading_reflection")]
+
+    # 有新值时不猜测降级：明确拒绝，旧行保持不变。
+    with pytest.raises(RuntimeError, match="0031"):
+        _downgrade(sqlite_engine, "0030")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_grant WHERE id = 'g-new'"))
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id = 'd-new'"))
+    _downgrade(sqlite_engine, "0030")
+    grants, copies = rows()
+    assert grants == [("g-old", "reading_reflection")]
+    assert copies == [("d-old", "asset", "title")]
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-again', 'reading_synthesis', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+    _upgrade(sqlite_engine, "0031")
+    assert rows() == (grants, copies)
