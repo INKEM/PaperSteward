@@ -245,7 +245,7 @@ def test_insights_same_ids_use_current_workspace(ws_client):
     from papersteward.jobs.ui_flow import ReviewParams
     from papersteward.reading.insights.reports import prepare_report, save_report
     from papersteward.storage.delivery import content_hash
-    from papersteward.storage.insights import ReadingAssetRepository
+    from papersteward.storage.insights import ReadingAssetRepository, ReadingReportRepository
     from papersteward.storage.models import (
         ReadingAssetRevisionRow,
         ReadingAssetRow,
@@ -298,7 +298,47 @@ def test_insights_same_ids_use_current_workspace(ws_client):
                 )
             )
             row = save_report(session, prepared, run_id="same-run", now=utc_now())
+            # 报告身份在生产中不可变；样例改名时显式重建相应上下文与副本登记以保持外键有效。
+            from uuid import uuid4
+
+            from sqlalchemy import select
+
+            from papersteward.storage.models import (
+                ReadingDerivedCopyRow,
+                ReadingReportContextRow,
+            )
+
+            context_row = session.get(ReadingReportContextRow, row.id)
+            context_payload, context_series = context_row.context_json, context_row.series_key
+            session.delete(context_row)
+            copy_rows = session.scalars(
+                select(ReadingDerivedCopyRow).where(ReadingDerivedCopyRow.derived_id == row.id)
+            ).all()
+            copy_payloads = [
+                {
+                    "source_kind": item.source_kind,
+                    "source_id": item.source_id,
+                    "source_revision": item.source_revision,
+                    "field_kind": item.field_kind,
+                    "created_at": item.created_at,
+                }
+                for item in copy_rows
+            ]
+            for item in copy_rows:
+                session.delete(item)
+            session.flush()
             row.id = "same-report"
+            session.flush()
+            ReadingReportRepository(session).save_context(row.id, context_payload, context_series)
+            for payload in copy_payloads:
+                session.add(
+                    ReadingDerivedCopyRow(
+                        id=uuid4().hex,
+                        derived_kind="report",
+                        derived_id=row.id,
+                        **payload,
+                    )
+                )
             RunRepository(session).transition(
                 "same-run", RunStatus.SUCCEEDED, finished_at=utc_now()
             )

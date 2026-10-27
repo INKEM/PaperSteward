@@ -44,10 +44,23 @@ from papersteward.pipeline.relevance import (
     evaluate_relevance,
     extract_profile_facets,
 )
+from papersteward.reading.insights.analysis import (
+    AnalysisRunParamsView,
+    run_insight_analysis,
+)
+from papersteward.reading.insights.authorization import ensure_send_authorized
+from papersteward.reading.insights.contracts import SYNTHESIS_PURPOSE
+from papersteward.reading.insights.materials import manifest_content_of
+from papersteward.reading.insights.memory import run_insight_memory
+from papersteward.reading.insights.memory_contracts import MEMORY_PURPOSE
 from papersteward.reading.insights.reports import (
     ReportPreparationCancelled,
     prepare_report,
     save_report,
+)
+from papersteward.reading.insights.synthesis import (
+    SynthesisRunParamsView,
+    run_insight_synthesis,
 )
 from papersteward.scoring.config import ScoringConfig
 from papersteward.scoring.queue import refresh_queue
@@ -57,6 +70,10 @@ from papersteward.sources.http import SourceHTTP
 from papersteward.sources.planner import QueryPlan, plan_queries
 from papersteward.sources.registry import build_adapters
 from papersteward.storage import session_scope
+from papersteward.storage.insights import (
+    ReadingAnalysisGrantRepository,
+    ReadingAnalysisManifestRepository,
+)
 from papersteward.storage.models import PaperRow, RunRow
 from papersteward.storage.repositories import (
     PaperAnalysisRepository,
@@ -126,10 +143,70 @@ class ReviewParams(BaseModel):
         return self
 
 
+class AnalysisRunParams(BaseModel):
+    """单篇分析任务参数；只含清单/授权标识、版本与用途，无私人正文。
+
+    全部为扁平标量：运行页「用原参数重试」可直接带回。授权在提交时核对
+    活动 grant 并在每次发送边界重新核对；材料以清单哈希绑定。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    manifest_id: str = Field(min_length=1, max_length=64)
+    manifest_hash: str = Field(min_length=64, max_length=64)
+    grant_id: str = Field(min_length=1, max_length=64)
+    purpose: str = Field(default="reading_reflection", min_length=1, max_length=32)
+
+
+class MemoryRunParams(AnalysisRunParams):
+    purpose: Literal["reading_profile_inference"] = "reading_profile_inference"
+
+
+class SynthesisRunParams(BaseModel):
+    """知识版回顾任务参数；范围＋清单/授权标识＋用途，无私人正文。
+
+    全部为扁平标量：运行页「用原参数重试」可直接带回。事实快照在 runner
+    内按同一周期与模式重算，材料以清单哈希绑定。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    period: Literal["week", "month", "all", "custom"]
+    mode: Literal["as_recorded", "revised_now"] = "as_recorded"
+    anchor_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    tag: str | None = None
+    manifest_id: str = Field(min_length=1, max_length=64)
+    manifest_hash: str = Field(min_length=64, max_length=64)
+    grant_id: str = Field(min_length=1, max_length=64)
+    purpose: str = Field(default="reading_synthesis", min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def coherent(self) -> SynthesisRunParams:
+        if self.period in {"week", "month"}:
+            if self.anchor_date is None or self.start_date or self.end_date:
+                raise ValueError("周/月知识版回顾必须且只能提供 anchor_date")
+        elif self.period == "custom":
+            if self.anchor_date or self.start_date is None or self.end_date is None:
+                raise ValueError("自选知识版回顾必须提供 start_date 与 end_date")
+            if self.start_date > self.end_date:
+                raise ValueError("自选知识版回顾开始不能晚于结束")
+        elif self.anchor_date or self.start_date or self.end_date:
+            raise ValueError("全部历史知识版回顾不接受日期参数")
+        return self
+
+
 class FlowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    kind: Literal["sync", "refresh", "extract", "review"]
+    kind: Literal[
+        "sync",
+        "refresh",
+        "extract",
+        "review",
+        "insight_analysis",
+        "insight_synthesis",
+        "insight_memory",
+    ]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
     # 可选关注点：作为品味信号喂给检索规划 Agent；不填则纯按档案与已读历史决定。
     focus: str = Field(default="", max_length=500)
@@ -137,6 +214,11 @@ class FlowRequest(BaseModel):
     target: int = Field(default=0, ge=0, le=50)
     # 阅读回顾报告参数；仅 kind="review" 使用。
     review: ReviewParams | None = None
+    # 单篇分析参数；仅 kind="insight_analysis" 使用。
+    analysis: AnalysisRunParams | None = None
+    # 知识版回顾参数；仅 kind="insight_synthesis" 使用。
+    synthesis: SynthesisRunParams | None = None
+    memory: MemoryRunParams | None = None
 
     @model_validator(mode="after")
     def coherent(self) -> FlowRequest:
@@ -147,6 +229,29 @@ class FlowRequest(BaseModel):
                 raise ValueError("回顾任务不使用关注点、来源或目标篇数字段")
         elif self.review is not None:
             raise ValueError("review 参数仅用于回顾任务")
+        if self.kind == "insight_analysis":
+            if self.analysis is None:
+                raise ValueError("分析任务必须提供 analysis 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("分析任务不使用关注点、来源或目标篇数字段")
+        elif self.analysis is not None:
+            raise ValueError("analysis 参数仅用于分析任务")
+        if self.kind == "insight_synthesis":
+            if self.synthesis is None:
+                raise ValueError("知识版回顾任务必须提供 synthesis 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("知识版回顾任务不使用关注点、来源或目标篇数字段")
+            if self.review is not None or self.analysis is not None:
+                raise ValueError("知识版回顾任务不接受其他任务参数")
+        elif self.synthesis is not None:
+            raise ValueError("synthesis 参数仅用于知识版回顾任务")
+        if self.kind == "insight_memory":
+            if self.memory is None:
+                raise ValueError("研究记忆任务必须提供 memory 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("研究记忆任务不使用关注点、来源或目标篇数字段")
+        elif self.memory is not None:
+            raise ValueError("memory 参数仅用于研究记忆任务")
         return self
 
 
@@ -258,7 +363,16 @@ class UIFlowManager:
                 rows = session.scalars(
                     select(RunRow).where(
                         RunRow.run_type.in_(
-                            ["ui.sync", "ui.digest", "ui.extract", "ui.refresh", "ui.review"]
+                            [
+                                "ui.sync",
+                                "ui.digest",
+                                "ui.extract",
+                                "ui.refresh",
+                                "ui.review",
+                                "ui.insight_analysis",
+                                "ui.insight_synthesis",
+                                "ui.insight_memory",
+                            ]
                         ),
                         RunRow.status == "running",
                     )
@@ -305,6 +419,80 @@ class UIFlowManager:
                     ensure_draft_stage(session, occurred_at=utc_now())
                     if not materials_text(session).strip():
                         raise InvalidRequestError("请先上传至少一份描述研究方向的材料")
+                elif request.kind == "insight_analysis":
+                    # 模型任务提交即校验配置与用途授权；发送边界会再次核对。
+                    if problem := processing_problem(session, self.settings):
+                        raise InvalidRequestError(problem)
+                    analysis = request.analysis
+                    assert analysis is not None
+                    manifest = ReadingAnalysisManifestRepository(session).get(analysis.manifest_id)
+                    if (
+                        manifest is None
+                        or manifest.purpose != analysis.purpose
+                        or manifest.manifest_hash != analysis.manifest_hash
+                    ):
+                        raise InvalidRequestError("材料清单不存在或与参数不符，请重新生成预览")
+                    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(
+                        analysis.purpose
+                    )
+                    grant = next((item for item in grants if item.id == analysis.grant_id), None)
+                    if grant is None:
+                        raise InvalidRequestError("阅读分析授权不存在或已撤回，请重新核对数据去向")
+                    if grant.scope_mode == "once" and grant.manifest_hash != analysis.manifest_hash:
+                        raise InvalidRequestError("本次授权与清单不匹配，请重新预览并授权")
+                elif request.kind == "insight_memory":
+                    params = request.memory
+                    assert params is not None
+                    manifest = ReadingAnalysisManifestRepository(session).get(params.manifest_id)
+                    if (
+                        manifest is None
+                        or manifest.purpose != MEMORY_PURPOSE
+                        or manifest.manifest_hash != params.manifest_hash
+                    ):
+                        raise InvalidRequestError("研究记忆清单不存在或与参数不符，请重新预览")
+                    resolved = ensure_send_authorized(
+                        session,
+                        settings=self.settings,
+                        purpose=MEMORY_PURPOSE,
+                        manifest_hash=params.manifest_hash,
+                        material_kinds=list(manifest_content_of(manifest).coverage.by_kind),
+                    )
+                    if resolved.grant_id != params.grant_id:
+                        raise InvalidRequestError("研究记忆授权已变化，请重新预览")
+                elif request.kind == "insight_synthesis":
+                    if problem := processing_problem(session, self.settings):
+                        raise InvalidRequestError(problem)
+                    synthesis = request.synthesis
+                    assert synthesis is not None
+                    if synthesis.purpose != SYNTHESIS_PURPOSE:
+                        raise InvalidRequestError("知识版回顾的用途参数无效")
+                    manifest = ReadingAnalysisManifestRepository(session).get(synthesis.manifest_id)
+                    if (
+                        manifest is None
+                        or manifest.purpose != synthesis.purpose
+                        or manifest.manifest_hash != synthesis.manifest_hash
+                    ):
+                        raise InvalidRequestError("材料清单不存在或与参数不符，请重新生成预览")
+                    grants = ReadingAnalysisGrantRepository(session).active_for_purpose(
+                        synthesis.purpose
+                    )
+                    grant = next((item for item in grants if item.id == synthesis.grant_id), None)
+                    if grant is None:
+                        raise InvalidRequestError(
+                            "知识版回顾授权不存在或已撤回，请重新核对数据去向"
+                        )
+                    if (
+                        grant.scope_mode == "once"
+                        and grant.manifest_hash != synthesis.manifest_hash
+                    ):
+                        raise InvalidRequestError("本次授权与清单不匹配，请重新预览并授权")
+                    required = set(manifest_content_of(manifest).coverage.by_kind)
+                    missing = sorted(required - set(grant.material_classes_json or []))
+                    if missing:
+                        raise InvalidRequestError(
+                            "材料类别超出授权范围，请重新授权扩大类别或从清单中排除",
+                            details={"missing_classes": missing},
+                        )
                 else:
                     bound_context(session, utc_now(), action="ui." + request.kind)
                 if request.kind == "sync" and (
@@ -487,6 +675,78 @@ class UIFlowManager:
                     },
                 )
                 completed = ["extracting"]
+            elif request.kind == "insight_analysis":
+                self._update(identity, stage="analyzing")
+                if self._finalize_stop(identity) or self._terminated(identity):
+                    return
+                assert request.analysis is not None
+                generated = run_insight_analysis(
+                    self.factory,
+                    self.settings,
+                    params=AnalysisRunParamsView(
+                        manifest_id=request.analysis.manifest_id,
+                        manifest_hash=request.analysis.manifest_hash,
+                        grant_id=request.analysis.grant_id,
+                        purpose=request.analysis.purpose,
+                    ),
+                    run_id=identity,
+                    should_abort=lambda: self._is_stopping(identity),
+                    progress=lambda **values: self._update(identity, **values),
+                )
+                self._update(identity, generated=generated)
+                completed = ["analyzing", "saving"]
+            elif request.kind == "insight_memory":
+                self._update(identity, stage="reading")
+                if self._finalize_stop(identity) or self._terminated(identity):
+                    return
+                assert request.memory is not None
+                generated = run_insight_memory(
+                    self.factory,
+                    self.settings,
+                    manifest_id=request.memory.manifest_id,
+                    manifest_hash=request.memory.manifest_hash,
+                    grant_id=request.memory.grant_id,
+                    run_id=identity,
+                    should_abort=lambda: self._is_stopping(identity),
+                    progress=lambda **values: self._update(identity, **values),
+                )
+                self._update(identity, generated=generated)
+                completed = ["reading", "synthesizing", "saving"]
+
+            elif request.kind == "insight_synthesis":
+                self._update(identity, stage="reading")
+                if self._finalize_stop(identity) or self._terminated(identity):
+                    return
+                assert request.synthesis is not None
+                generated = run_insight_synthesis(
+                    self.factory,
+                    self.settings,
+                    params=SynthesisRunParamsView(
+                        period=request.synthesis.period,
+                        mode=request.synthesis.mode,
+                        anchor_date=request.synthesis.anchor_date,
+                        start_date=request.synthesis.start_date,
+                        end_date=request.synthesis.end_date,
+                        tag=request.synthesis.tag,
+                        manifest_id=request.synthesis.manifest_id,
+                        manifest_hash=request.synthesis.manifest_hash,
+                        grant_id=request.synthesis.grant_id,
+                        purpose=request.synthesis.purpose,
+                    ),
+                    run_id=identity,
+                    should_abort=lambda: self._is_stopping(identity),
+                    progress=lambda **values: self._update(identity, **values),
+                )
+                stopped = (
+                    generated.get("stopped_reason") is not None
+                    and generated.get("report_id") is None
+                )
+                if stopped:
+                    self._update(identity, generated=generated)
+                    completed = ["reading", "synthesizing"]
+                else:
+                    self._update(identity, generated=generated)
+                    completed = ["reading", "synthesizing", "saving"]
             else:
                 self._update(identity, stage="refreshing")
                 self.refresh(request)

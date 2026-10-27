@@ -42,7 +42,22 @@ def personal_copy(session: Session, *, now: datetime) -> dict[str, Any]:
             }
             for asset in session.scalars(select(ReadingAssetRow).order_by(ReadingAssetRow.id))
         ]
+        from papersteward.reading.insights.memory import memory_revision_view
+        from papersteward.storage.reading_memory import ReadingMemoryRepository
+
+        memory_repository = ReadingMemoryRepository(session)
+        memory = [
+            {
+                "memory_id": current.memory_id,
+                "revisions": [
+                    memory_revision_view(session, revision)
+                    for revision in memory_repository.revisions(current.memory_id)
+                ],
+            }
+            for current in memory_repository.current()
+        ]
         return {
+            "research_memory": memory,
             "contract": "reading-insights.personal-copy/1",
             "exported_at": now,
             "timezone": query.period.timezone,

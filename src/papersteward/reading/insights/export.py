@@ -5,14 +5,20 @@
 """
 
 import json
-from typing import Literal
+from typing import Any, Literal
 
 from papersteward.delivery.render import markdown as _escape_md
 from papersteward.reading.insights.contracts import (
+    LIMITED_REASON_LABELS,
+    MATERIAL_KIND_LABELS,
+    VALUE_SOURCE_LABELS,
     InsightMetrics,
+    InsightReportContentV2,
+    ReportContent,
     ReportDetail,
     ReportPaper,
     ReviewMode,
+    StructuredFeedbackChange,
     TimePrecision,
 )
 
@@ -26,26 +32,71 @@ def export_report(
     detail: ReportDetail, format: ReportExportFormat, *, include_private: bool = False
 ) -> str:
     if not include_private:
-        detail = detail.model_copy(
-            update={
-                "content": detail.content.model_copy(
-                    update={
-                        "assets": [
-                            ref.model_copy(
-                                update={
-                                    "title": "手工问题" if ref.kind == "problem" else "手工收获",
-                                    "body": None,
-                                }
-                            )
-                            for ref in detail.content.assets
-                        ]
-                    }
-                )
-            }
-        )
+        detail = detail.model_copy(update={"content": shareable_content(detail.content)})
     if format == "json":
         return json.dumps(detail.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
     return _export_markdown(detail)
+
+
+def shareable_content(content: ReportContent) -> ReportContent:
+    """分享副本：清除资产标题/正文，并剔除依赖私人材料的整条归纳。"""
+    shared = content.model_copy(deep=True)
+    for ref in shared.assets:
+        ref.title = _asset_placeholder(ref.kind)
+        ref.body = None
+    if isinstance(shared, InsightReportContentV2):
+        section = shared.synthesis
+        removed = 0
+        for name in ("topics", "open_questions", "candidate_links"):
+            items = list(getattr(section, name))
+            kept = [item for item in items if not item.private]
+            removed += len(items) - len(kept)
+            setattr(section, name, kept)
+        if removed and section.note:
+            # 模型说明可能复述私人材料；存在私人条目时整段省略。
+            section.note = "（模型说明因涉及私人材料已省略）"
+        section.private_items = 0
+        section.redacted_private_items += removed
+    return shared
+
+
+def private_content_summary(content: ReportContent) -> dict[str, object]:
+    """导出页披露的私人内容概览；只含类别与数量，不含原文。"""
+    asset_titles = sum(1 for ref in content.assets if bool(ref.title))
+    asset_bodies = sum(1 for ref in content.assets if ref.body is not None)
+    private_items = 0
+    kinds: set[str] = set()
+    if isinstance(content, InsightReportContentV2):
+        for topic in content.synthesis.topics:
+            if topic.private:
+                private_items += 1
+            kinds.update(
+                ref.kind
+                for ref in list(topic.supporting_refs) + list(topic.limiting_refs)
+                if ref.private
+            )
+        for question in content.synthesis.open_questions:
+            if question.private:
+                private_items += 1
+            kinds.update(ref.kind for ref in question.source_refs if ref.private)
+        for link in content.synthesis.candidate_links:
+            if link.private:
+                private_items += 1
+            kinds.update(ref.kind for ref in link.source_refs if ref.private)
+    return {
+        "asset_titles": asset_titles,
+        "asset_bodies": asset_bodies,
+        "private_items": private_items,
+        "material_kinds": sorted(kinds),
+    }
+
+
+def _asset_placeholder(kind: str) -> str:
+    return {
+        "problem": "手工问题",
+        "method": "手工方法卡",
+        "evidence": "手工证据组",
+    }.get(kind, "手工收获")
 
 
 def _export_markdown(detail: ReportDetail) -> str:
@@ -75,6 +126,7 @@ def _export_markdown(detail: ReportDetail) -> str:
         f"| 反馈变化 | 评分 {metrics.feedback_changes.score_events} · "
         f"备注 {metrics.feedback_changes.note_events} · "
         f"涉及 {metrics.feedback_changes.papers_affected} 篇 |",
+        f"| 结构化理由覆盖 | {_structured_coverage_text(metrics)} |",
         f"| 全部历史（当前范围） | {metrics.all_history_total} |",
         "",
     ]
@@ -106,6 +158,21 @@ def _export_markdown(detail: ReportDetail) -> str:
             text = "备注变更"
         lines.append(f"- {change.recorded_at.isoformat()} · {_escape_md(change.paper_id)} · {text}")
     lines.append("")
+    structured = detail.content.structured_changes
+    lines.append(f"## 结构化理由修订（{len(structured)}）")
+    lines.append("")
+    if not structured:
+        lines.append("（无）")
+        lines.append("")
+    for reason_change in structured:
+        lines.append(
+            f"- {reason_change.recorded_at.isoformat()} · "
+            f"{_escape_md(reason_change.paper_id)} · "
+            + _escape_md(_structured_change_text(reason_change))
+        )
+    lines.append("")
+    if isinstance(detail.content, InsightReportContentV2):
+        lines += _synthesis_markdown(detail.content)
     lines += ["## 手工资产", ""]
     for ref in detail.content.assets:
         lines.append(
@@ -121,12 +188,134 @@ def _export_markdown(detail: ReportDetail) -> str:
     return "\n".join(lines)
 
 
+def _synthesis_markdown(content: InsightReportContentV2) -> list[str]:
+    section = content.synthesis
+    lines = ["## 知识整理", ""]
+    if section.note:
+        lines += [f"> {_escape_md(section.note)}", ""]
+    if section.redacted_private_items:
+        lines += [
+            f"> 分享副本已排除 {section.redacted_private_items} 条依赖私人材料的归纳；"
+            "原始报告未修改。",
+            "",
+        ]
+    if section.private_items and not section.redacted_private_items:
+        lines += [f"> 个人副本包含 {section.private_items} 条依赖私人材料的归纳。", ""]
+    if section.insufficient_material:
+        lines += ["材料不足，本次未形成专题判断。", ""]
+    if section.topics:
+        lines += ["### 专题", ""]
+        for topic in section.topics:
+            lines += [f"#### {_escape_md(topic.question)}", ""]
+            lines += [_escape_md(topic.understanding), ""]
+            lines += [f"- 支持材料：{_refs_text(topic.supporting_refs)}"]
+            if topic.limiting_refs:
+                lines += [f"- 限制/不同结果：{_refs_text(topic.limiting_refs)}"]
+            if topic.comparison:
+                lines += [f"- 条件对照：{_escape_md(topic.comparison)}"]
+            if topic.unverified:
+                lines += [f"- 待确认：{_escape_md(topic.unverified)}"]
+            lines += [f"- 独立来源：{topic.independent_sources}", ""]
+    if section.open_questions:
+        lines += ["### 仍未解决", ""]
+        for question in section.open_questions:
+            status = {
+                "needs_evidence": "缺证据",
+                "depends_on_conditions": "条件不可比",
+                "unresolved": "仍未解决",
+            }.get(question.status, question.status)
+            lines += [
+                f"- {_escape_md(question.question)}（{status}；来源："
+                f"{_refs_text(question.source_refs)}）"
+            ]
+        lines.append("")
+    if section.candidate_links:
+        lines += ["### 候选联系（未确认）", ""]
+        for link in section.candidate_links:
+            kind = "跨领域迁移" if link.link_kind == "cross_domain_transfer" else "研究机会"
+            lines += [
+                f"- **{kind}**：{_escape_md(link.statement)}"
+                f"（来源：{_refs_text(link.source_refs)}）"
+            ]
+            if link.caution:
+                lines += [f"  - 注意：{_escape_md(link.caution)}"]
+        lines.append("")
+    context = content.analysis
+    lines += [
+        "## 实际分析覆盖",
+        "",
+        f"- 材料：使用 {context.materials_used} / 清单 {context.materials_total} 条"
+        f"（过期或缺失 {context.materials_stale} 条）",
+        f"- 论文：范围内 {context.papers_in_scope} 篇，有材料 {context.papers_with_materials} 篇，"
+        f"缺失 {context.missing_papers_total} 篇",
+        f"- 省略：论文 {context.omitted_papers} 篇、材料 {context.omitted_materials} 条",
+        f"- 已核对单篇候选 {context.verified_candidates} 条 · 已确认资产 {context.assets_used} 个",
+        f"- 被服务端拒绝的引用 {context.rejected_refs} 个 · 被拒条目 {context.rejected_items} 条",
+    ]
+    if context.partial:
+        lines += ["- **覆盖不完整**：缺失或省略的材料没有参与本次综合，不冒充全量。"]
+    if context.sources_changed_after_send:
+        lines += ["- 生成后源数据已有变化；本报告保留生成时的固定内容。"]
+    lines += [
+        "",
+        "> 知识整理是模型归纳，待用户核对；它不改变事实统计，也不等于系统验证论文结论。",
+        "",
+    ]
+    return lines
+
+
+def _refs_text(refs: list[Any]) -> str:
+    return "；".join(
+        f"{MATERIAL_KIND_LABELS.get(ref.kind, ref.kind)} {ref.target_id}@{ref.version_key}"
+        for ref in refs
+    )
+
+
 def _coverage_text(metrics: InsightMetrics, key: str) -> str:
     coverage = metrics.coverage
     if coverage.total == 0:
         return "暂无"
     value = getattr(coverage, key)
     return f"{value}/{coverage.total}"
+
+
+def _structured_coverage_text(metrics: InsightMetrics) -> str:
+    coverage = metrics.structured_coverage
+    if coverage.total == 0:
+        return "暂无"
+    if coverage.covered == 0:
+        return f"0/{coverage.total}"
+    return (
+        f"{coverage.covered}/{coverage.total}（价值来源 {coverage.value_sources}"
+        f" · 价值有限 {coverage.limited_reasons} · 语境 {coverage.context}"
+        f" · 收获疑问 {coverage.free_text}）"
+    )
+
+
+def _structured_change_text(change: StructuredFeedbackChange) -> str:
+    parts = [
+        f"{sign}{_code_label(labels, code)}"
+        for codes, labels, sign in (
+            (change.added_value_sources, VALUE_SOURCE_LABELS, "+"),
+            (change.removed_value_sources, VALUE_SOURCE_LABELS, "−"),
+            (change.added_limited_reasons, LIMITED_REASON_LABELS, "+"),
+            (change.removed_limited_reasons, LIMITED_REASON_LABELS, "−"),
+        )
+        for code in codes
+    ]
+    if change.context_changed:
+        parts.append("语境变更")
+    if change.free_text_changed:
+        parts.append("文字变更")
+    if change.link_changed:
+        parts.append("关联评分变更")
+    if change.cleared:
+        parts.append("全部清除")
+    return " · ".join(parts) if parts else "内容调整"
+
+
+def _code_label(labels: dict[str, str], code: str) -> str:
+    return labels.get(code, code)
 
 
 def _distribution_lines(metrics: InsightMetrics) -> list[str]:

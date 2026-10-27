@@ -24,6 +24,8 @@ from papersteward.api.middleware import RequestIdMiddleware
 from papersteward.api.onboarding import router as onboarding_router
 from papersteward.api.pages import router as pages_router
 from papersteward.api.queue import router as queue_router
+from papersteward.api.reading_memory import pages as memory_pages_router
+from papersteward.api.reading_memory import router as memory_router
 from papersteward.api.routes import router
 from papersteward.api.settings import router as settings_router
 from papersteward.api.settings_pages import router as settings_pages_router
@@ -81,6 +83,8 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     app.include_router(imports_router)
     app.include_router(import_pages_router)
     app.include_router(insights_router)
+    app.include_router(memory_router)
+    app.include_router(memory_pages_router)
     app.include_router(insights_pages_router)
     app.include_router(insights_export_router)
     app.include_router(pages_router)

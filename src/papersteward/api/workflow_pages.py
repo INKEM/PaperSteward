@@ -47,8 +47,11 @@ LABELS = {
     "ui.digest": "历史日报任务",
     "ui.extract": "生成研究草案",
     "ui.review": "生成阅读回顾",
+    "ui.insight_synthesis": "生成知识版回顾",
+    "ui.insight_memory": "整理研究记忆",
     "reading": "读取记录",
     "summarizing": "汇总事实",
+    "synthesizing": "生成知识整理",
     "saving": "保存回顾",
     "ingest": "来源采集",
 }
@@ -124,6 +127,45 @@ def _run_result_summary(run: Run) -> str:
         if report_id and stats.get("deduplicated"):
             return "本期数据没有变化，已沿用上一份报告。"
         return "报告已生成并保存，可查看或导出。"
+    if run.run_type == "ui.insight_memory":
+        generated = stats.get("generated")
+        data = generated if isinstance(generated, dict) else {}
+        return (
+            f"研究记忆已整理：新候选 {_number(data, 'candidates')} 条，"
+            f"需复核 {_number(data, 'needs_review')} 条；用户决定已保留。"
+        )
+    if run.run_type == "ui.insight_synthesis":
+        generated = stats.get("generated")
+        data = generated if isinstance(generated, dict) else {}
+        if data.get("deduplicated"):
+            return "相同范围与材料已有知识版报告，已沿用既有版本。"
+        if data.get("insufficient_material"):
+            return "本次材料不足，未形成知识整理；事实统计仍已保存。"
+        topics = _number(data, "topics")
+        questions = _number(data, "open_questions")
+        links = _number(data, "candidate_links")
+        text = (
+            f"知识版回顾已生成：专题 {topics} 条 · 开放问题 {questions} 条 · 候选联系 {links} 条。"
+        )
+        if data.get("partial"):
+            text += " 部分材料缺失或省略，报告已标明覆盖范围。"
+        return text
+    if run.run_type == "ui.insight_analysis":
+        generated = stats.get("generated")
+        data = generated if isinstance(generated, dict) else {}
+        completed = _number(data, "papers_completed")
+        candidates = _number(data, "candidate_count")
+        insufficient = _number(data, "papers_insufficient")
+        failed = _number(data, "papers_failed")
+        stale = _number(data, "papers_stale")
+        parts = [f"分析完成 {completed} 篇，生成候选 {candidates} 条。"]
+        if insufficient:
+            parts.append(f"材料不足 {insufficient} 篇")
+        if failed:
+            parts.append(f"失败 {failed} 篇")
+        if stale:
+            parts.append(f"源已变化 {stale} 篇")
+        return "；".join(parts)
     return "任务已完成。"
 
 
@@ -150,6 +192,12 @@ def _run_next_step(run: Run) -> str:
         return "在下方提意见继续调整，或确认开始使用。"
     if run.run_type == "ui.review":
         return "打开报告查看事实与导出；之后可从「归档 → 阅读回顾」再次生成。"
+    if run.run_type == "ui.insight_memory":
+        return "到研究记忆核对证据、修订或停用；所有条目仅用于回顾，不参与推荐。"
+    if run.run_type == "ui.insight_synthesis":
+        return "打开报告核对知识整理与实际分析覆盖；事实版与知识版都保留在报告系列中。"
+    if run.run_type == "ui.insight_analysis":
+        return "到「阅读分析」页核对候选（候选未经确认不会写入资产）；失败篇目可用原参数重试。"
     return ""
 
 
@@ -198,6 +246,8 @@ def run_body(
             "extracting": "正在生成研究草案",
             "reading": "正在读取归档记录",
             "summarizing": "正在汇总阅读事实",
+            "analyzing": "正在逐篇分析并核对来源",
+            "synthesizing": "正在生成知识整理并核对来源",
             "saving": "正在保存报告快照",
             "completed": "正在保存运行结果",
         }.get(stage, "任务正在运行")
@@ -215,6 +265,10 @@ def run_body(
         stages = ["queued", "collecting", "completed"]
     elif run.run_type == "ui.review":
         stages = ["queued", "reading", "summarizing", "saving", "completed"]
+    elif run.run_type == "ui.insight_analysis":
+        stages = ["queued", "analyzing", "saving", "completed"]
+    elif run.run_type in {"ui.insight_synthesis", "ui.insight_memory"}:
+        stages = ["queued", "reading", "synthesizing", "saving", "completed"]
     else:
         stages = [
             "queued",
@@ -265,6 +319,12 @@ def run_body(
                 "草案版本都保留，本次结果不保存。"
             ),
             "ui.review": "停止后已保存的报告保留；本次尚未保存的快照不会落库。",
+            "ui.insight_analysis": "停止在当前篇目边界生效；已完成篇目的候选保留。",
+            "ui.insight_memory": "停止在模型调用边界生效；尚未保存的画像结果不会落库。",
+            "ui.insight_synthesis": (
+                "停止在当前模型调用结束后生效；本次尚未保存的知识版报告不会落库，"
+                "事实版回顾仍可单独生成。"
+            ),
         }.get(run.run_type, "停止后已完成的数据保留。")
         if stopping:
             # UXR-15：停止已请求（落库待检查点生效），不重复提供停止按钮。
@@ -449,6 +509,10 @@ def run_body(
     ):
         payload = dict(stats["request"])
         retry_kind = str(payload.pop("kind", run.run_type.removeprefix("ui.")))
+        if retry_kind == "insight_memory":
+            params = payload.pop("memory", None)
+            if isinstance(params, dict):
+                payload = {key: value for key, value in params.items() if value is not None}
         body += _run_form(
             retry_kind,
             "".join(hidden(key, value) for key, value in payload.items()),
@@ -584,12 +648,45 @@ def dashboard(
 async def submit_run(request: Request) -> Response:
     try:
         values = await fields(request)
+        analysis = None
+        if values.get("kind") == "insight_analysis":
+            analysis = {
+                "manifest_id": values.get("manifest_id", ""),
+                "manifest_hash": values.get("manifest_hash", ""),
+                "grant_id": values.get("grant_id", ""),
+                "purpose": values.get("purpose") or "reading_reflection",
+            }
+        synthesis = None
+        if values.get("kind") == "insight_synthesis":
+            synthesis = {
+                "period": values.get("period", ""),
+                "mode": values.get("mode") or "as_recorded",
+                "anchor_date": values.get("anchor_date") or None,
+                "start_date": values.get("start_date") or None,
+                "end_date": values.get("end_date") or None,
+                "tag": values.get("tag") or None,
+                "manifest_id": values.get("manifest_id", ""),
+                "manifest_hash": values.get("manifest_hash", ""),
+                "grant_id": values.get("grant_id", ""),
+                "purpose": values.get("purpose") or "reading_synthesis",
+            }
+        memory = None
+        if values.get("kind") == "insight_memory":
+            memory = {
+                "manifest_id": values.get("manifest_id", ""),
+                "manifest_hash": values.get("manifest_hash", ""),
+                "grant_id": values.get("grant_id", ""),
+                "purpose": values.get("purpose") or "reading_profile_inference",
+            }
         spec = FlowRequest(
             run_id=values.get("run_id", ""),
             kind=values.get("kind"),
             source=values.get("source", "arxiv"),
             focus=values.get("focus", ""),
             target=values.get("target", "0"),
+            analysis=analysis,
+            synthesis=synthesis,
+            memory=memory,
         )
         identity = resolve_workspace(request).ui_flows.submit(spec)
         return RedirectResponse("/ui/runs/" + identity, status_code=303)
@@ -636,6 +733,32 @@ def run_progress(identity: str, session: SessionDep, fragment: bool = False) -> 
                 headers={**HEADERS, "HX-Redirect": "/ui/setup"},
             )
         return RedirectResponse("/ui/setup", status_code=303)
+    if run.run_type == "ui.insight_analysis" and run.status is RunStatus.SUCCEEDED:
+        target = f"/ui/reading-insights/analysis?run={quote(run.id, safe='')}"
+        if fragment:
+            return HTMLResponse(
+                '<p class="success">分析完成，正在打开候选…</p>',
+                headers={**HEADERS, "HX-Redirect": target},
+            )
+        return RedirectResponse(target, status_code=303)
+    if run.run_type == "ui.insight_memory" and run.status is RunStatus.SUCCEEDED:
+        target = "/ui/reading-insights/memory"
+        if fragment:
+            return HTMLResponse(
+                "<p>研究记忆已整理，正在打开…</p>", headers={**HEADERS, "HX-Redirect": target}
+            )
+        return RedirectResponse(target, status_code=303)
+    if run.run_type == "ui.insight_synthesis" and run.status is RunStatus.SUCCEEDED:
+        generated = run.stats_json.get("generated")
+        report_id = str(generated.get("report_id")) if isinstance(generated, dict) else ""
+        if report_id:
+            target = f"/ui/reading-insights/reports/{report_id}"
+            if fragment:
+                return HTMLResponse(
+                    '<p class="success">知识版回顾已生成，正在打开报告…</p>',
+                    headers={**HEADERS, "HX-Redirect": target},
+                )
+            return RedirectResponse(target, status_code=303)
     if run.run_type == "ui.review" and run.status is RunStatus.SUCCEEDED:
         generated = run.stats_json.get("generated")
         report_id = str(generated.get("report_id")) if isinstance(generated, dict) else ""

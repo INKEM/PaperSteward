@@ -43,6 +43,7 @@ INSIGHT_TABLES = (
     "reading_asset",
     "reading_asset_revision",
     "reading_asset_source",
+    "reading_write_receipt",
 )
 
 
@@ -73,7 +74,12 @@ def release_data(client):
             now=PAST,
         )
         change_status(
-            session, asset.asset_id, "resolved", now=PAST + timedelta(hours=1), expected_revision=1
+            session,
+            asset.asset_id,
+            "resolved",
+            now=PAST + timedelta(hours=1),
+            expected_revision=1,
+            idempotency_key="release-status",
         )
     submit_review(client, "release-report", period="all", anchor_date=None)
     run = wait(client.app.state.ui_flows, "release-report")
@@ -289,3 +295,75 @@ def test_private_report_export_and_page_delete_copies(client):
     assert client.get(f"/reading-insights/reports/{report_id}").status_code == 404
     assert client.get(f"/reading-insights/reports/{default_report}").status_code == 200
     assert "来源已移除" in client.get(f"/ui/reading-insights/reports/{default_report}").text
+
+
+def test_sanitized_copy_strips_private_fields_and_keeps_original(client):
+    """F06/R2-00C：另存脱敏版本清除私人标题与正文；原报告与哈希不动，幂等且同系列。"""
+    from papersteward.reading.insights.reports import (
+        list_series_reports,
+        read_report,
+        save_sanitized_report,
+    )
+    from papersteward.storage.insights import ReadingDerivedCopyRepository
+
+    _, _, asset_id, default_report = release_data(client)
+    with session_scope(create_session_factory(client.app.state.engine)) as session:
+        original_before = session.get(ReadingReportRow, default_report)
+        original_json = original_before.content_json
+        original_hash = original_before.content_hash
+
+        sanitized = save_sanitized_report(session, default_report, now=PAST + timedelta(hours=2))
+        sanitized_id = sanitized.report_id
+
+        # 原报告行逐字段不变。
+        original_after = session.get(ReadingReportRow, default_report)
+        assert original_after.content_json == original_json
+        assert original_after.content_hash == original_hash
+
+        # 脱敏副本无私人标题与正文；事实数字保持一致。
+        assert [ref.title for ref in sanitized.content.assets] == [""]
+        assert [ref.body for ref in sanitized.content.assets] == [None]
+        assert sanitized.content.metrics.model_dump() == (
+            read_report(session, default_report).content.metrics.model_dump()
+        )
+
+        # 幂等：再次另存沿用同一份副本。
+        again = save_sanitized_report(session, default_report, now=PAST + timedelta(hours=3))
+        assert again.report_id == sanitized_id
+
+        # 派生谱系登记；脱敏副本自身没有私人字段登记。
+        lineage = ReadingDerivedCopyRepository(session).lineage_for_report(sanitized_id)
+        assert [(item.source_kind, item.source_id, item.field_kind) for item in lineage] == [
+            ("report", default_report, "sanitized")
+        ]
+
+        # 同系列：脱敏版本与原版本互相可见、可比较。
+        base = read_report(session, default_report)
+        series_ids = {item.report_id for item in list_series_reports(session, base, limit=50)}
+        assert {default_report, sanitized_id} <= series_ids
+
+    # 页面：原报告提供「另存脱敏版本」；脱敏副本显示来源提示与占位标题。
+    original_page = client.get(f"/ui/reading-insights/reports/{default_report}")
+    assert "另存脱敏版本" in original_page.text
+    assert "私人问题标题" in original_page.text
+    sanitized_page = client.get(f"/ui/reading-insights/reports/{sanitized_id}")
+    assert "的脱敏版本" in sanitized_page.text
+    assert "私人标题已移除" in sanitized_page.text
+    assert "私人问题标题" not in sanitized_page.text
+    assert "另存脱敏版本" not in sanitized_page.text
+    # 原 run 存在渲染链接；脱敏副本的合成 run 无记录时以纯文本说明。
+    assert 'href="/ui/runs/release-run"' in original_page.text or "/ui/runs/" in original_page.text
+    assert "无运行记录" in sanitized_page.text
+
+    # JSON 入口幂等返回同一份副本；对脱敏副本再次另存被拒绝。
+    api = client.post(f"/reading-insights/reports/{default_report}/sanitized")
+    assert api.status_code == 201
+    assert api.json()["report_id"] == sanitized_id
+    refused = client.post(f"/reading-insights/reports/{sanitized_id}/sanitized")
+    assert refused.status_code in (400, 409, 422)
+
+    # 事实导出口径一致：两个副本都不含私人标题。
+    for report_id in (default_report, sanitized_id):
+        facts = client.get(f"/reading-insights/reports/{report_id}/export?format=json")
+        assert facts.status_code == 200
+        assert "私人问题标题" not in facts.text

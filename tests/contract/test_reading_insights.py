@@ -213,6 +213,10 @@ def test_minimal_projection_json_is_frozen():
                     }
                 ],
                 "changes": [],
+                "structured_feedback": [],
+                "structured_changes": [],
+                "archive_hash": None,
+                "reading_revision": 0,
             }
         ],
     }
@@ -384,6 +388,15 @@ def test_minimal_overview_json_is_frozen():
                 "unrated": 0,
             },
             "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "structured_coverage": {
+                "total": 1,
+                "covered": 0,
+                "value_sources": 0,
+                "limited_reasons": 0,
+                "context": 0,
+                "free_text": 0,
+            },
+            "structured_change_stats": {"events": 0, "papers_affected": 0},
             "asset_events": 0,
             "asset_assets": 0,
             "reading_modes": [
@@ -402,8 +415,10 @@ def test_minimal_overview_json_is_frozen():
             ],
         },
         "readings": [overview.model_dump(mode="json")["readings"][0]],
+        "assets": [],
         "backfills": [],
         "changes": [],
+        "structured_changes": [],
         "unassigned": [],
     }
 
@@ -534,18 +549,35 @@ def test_asset_revision_input_strictness():
 
     payload = {
         "expected_revision": 1,
+        "idempotency_key": "rev-key",
         "title": "t",
         "body": "b",
         "status": "resolved",
         "sources": [{"paper_id": "p"}],
     }
-    assert AssetRevisionInput.model_validate(payload).status == "resolved"
+    validated = AssetRevisionInput.model_validate(payload)
+    assert validated.status == "resolved"
+    # sources 省略即保留当前来源集合（R2-00B）。
+    assert (
+        AssetRevisionInput.model_validate(
+            {k: v for k, v in payload.items() if k != "sources"}
+        ).sources
+        is None
+    )
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "expected_revision": "1"})
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "status": "bogus"})
     with pytest.raises(ValidationError):
         AssetRevisionInput.model_validate({**payload, "sources": []})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate(
+            {k: v for k, v in payload.items() if k != "idempotency_key"}
+        )
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "idempotency_key": "has space"})
+    with pytest.raises(ValidationError):
+        AssetRevisionInput.model_validate({**payload, "surprise": 1})
 
 
 def test_report_content_defaults_are_backward_compatible():

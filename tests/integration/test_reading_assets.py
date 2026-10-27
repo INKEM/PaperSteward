@@ -1,6 +1,7 @@
 """手工资产的创建、修订、状态、筛选、删除与报告接入验证（R1-05）。"""
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -42,6 +43,7 @@ from papersteward.storage.models import (
     ReadingAssetRow,
     ReadingAssetSourceRow,
 )
+from papersteward.storage.tx import write_tx
 from papersteward.storage.workspace import clear_workspace
 
 NOW5 = datetime(2026, 10, 26, 2, 0, tzinfo=UTC)
@@ -90,6 +92,7 @@ def create_input(**overrides: object) -> AssetCreateInput:
 def revision_input(expected: int, **overrides: object) -> AssetRevisionInput:
     payload: dict[str, object] = {
         "expected_revision": expected,
+        "idempotency_key": overrides.pop("idempotency_key", f"asset-rev-{uuid4().hex[:12]}"),
         "title": "一个方法问题（修订）",
         "body": "补充了对照设置的细节。",
         "status": "open",
@@ -157,18 +160,353 @@ def test_revision_conflict_keeps_old_versions_and_sources(client, migrated_engin
         assert sorted(source.paper_id for source in new_sources) == ["as-p1", "as-p2"]
 
 
+def test_same_key_different_content_conflicts(client, migrated_engine):
+    """F04：同键不同标题/来源/内容必须明确冲突，不得静默重放旧资产。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        with pytest.raises(InvariantViolation):
+            create_asset(
+                session,
+                create_input(title="另一个标题"),
+                now=NOW5,
+            )
+        with pytest.raises(InvariantViolation):
+            create_asset(
+                session,
+                create_input(sources=[{"paper_id": "as-p2"}]),
+                now=NOW5,
+            )
+        assert len(session.scalars(select(ReadingAssetRow)).all()) == 1
+        assert view.revision.revision == 1
+
+
+def test_revision_retry_after_lost_response_replays_original(client, migrated_engine):
+    """F04：修订成功响应丢失后的原样重试重放原结果，不再误报版本冲突。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, idempotency_key="rev-lost-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.revision == 2
+        # 响应丢失后的重试：同键同载荷（expected_revision 已过期）→ 重放。
+        replay = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, idempotency_key="rev-lost-key"),
+            now=datetime(2026, 10, 27, 4, tzinfo=UTC),
+        )
+        assert replay.revision.revision == 2
+        assert replay.revision.title == revised.revision.title
+        current = get_asset_view(session, view.asset_id)
+        assert current.revision.revision == 2  # 不产生新版本
+
+
+def test_revision_conflict_does_not_consume_key(client, migrated_engine):
+    """版本冲突可修正后重试：同键换正确的 expected_revision 再提交成功。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        asset_id = view.asset_id
+    with session_scope(factory) as session, pytest.raises(ConflictError) as excinfo:
+        append_revision(
+            session,
+            asset_id,
+            revision_input(expected=2, idempotency_key="fixable-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+    assert excinfo.value.details == {"current_revision": 1}
+    with session_scope(factory) as session:
+        revised = append_revision(
+            session,
+            asset_id,
+            revision_input(expected=1, idempotency_key="fixable-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.revision == 2
+
+
+def test_sources_omitted_preserves_feedback_reference(client, migrated_engine):
+    """F05：修订省略来源时保留原样的 paper_id + archive_hash + rating_at。"""
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, sources=None, idempotency_key="keep-source-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert revised.revision.title == "一个方法问题（修订）"
+        assert [s.paper_id for s in revised.revision.sources] == ["as-p1"]
+        assert revised.revision.sources[0].rating_at == done
+        assert revised.revision.sources[0].archive_hash != ""
+
+
+def test_sources_explicit_replacement_adds_and_removes(client, migrated_engine):
+    """显式给出来源列表即整体替换：增删都按提交内容生效。"""
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        revised = append_revision(
+            session,
+            view.asset_id,
+            revision_input(expected=1, sources=[{"paper_id": "as-p2"}], idempotency_key="swap-key"),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+        assert [s.paper_id for s in revised.revision.sources] == ["as-p2"]
+        # 旧版本来源仍在库，不被新版本替代。
+        from papersteward.storage.insights import ReadingAssetRepository
+
+        old = ReadingAssetRepository(session).sources(view.asset_id, 1)
+        assert [s.paper_id for s in old] == ["as-p1"]
+        assert old[0].rating_at is not None
+
+
+def test_page_revision_title_only_preserves_feedback_reference(client, migrated_engine):
+    """F05：页面修订只改标题时，原样保留来源的反馈版本引用。"""
+    from test_ui_flows import HEADERS
+
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        asset_id = view.asset_id
+    stale = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/revisions",
+        data={
+            "expected_revision": "1",
+            "idempotency_key": "page-title-only",
+            "title": "只修改标题",
+            "body": "这篇论文的对照设置存疑。",
+            "applicability": "",
+            "status": "open",
+            "sources": "as-p1",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert stale.status_code == 303
+    with session_scope(factory) as session:
+        current = get_asset_view(session, asset_id)
+        assert current.revision.revision == 2
+        assert current.revision.title == "只修改标题"
+        assert current.revision.sources[0].rating_at == done
+        assert current.revision.sources[0].archive_hash != ""
+
+
+def test_page_revision_remove_and_add_sources_explicitly(client, migrated_engine):
+    """F05：页面来源删行=移除、加行=新增（不带反馈引用）。"""
+    from test_ui_flows import HEADERS
+
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}, {"paper_id": "as-p2"}]),
+            now=NOW5,
+        )
+        asset_id = view.asset_id
+    response = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/revisions",
+        data={
+            "expected_revision": "1",
+            "idempotency_key": "page-swap",
+            "title": "换来源",
+            "body": "这篇论文的对照设置存疑。",
+            "applicability": "",
+            "status": "open",
+            "sources": "as-p2\nas-p1",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with session_scope(factory) as session:
+        current = get_asset_view(session, asset_id)
+        pins = {s.paper_id: s.rating_at for s in current.revision.sources}
+        # as-p1 仍在列表（保留引用），as-p2 继续无引用；删除行才会移除。
+        assert set(pins) == {"as-p1", "as-p2"}
+        assert pins["as-p1"] == done
+        assert pins["as-p2"] is None
+    removed = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/revisions",
+        data={
+            "expected_revision": "2",
+            "idempotency_key": "page-remove",
+            "title": "换来源",
+            "body": "这篇论文的对照设置存疑。",
+            "applicability": "",
+            "status": "open",
+            "sources": "as-p2",
+        },
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert removed.status_code == 303
+    with session_scope(factory) as session:
+        from papersteward.storage.insights import ReadingAssetRepository
+
+        current = get_asset_view(session, asset_id)
+        assert [s.paper_id for s in current.revision.sources] == ["as-p2"]
+        old = ReadingAssetRepository(session).sources(asset_id, 2)
+        assert sorted(s.paper_id for s in old) == ["as-p1", "as-p2"]
+
+
+def test_page_revision_resubmission_with_same_key_replays(client, migrated_engine):
+    """F04：页面表单重复提交同一隐藏幂等键 → 重放，不产生新版本。"""
+    from test_ui_flows import HEADERS
+
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=NOW5)
+        asset_id = view.asset_id
+    form = {
+        "expected_revision": "1",
+        "idempotency_key": "page-resubmit",
+        "title": "重试提交",
+        "body": "重试正文。",
+        "applicability": "",
+        "status": "open",
+        "sources": "as-p1",
+    }
+    first = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/revisions",
+        data=form,
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    second = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/revisions",
+        data=form,
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert second.status_code == 303
+    with session_scope(factory) as session:
+        current = get_asset_view(session, asset_id)
+        assert current.revision.revision == 2
+        assert current.revision.title == "重试提交"
+
+
+def test_revision_detail_json_and_page_render_history(client, migrated_engine):
+    """F05：历史正文/适用说明/来源可逐版查看；引用状态与缺失明确显示。"""
+    activate(client)
+    done = seed_two_archives(client)["p1"]
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        view = create_asset(
+            session,
+            create_input(sources=[{"paper_id": "as-p1", "rating_at": done}]),
+            now=NOW5,
+        )
+        asset_id = view.asset_id
+        append_revision(
+            session,
+            asset_id,
+            revision_input(
+                expected=1,
+                idempotency_key="history-rev",
+                sources=None,
+                title="新标题",
+                body="新正文",
+            ),
+            now=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        )
+    detail = client.get(f"/reading-insights/assets/{asset_id}/revisions/1")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["revision"]["revision"] == 1
+    assert payload["revision"]["body"] == "这篇论文的对照设置存疑。"
+    assert payload["revision"]["title"] == "一个方法问题"
+    source = payload["source_status"][0]
+    assert source["paper_id"] == "as-p1"
+    assert source["rating_exists"] is True
+    assert source["rating_score"] == 4
+    assert source["rating_note"] == "初始备注"
+    missing = client.get(f"/reading-insights/assets/{asset_id}/revisions/99")
+    assert missing.status_code == 404
+    page = client.get(f"/ui/reading-insights/assets/{asset_id}/revisions/1")
+    assert page.status_code == 200
+    # 页面渲染的是旧版本正文与当时反馈，不是最新内容。
+    assert "这篇论文的对照设置存疑。" in page.text
+    assert "新正文" not in page.text
+    assert "初始备注" in page.text
+    assert "引用反馈" in page.text
+    assert (
+        f'href="/ui/reading-insights/assets/{asset_id}/revisions/2"'
+        in client.get(f"/ui/reading-insights/assets/{asset_id}").text
+    )
+    missing_page = client.get(f"/ui/reading-insights/assets/{asset_id}/revisions/99")
+    assert missing_page.status_code == 404
+    assert "资产版本不存在" in missing_page.text
+
+
 def test_status_transitions_per_kind(client, migrated_engine):
     activate(client)
     seed_two_archives(client)
     factory = create_session_factory(client.app.state.engine)
     with session_scope(factory) as session:
         view = create_asset(session, create_input(), now=NOW5)
-        view = change_status(session, view.asset_id, "resolved", now=NOW5, expected_revision=1)
+        view = change_status(
+            session,
+            view.asset_id,
+            "resolved",
+            now=NOW5,
+            expected_revision=1,
+            idempotency_key="status-st-1",
+        )
         assert view.revision.status == "resolved"
-        view = change_status(session, view.asset_id, "open", now=NOW5, expected_revision=2)
+        view = change_status(
+            session,
+            view.asset_id,
+            "open",
+            now=NOW5,
+            expected_revision=2,
+            idempotency_key="status-st-2",
+        )
         assert view.revision.status == "open"
         with pytest.raises(DomainValidationError):
-            change_status(session, view.asset_id, "active", now=NOW5, expected_revision=3)
+            change_status(
+                session,
+                view.asset_id,
+                "active",
+                now=NOW5,
+                expected_revision=3,
+                idempotency_key="status-st-3",
+            )
     with session_scope(factory) as session:
         harvest = create_asset(
             session,
@@ -177,8 +515,22 @@ def test_status_transitions_per_kind(client, migrated_engine):
         )
         assert harvest.revision.status == "active"
         with pytest.raises(DomainValidationError):
-            change_status(session, harvest.asset_id, "open", now=NOW5, expected_revision=1)
-        view = change_status(session, harvest.asset_id, "archived", now=NOW5, expected_revision=1)
+            change_status(
+                session,
+                harvest.asset_id,
+                "open",
+                now=NOW5,
+                expected_revision=1,
+                idempotency_key="status-h-open",
+            )
+        view = change_status(
+            session,
+            harvest.asset_id,
+            "archived",
+            now=NOW5,
+            expected_revision=1,
+            idempotency_key="status-h-arch",
+        )
         assert view.revision.status == "archived"
 
 
@@ -300,24 +652,125 @@ def test_delete_preview_reports_and_body_opt_in(client, migrated_engine):
     with session_scope(factory) as session:
         preview = delete_preview(session, asset_id)
         assert preview["revision_count"] == 1
-        assert preview["reports_with_body"] == [ids["as-rep-body"]]
-        assert set(preview["referenced_reports"]) == {ids["as-rep-plain"]}
+        # 仅标题副本的报告同样列入可清理范围（F06）。
+        copies = {item["report_id"]: item for item in preview["private_copies"]}
+        assert set(copies) == {ids["as-rep-plain"], ids["as-rep-body"]}
+        assert copies[ids["as-rep-plain"]]["fields"] == ["title"]
+        assert copies[ids["as-rep-plain"]]["source_revision"] == 1
+        assert copies[ids["as-rep-body"]]["fields"] == ["title", "body"]
+        assert preview["referenced_reports"] == []
         with pytest.raises(InvalidRequestError):
-            delete_asset(
-                session,
-                asset_id,
-                also_report_ids=[ids["as-rep-plain"]],
-            )
-        removed = delete_asset(session, asset_id, also_report_ids=[ids["as-rep-body"]])
-        assert removed == [ids["as-rep-body"]]
+            delete_asset(session, asset_id, also_report_ids=["missing-report"])
+        # 两份报告都含私人副本，均可勾选删除。
+        removed = delete_asset(
+            session,
+            asset_id,
+            also_report_ids=[ids["as-rep-plain"], ids["as-rep-body"]],
+        )
+        assert set(removed) == {ids["as-rep-plain"], ids["as-rep-body"]}
         archives = len(session.scalars(select(ArchiveSnapshotRow)).all())
         assert archives == 2  # 阅读量与归档不变
-    assert client.get(f"/reading-insights/reports/{ids['as-rep-body']}").status_code == 404
-    # 未勾选的报告仅显示「来源已移除」。
-    kept = client.get(f"/ui/reading-insights/reports/{ids['as-rep-plain']}")
+    for report_id in (ids["as-rep-plain"], ids["as-rep-body"]):
+        assert client.get(f"/reading-insights/reports/{report_id}").status_code == 404
+
+
+def test_title_only_copy_deletion_is_consistent_across_views(client, migrated_engine):
+    """F06：仅标题副本可被清理；保留的报告在页面/JSON/个人导出中口径一致。"""
+    from test_ui_flows import HEADERS
+
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    in_week = datetime(2026, 10, 22, 3, tzinfo=UTC)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=in_week)
+        asset_id = view.asset_id
+    manager: UIFlowManager = client.app.state.ui_flows
+    manager.submit(
+        FlowRequest(
+            run_id="f06-title-only",
+            kind="review",
+            review=ReviewParams.model_validate({"period": "week", "anchor_date": ANCHOR}),
+        )
+    )
+    wait(manager, "f06-title-only")
+    with session_scope(factory) as session:
+        listing = list_reports(session, limit=10, offset=0)
+    report_id = next(item.report_id for item in listing["items"] if item.run_id == "f06-title-only")
+
+    # 个人导出仍含私人标题（显式副本），事实导出不含。
+    facts = client.get(f"/reading-insights/reports/{report_id}/export?format=json")
+    assert "一个方法问题" not in facts.text
+    personal = client.get(
+        f"/ui/reading-insights/export/download?report_id={report_id}"
+        "&scope=personal&confirm_private=yes&format=json"
+    )
+    assert personal.status_code == 200
+    assert "一个方法问题" in personal.text
+
+    # 删除预览把仅标题副本列出来；页面给出去向与处理方式。
+    page = client.get(f"/ui/reading-insights/assets/{asset_id}")
+    assert f'name="also_{report_id}"' in page.text
+    assert "含标题" in page.text
+    assert "另存脱敏版本" in page.text
+
+    # 资产删除时不勾选：报告保留，资产消失后页面显示「来源已移除」。
+    response = client.post(
+        f"/ui/reading-insights/assets/{asset_id}/delete",
+        data={"confirmation": "删除资产"},
+        headers=HEADERS,
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    kept = client.get(f"/ui/reading-insights/reports/{report_id}")
     assert kept.status_code == 200
     assert "来源已移除" in kept.text
-    assert "一个方法问题" not in kept.text
+    with session_scope(factory) as session:
+        detail = read_report(session, report_id)
+        assert detail.content.assets[0].title == "一个方法问题"
+        from papersteward.storage.models import ReadingDerivedCopyRow
+
+        rows = session.scalars(
+            select(ReadingDerivedCopyRow).where(ReadingDerivedCopyRow.derived_id == report_id)
+        ).all()
+        # 资产已删除，但副本登记保留：后续撤回仍能找到位置。
+        assert sorted(row.field_kind for row in rows) == ["title"]
+
+
+def test_delete_asset_rollback_keeps_everything(client, migrated_engine):
+    """删除事务中断整体回滚：资产、报告与副本登记全部原样。"""
+    activate(client)
+    seed_two_archives(client)
+    factory = create_session_factory(client.app.state.engine)
+    in_week = datetime(2026, 10, 22, 3, tzinfo=UTC)
+    with session_scope(factory) as session:
+        view = create_asset(session, create_input(), now=in_week)
+        asset_id = view.asset_id
+    manager: UIFlowManager = client.app.state.ui_flows
+    manager.submit(
+        FlowRequest(
+            run_id="f06-rollback",
+            kind="review",
+            review=ReviewParams.model_validate({"period": "week", "anchor_date": ANCHOR}),
+        )
+    )
+    wait(manager, "f06-rollback")
+    with session_scope(factory) as session:
+        listing = list_reports(session, limit=10, offset=0)
+    report_id = next(item.report_id for item in listing["items"] if item.run_id == "f06-rollback")
+    with session_scope(factory) as session:
+        from papersteward.storage.models import ReadingDerivedCopyRow
+
+        with pytest.raises(RuntimeError), write_tx(session):
+            delete_asset(session, asset_id, also_report_ids=[report_id])
+            raise RuntimeError("模拟删除事务中断")
+    with session_scope(factory) as session:
+        assert session.get(ReadingAssetRow, asset_id) is not None
+        assert read_report(session, report_id) is not None
+        rows = session.scalars(
+            select(ReadingDerivedCopyRow).where(ReadingDerivedCopyRow.derived_id == report_id)
+        ).all()
+        assert len(rows) == 1  # title 登记行未丢
 
 
 def test_asset_body_html_is_escaped_on_page(client, migrated_engine):

@@ -2,7 +2,11 @@
 
 from datetime import UTC, date, datetime
 
-from papersteward.reading.insights.aggregate import build_overview, feedback_changes
+from papersteward.reading.insights.aggregate import (
+    build_overview,
+    feedback_changes,
+    structured_feedback_changes,
+)
 from papersteward.reading.insights.contracts import (
     FeedbackVersion,
     InsightsProjection,
@@ -15,6 +19,8 @@ from papersteward.reading.insights.contracts import (
     ResolvedPeriod,
     ReviewMode,
     ScoreFeedbackChange,
+    StructuredFeedbackChange,
+    StructuredFeedbackVersion,
     TimePrecision,
 )
 
@@ -338,3 +344,155 @@ def test_asset_events_default_to_zero():
     metrics = build_overview(projection([paper("p")])).metrics
     assert metrics.asset_events == 0
     assert metrics.asset_assets == 0
+
+
+# —— 结构化阅读理由：修订清单与覆盖统计（R2-01）————————————————————
+
+
+def sf_version(
+    at: datetime,
+    *,
+    revision: int = 1,
+    value_sources: tuple[str, ...] = (),
+    limited_reasons: tuple[str, ...] = (),
+    context_note: bool = False,
+    applicability: bool = False,
+    takeaway: bool = False,
+    question: bool = False,
+    usage_result: bool = False,
+):
+    return StructuredFeedbackVersion(
+        revision=revision,
+        recorded_at=at,
+        value_sources=list(value_sources),
+        limited_reasons=list(limited_reasons),
+        has_context_note=context_note,
+        has_applicability=applicability,
+        has_takeaway=takeaway,
+        has_question=question,
+        has_usage_result=usage_result,
+    )
+
+
+def test_structured_initial_record_is_not_a_revision():
+    versions = [sf_version(T0, value_sources=("method_reusable",), takeaway=True)]
+    assert structured_feedback_changes("p", versions) == []
+    assert structured_feedback_changes("p", []) == []
+
+
+def test_structured_add_remove_and_clear_are_all_real_revisions():
+    versions = [
+        sf_version(T0, revision=1, value_sources=("method_reusable",), takeaway=True),
+        sf_version(
+            T1,
+            revision=2,
+            value_sources=("method_reusable", "aids_understanding"),
+            limited_reasons=("task_mismatch",),
+            question=True,
+        ),
+        sf_version(T2, revision=3),
+    ]
+    changes = structured_feedback_changes("p", versions)
+    assert [(c.recorded_at, c.added_value_sources) for c in changes] == [
+        (T1, ["aids_understanding"]),
+        (T2, []),
+    ]
+    first, second = changes
+    assert first.added_limited_reasons == ["task_mismatch"]
+    assert first.free_text_changed is True  # −收获 +疑问
+    assert first.context_changed is False
+    assert first.cleared is False
+    assert second.removed_value_sources == ["aids_understanding", "method_reusable"]
+    assert second.removed_limited_reasons == ["task_mismatch"]
+    assert second.free_text_changed is True
+    assert second.cleared is True
+
+
+def test_structured_identical_resubmission_creates_no_event():
+    versions = [
+        sf_version(T0, revision=1, value_sources=("usable_now",)),
+        sf_version(T1, revision=2, value_sources=("usable_now",)),
+    ]
+    assert structured_feedback_changes("p", versions) == []
+
+
+def test_structured_link_change_is_detected():
+    versions = [
+        sf_version(T0, revision=1),
+        sf_version(T1, revision=2).model_copy(update={"rating_at": T0}),
+    ]
+    changes = structured_feedback_changes("p", versions)
+    assert len(changes) == 1
+    assert changes[0].link_changed is True
+
+
+def test_structured_coverage_counts_only_explicit_dimensions():
+    papers = [
+        paper("sf-1").model_copy(
+            update={
+                "structured_feedback": [
+                    sf_version(T0, value_sources=("aids_understanding",), takeaway=True)
+                ]
+            }
+        ),
+        # 全空最新版本（显式清除后）：不补成中立，任何维度都不计。
+        paper("sf-cleared").model_copy(
+            update={
+                "structured_feedback": [
+                    sf_version(T0, revision=1, value_sources=("usable_now",)),
+                    sf_version(T1, revision=2),
+                ]
+            }
+        ),
+        paper("plain"),
+    ]
+    overview = build_overview(projection(papers))
+    coverage = overview.metrics.structured_coverage
+    assert coverage.total == 3
+    assert coverage.covered == 1
+    assert coverage.value_sources == 1
+    assert coverage.limited_reasons == 0
+    assert coverage.context == 0
+    assert coverage.free_text == 1
+    assert overview.metrics.structured_change_stats.events == 0
+
+
+def test_low_or_high_score_reasons_never_derive_quality_conclusions():
+    """低分+任务不适合、高分+帮助理解都只是事实计数，不产生推导维度。"""
+    papers = [
+        paper("low-1", score=2).model_copy(
+            update={"structured_feedback": [sf_version(T0, limited_reasons=("task_mismatch",))]}
+        ),
+        paper("low-2", score=1),
+        paper("high-1", score=5).model_copy(
+            update={"structured_feedback": [sf_version(T0, value_sources=("aids_understanding",))]}
+        ),
+    ]
+    metrics = build_overview(projection(papers)).metrics
+    assert metrics.score_distribution.score_1 == 1
+    assert metrics.score_distribution.score_2 == 1
+    assert metrics.score_distribution.score_5 == 1
+    assert metrics.structured_coverage.value_sources == 1
+    assert metrics.structured_coverage.limited_reasons == 1
+    dump = metrics.model_dump()
+    assert not any(
+        marker in key for key in dump for marker in ("quality", "effectiveness", "validity")
+    )
+
+
+def test_structured_changes_are_scoped_to_period():
+    in_week = StructuredFeedbackChange(
+        paper_id="a",
+        recorded_at=datetime(2026, 10, 21, 3, tzinfo=UTC),
+        added_value_sources=["method_reusable"],
+    )
+    out_week = StructuredFeedbackChange(
+        paper_id="a",
+        recorded_at=datetime(2026, 10, 27, 3, tzinfo=UTC),
+        removed_value_sources=["method_reusable"],
+    )
+    papers = [paper("a").model_copy(update={"structured_changes": [in_week, out_week]})]
+    overview = build_overview(projection(papers))
+    assert overview.structured_changes == [in_week]
+    assert overview.metrics.structured_change_stats.events == 1
+    assert overview.metrics.structured_change_stats.papers_affected == 1

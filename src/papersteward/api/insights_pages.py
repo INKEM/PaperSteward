@@ -6,7 +6,7 @@
 """
 
 from html import escape
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -22,17 +22,39 @@ from papersteward.api.html import HTML_HEADERS as HEADERS
 from papersteward.api.html import page as _shell_page
 from papersteward.api.html import pagination as _pagination
 from papersteward.api.html import select_options
+from papersteward.config import get_settings
 from papersteward.core.entities import utc_now
 from papersteward.core.enums import ReadingTimeBasis, TimePrecision
 from papersteward.core.errors import DomainError
 from papersteward.errors import AppError, InvalidRequestError
+from papersteward.reading.insights.authorization import (
+    analysis_authorization_status,
+    grant_analysis_authorization,
+    revoke_analysis_authorization,
+)
 from papersteward.reading.insights.contracts import (
+    LIMITED_REASON_CODES,
+    LIMITED_REASON_LABELS,
+    MATERIAL_KIND_LABELS,
+    MATERIAL_KIND_LIMITS,
+    SYNTHESIS_PURPOSE,
+    SYNTHESIS_REPORT_CONTRACT,
+    TYPED_ASSET_KINDS,
+    VALUE_SOURCE_CODES,
+    VALUE_SOURCE_LABELS,
+    AnalysisAuthorizationStatus,
+    AnalysisManifestContent,
     AssetCreateInput,
     AssetRevisionInput,
     AssetView,
     CountEntry,
+    ExcerptView,
     InsightMetrics,
     InsightOverview,
+    InsightQueryRequest,
+    InsightReportContentV2,
+    MaterialExclusion,
+    MaterialKind,
     ReadingTime,
     ReadTimeInput,
     ReadTimeRevision,
@@ -40,10 +62,26 @@ from papersteward.reading.insights.contracts import (
     ReportChange,
     ReportDetail,
     ReviewMode,
+    StructuredFeedbackInput,
+    StructuredFeedbackRevisionDetail,
+    StructuredFeedbackView,
+)
+from papersteward.reading.insights.materials import (
+    add_excerpt,
+    build_synthesis_manifest,
+    create_manifest,
+    create_preview_token,
+    delete_excerpt,
+    manifest_content_of,
+    store_manifest,
+)
+from papersteward.reading.insights.structured_feedback import (
+    revise_structured_feedback,
 )
 from papersteward.reading.insights.timeline import record_reading_time
 from papersteward.storage.onboarding import ensure_active, get_onboarding
 from papersteward.storage.repositories import PaperRepository, TaxonomyRepository
+from papersteward.storage.tx import write_tx
 
 router = APIRouter(prefix="/ui/reading-insights", include_in_schema=False)
 
@@ -54,9 +92,12 @@ def insights_navigation() -> str:
         '<a href="/ui/reading-insights?kind=week">本周</a>'
         '<a href="/ui/reading-insights?kind=month">本月</a>'
         '<a href="/ui/reading-insights?kind=all">全部历史</a>'
+        '<a href="/ui/reading-insights/memory">研究记忆</a>'
         '<a href="/ui/reading-insights/reports">已保存回顾</a>'
         '<a href="/ui/reading-insights/assets">手工资产</a>'
         '<a href="/ui/reading-insights/export">导出副本</a>'
+        '<a href="/ui/reading-insights/analysis">阅读分析</a>'
+        '<a href="/ui/reading-insights/synthesis">知识版回顾</a>'
         '<a href="/ui/archive">返回归档</a></nav>'
     )
 
@@ -165,7 +206,7 @@ async def record_read_time(paper_id: str, request: Request, session: SessionDep)
             "month": form.get("month", ""),
         }
         body = _parse_form(form)
-        with session.begin():
+        with write_tx(session):
             record_reading_time(
                 session,
                 paper_id,
@@ -208,6 +249,223 @@ async def record_read_time(paper_id: str, request: Request, session: SessionDep)
     except (ValueError, UnicodeError):
         return HTMLResponse(
             '<article><p role="alert">日期格式无效，表单须为UTF-8。</p></article>',
+            status_code=422,
+            headers=HEADERS,
+        )
+
+
+# —— 结构化阅读理由（R2-01）：常用选项平铺，其余折叠；全部可选 ——————————
+
+_SF_TEXT_FIELDS = ("context_note", "applicability", "takeaway", "question", "usage_result")
+_SF_TEXT_LABELS = {
+    "context_note": "任务或专题说明（这篇为什么对你有用）",
+    "applicability": "阶段性适用范围",
+    "takeaway": "一句收获",
+    "question": "疑问",
+    "usage_result": "实际使用结果",
+}
+_VALUE_SOURCE_OPTIONS = [(code, VALUE_SOURCE_LABELS[code]) for code in VALUE_SOURCE_CODES]
+_LIMITED_REASON_OPTIONS = [(code, LIMITED_REASON_LABELS[code]) for code in LIMITED_REASON_CODES]
+
+
+def _structured_summary(detail: StructuredFeedbackRevisionDetail) -> str:
+    """单个版本的一行摘要；码用版本化文案，文本只表达有无，不回显原文。"""
+    labels = [VALUE_SOURCE_LABELS.get(code, code) for code in detail.value_sources]
+    labels += [LIMITED_REASON_LABELS.get(code, code) for code in detail.limited_reasons]
+    if detail.context_note or detail.applicability:
+        labels.append("有语境")
+    if detail.takeaway:
+        labels.append("有收获")
+    if detail.question:
+        labels.append("有疑问")
+    if detail.usage_result:
+        labels.append("有使用结果")
+    return " · ".join(labels) if labels else "（已清除，历史保留）"
+
+
+def _checkbox(name: str, label: str, *, checked: bool) -> str:
+    mark = " checked" if checked else ""
+    return (
+        f'<label class="check"><input type="checkbox" name="{escape(name)}" value="1"{mark}>'
+        f" {escape(label)}</label>"
+    )
+
+
+def structured_feedback_block(
+    view: StructuredFeedbackView,
+    rating_history: list[dict[str, Any]],
+    *,
+    draft: dict[str, str] | None = None,
+) -> str:
+    """详情页的结构化理由块：当前摘要、折叠表单（含清除）与修订历史。"""
+    draft = draft or {}
+    url = f"/ui/reading-insights/papers/{view.paper_id}/feedback-context"
+    values: dict[str, str] = {}
+    if draft:
+        values = draft
+    elif view.latest is not None:
+        latest = view.latest
+        for code in latest.value_sources:
+            values[f"vs_{code}"] = "1"
+        for code in latest.limited_reasons:
+            values[f"lr_{code}"] = "1"
+        if latest.rating_at is not None:
+            values["rating_at"] = latest.rating_at.isoformat()
+        for field in _SF_TEXT_FIELDS:
+            text = getattr(latest, field)
+            if text:
+                values[field] = text
+    source_boxes = "".join(
+        _checkbox(f"vs_{code}", label, checked=bool(values.get(f"vs_{code}")))
+        for code, label in _VALUE_SOURCE_OPTIONS
+    )
+    reason_boxes = "".join(
+        _checkbox(f"lr_{code}", label, checked=bool(values.get(f"lr_{code}")))
+        for code, label in _LIMITED_REASON_OPTIONS
+    )
+    context_inputs = "".join(
+        f'<label>{escape(_SF_TEXT_LABELS[field])}<textarea name="{field}" rows="2" '
+        f'maxlength="2000">{escape(values.get(field, ""))}</textarea></label>'
+        for field in ("context_note", "applicability")
+    )
+    free_text_inputs = "".join(
+        f'<label>{escape(_SF_TEXT_LABELS[field])}<textarea name="{field}" rows="2" '
+        f'maxlength="2000">{escape(values.get(field, ""))}</textarea></label>'
+        for field in ("takeaway", "question", "usage_result")
+    )
+    rating_options: list[tuple[str, str]] = [("", "不关联具体评分")]
+    for revision in rating_history:
+        created = str(revision.get("created_at", ""))
+        if not created:
+            continue
+        score = revision.get("score")
+        rating_options.append((created, f"{created} · 评分 {'未评分' if score is None else score}"))
+    rating_select = (
+        "<label>关联评分版本（可选，理由绑定这条评分而非最新评分）"
+        '<select name="rating_at">'
+        + select_options(rating_options, selected=values.get("rating_at") or None)
+        + "</select></label>"
+    )
+    if view.latest is None:
+        current = "<p>尚未填写。此表单完全可选，不填不影响评分与备注；自由文本属私人材料。</p>"
+    else:
+        current = (
+            f"<p>当前：{escape(_structured_summary(view.latest))}"
+            f" · 版本 {view.current_revision}</p>"
+        )
+    form_details = (
+        '<details class="structured-form"'
+        f"{' open' if draft else ''}><summary>填写或修订理由</summary>"
+        f'<form method="post" action="{url}" class="stacked-form" '
+        f'hx-post="{url}" hx-target="closest article" hx-swap="outerHTML" '
+        'hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
+        + hidden("expected_revision", view.current_revision)
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
+        + "<fieldset><legend>价值来源</legend>"
+        + source_boxes
+        + "</fieldset>"
+        + "<details><summary>价值有限的原因</summary>"
+        + f"<fieldset><legend>价值有限的原因</legend>{reason_boxes}</fieldset></details>"
+        + "<details><summary>语境与适用范围</summary>"
+        + context_inputs
+        + "</details>"
+        + "<details><summary>收获、疑问与使用结果</summary>"
+        + free_text_inputs
+        + "</details>"
+        + rating_select
+        + '<button type="submit">保存理由</button>'
+        + '<button type="submit" name="action" value="clear">清除全部理由</button>'
+        + "</form></details>"
+    )
+    history = ""
+    if view.history:
+        items = "".join(
+            f"<li>{escape(item.recorded_at.isoformat())} · 版本 {item.revision} · "
+            f"{escape(_structured_summary(item))}</li>"
+            for item in view.history
+        )
+        history = f"<details><summary>理由修订记录</summary><ul>{items}</ul></details>"
+    return (
+        "<h2>结构化理由（可选）</h2>"
+        + current
+        + "<p>用少量选项说明价值与语境；跳过即不填，清除会保留修订历史。</p>"
+        + form_details
+        + history
+    )
+
+
+def _parse_sf_form(form: dict[str, str]) -> StructuredFeedbackInput:
+    try:
+        expected = int(form.get("expected_revision") or "0")
+    except ValueError as exc:
+        raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
+    key = form.get("idempotency_key") or uuid4().hex
+    if form.get("action") == "clear":
+        # 显式清除：忽略其余字段，全空修订保留历史。
+        return StructuredFeedbackInput(expected_revision=expected, idempotency_key=key)
+    payload: dict[str, object] = {
+        "expected_revision": expected,
+        "idempotency_key": key,
+        "value_sources": [code for code in VALUE_SOURCE_CODES if form.get(f"vs_{code}")],
+        "limited_reasons": [code for code in LIMITED_REASON_CODES if form.get(f"lr_{code}")],
+    }
+    rating_raw = (form.get("rating_at") or "").strip()
+    if rating_raw:
+        payload["rating_at"] = rating_raw
+    for field in _SF_TEXT_FIELDS:
+        value = form.get(field)
+        if value:
+            payload[field] = value
+    return StructuredFeedbackInput.model_validate(payload)
+
+
+@router.post("/papers/{paper_id}/feedback-context")
+async def revise_feedback_context(
+    paper_id: str, request: Request, session: SessionDep
+) -> HTMLResponse:
+    from papersteward.api.pages import _detail_article
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        body = _parse_sf_form(form)
+        with write_tx(session):
+            revise_structured_feedback(session, paper_id, body, now=utc_now())
+        paper = PaperRepository(session).get(paper_id)
+        return HTMLResponse(
+            _detail_article(session, paper_id, paper=paper, notice="已记录结构化理由。"),
+            headers=HEADERS,
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查理由内容。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            article = _detail_article(
+                session,
+                paper_id,
+                notice=f"{message}（已保留你的输入，可修正后重试）",
+                notice_role="alert",
+                structured_draft=draft,
+            )
+            return HTMLResponse(article, status_code=status_code, headers=HEADERS)
+        except (DomainError, AppError):
+            return HTMLResponse(
+                f'<article><p role="alert">{escape(message)}</p></article>',
+                status_code=status_code,
+                headers=HEADERS,
+            )
+    except (ValueError, UnicodeError):
+        return HTMLResponse(
+            '<article><p role="alert">表单格式无效，请刷新页面后重试。</p></article>',
             status_code=422,
             headers=HEADERS,
         )
@@ -311,6 +569,8 @@ def _overview_body(
     body += "<h2>分布</h2>" + _distributions_html(metrics)
     if metrics.period.kind.value == "all":
         body += _all_history_body(session, overview)
+    else:
+        body += _scope_assets_html(overview)
     sections: dict[str, tuple[str, list[Any], str]] = {
         "readings": ("阅读明细", overview.readings, "阅读时间明确属于本期的独立文献"),
         "backfills": (
@@ -318,7 +578,14 @@ def _overview_body(
             overview.backfills,
             "本期进入归档的外部已读论文；与阅读量可能重叠，不能相加",
         ),
-        "changes": ("反馈修订", overview.changes, "本期发生的实际修订；初始归档不算修订"),
+        "changes": (
+            "反馈修订",
+            sorted(
+                [*overview.changes, *overview.structured_changes],
+                key=lambda change: change.recorded_at,
+            ),
+            "本期发生的实际修订；初始归档与初始理由记录不算修订",
+        ),
         "unassigned": ("未定阅读日期", overview.unassigned, "截至截止时刻阅读时间未定的归档库存"),
     }
     for name in _SECTIONS:
@@ -369,6 +636,22 @@ def _report_section(session: SessionDep, filter_params: dict[str, str]) -> str:
         "包含手工资产正文副本（私人原文会保存在报告中）</label>"
         + "<button>把当前筛选保存为回顾报告</button></form>"
         '<p class="muted">报告冻结当前事实：之后修改评分或日期不会改动已保存的报告。</p>'
+        "<p>知识版回顾会在事实之上，用获准材料整理专题、开放问题与候选联系；"
+        "它是模型归纳，需单独授权，事实版仍可独立生成。</p>"
+        '<p><a class="button secondary" href="/ui/reading-insights/synthesis?'
+        + escape(
+            urlencode(
+                {
+                    "kind": kind,
+                    "anchor_date": form_values["anchor_date"],
+                    "start_date": form_values["start_date"],
+                    "end_date": form_values["end_date"],
+                    "mode": form_values["mode"],
+                    "tag": filter_params.get("tag", ""),
+                }
+            )
+        )
+        + '">打开知识版回顾</a></p>'
     )
     listing = list_reports(session, limit=5, offset=0)
     items = listing["items"]
@@ -393,6 +676,9 @@ def _filter_form(session: SessionDep, current: dict[str, str]) -> str:
             for t in taxonomy.tags
             if t.level.value == "primary"
         ]
+    selected_tag = current.get("tag")
+    if selected_tag and selected_tag not in {value for value, _ in tag_options}:
+        tag_options.append((selected_tag, f"历史标签 {selected_tag}"))
     kind_options = [
         ("week", "本周"),
         ("month", "本月"),
@@ -434,6 +720,15 @@ def _metrics_table(metrics: InsightMetrics) -> str:
         else "暂无"
     )
     changes = metrics.feedback_changes
+    structured = metrics.structured_coverage
+    structured_text = (
+        f"已填理由 {structured.covered}/{structured.total}（价值来源 {structured.value_sources}"
+        f" · 价值有限 {structured.limited_reasons} · 语境 {structured.context}"
+        f" · 收获疑问 {structured.free_text}）"
+        if structured.total
+        else "暂无"
+    )
+    structured_changes = metrics.structured_change_stats
     rows = [
         (
             "本期阅读（独立文献）",
@@ -451,6 +746,16 @@ def _metrics_table(metrics: InsightMetrics) -> str:
             f"评分 {changes.score_events} 次 · 备注 {changes.note_events} 次"
             f" · 涉及 {changes.papers_affected} 篇",
             "非初始修订的实际变化",
+        ),
+        (
+            "结构化理由覆盖",
+            structured_text,
+            "只数显式填写的维度；空理由不补成中立",
+        ),
+        (
+            "结构化理由修订",
+            f"{structured_changes.events} 次 · 涉及 {structured_changes.papers_affected} 篇",
+            "初始记录不算修订；清除保留历史",
         ),
         (
             "资产整理活动",
@@ -619,20 +924,48 @@ def _changes_table(changes: list[Any]) -> str:
         '<th scope="col">变化</th><th scope="col">文献</th></tr></thead><tbody>'
     )
     for change in changes:
-        kind_label = "评分" if change.kind == "score" else "备注"
-        empty = "未评分" if change.kind == "score" else "（已清空）"
-        old = empty if change.old is None else str(change.old)
-        new = empty if change.new is None else str(change.new)
+        if getattr(change, "kind", None) == "structured":
+            kind_label = "理由"
+            text = _structured_change_summary(change)
+        else:
+            kind_label = "评分" if change.kind == "score" else "备注"
+            empty = "未评分" if change.kind == "score" else "（已清空）"
+            old = empty if change.old is None else str(change.old)
+            new = empty if change.new is None else str(change.new)
+            text = f"{old} → {new}"
         body += (
             "<tr>"
             f'<th scope="row">{escape(change.recorded_at.isoformat())}</th>'
             f'<td data-label="类型">{kind_label}</td>'
-            f'<td data-label="变化">{escape(old)} → {escape(new)}</td>'
+            f'<td data-label="变化">{escape(text)}</td>'
             '<td data-label="文献"><a href="/ui/papers/'
             f'{escape(change.paper_id)}">{escape(change.paper_id)}</a></td>'
             "</tr>"
         )
     return body + "</tbody></table>"
+
+
+def _structured_change_summary(change: Any) -> str:
+    """结构化理由修订的一行摘要；码用版本化文案，不携带自由文本。"""
+    parts = [
+        f"{sign}{labels.get(code, code)}"
+        for codes, sign, labels in (
+            (change.added_value_sources, "+", VALUE_SOURCE_LABELS),
+            (change.removed_value_sources, "−", VALUE_SOURCE_LABELS),
+            (change.added_limited_reasons, "+", LIMITED_REASON_LABELS),
+            (change.removed_limited_reasons, "−", LIMITED_REASON_LABELS),
+        )
+        for code in codes
+    ]
+    if change.context_changed:
+        parts.append("语境变更")
+    if change.free_text_changed:
+        parts.append("文字变更")
+    if change.link_changed:
+        parts.append("关联评分变更")
+    if change.cleared:
+        parts.append("全部清除")
+    return " · ".join(parts) if parts else "内容调整"
 
 
 # —— 报告页面：列表 / 冻结详情 / 版本比较 / 删除 ——————————————————————
@@ -698,16 +1031,19 @@ def reports_page(session: SessionDep, offset: int = 0) -> Response:
         )
         return _page("已保存的阅读回顾", body, nav="归档")
     body += (
-        '<table><thead><tr><th scope="col">周期</th><th scope="col">模式</th>'
+        '<table><thead><tr><th scope="col">周期</th><th scope="col">版本</th>'
+        '<th scope="col">模式</th>'
         '<th scope="col">知识截止</th><th scope="col">生成时间</th>'
         '<th scope="col">操作</th></tr></thead><tbody>'
     )
     for item in items:
         mode_label = _MODE_LABELS.get(item.mode, item.mode.value)
+        contract_label = "知识版" if item.contract == SYNTHESIS_REPORT_CONTRACT else "事实版"
         body += (
             "<tr>"
             f'<th scope="row"><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
             f"{escape(item.period_label)}</a></th>"
+            f'<td data-label="版本">{escape(contract_label)}</td>'
             f'<td data-label="模式">{escape(mode_label)}</td>'
             f'<td data-label="知识截止">{escape(item.knowledge_cutoff.isoformat())}</td>'
             f'<td data-label="生成时间">{escape(item.generated_at.isoformat())}</td>'
@@ -727,7 +1063,7 @@ def reports_page(session: SessionDep, offset: int = 0) -> Response:
 
 @router.get("/reports/{report_id}")
 def report_detail_page(
-    session: SessionDep, report_id: str, compare: str = "", format: str = ""
+    session: SessionDep, report_id: str, compare: str = "", format: str = "", offset: int = 0
 ) -> Response:
     from papersteward.reading.insights.export import export_report
     from papersteward.reading.insights.reports import read_report
@@ -744,15 +1080,22 @@ def report_detail_page(
         from fastapi.responses import PlainTextResponse
 
         return PlainTextResponse(export_report(detail, format))  # type: ignore[arg-type]
-    body = _report_detail_body(session, detail)
+    body = _report_detail_body(session, detail, series_offset=max(0, offset))
     if compare and compare != report_id:
         try:
+            from papersteward.reading.insights.reports import ensure_same_series
+
             other = read_report(session, compare)
-        except (DomainError, AppError):
-            other = None
-        if other is not None:
+            ensure_same_series(detail, other)
             body += _compare_html(detail, other)
-    return _page(f"阅读回顾报告 · {escape(detail.period_label)}", body, nav="归档")
+        except (DomainError, AppError) as exc:
+            rendered = _page("报告比较", f'<p role="alert">{escape(exc.message)}</p>' + body)
+            rendered.status_code = exc.status_code if isinstance(exc, AppError) else 409
+            return rendered
+    title = (
+        "知识版回顾报告" if isinstance(detail.content, InsightReportContentV2) else "阅读回顾报告"
+    )
+    return _page(f"{title} · {escape(detail.period_label)}", body, nav="归档")
 
 
 @router.post("/reports/{report_id}/delete")
@@ -771,45 +1114,265 @@ async def delete_report_page(request: Request, report_id: str, session: SessionD
     return RedirectResponse("/ui/reading-insights/reports", status_code=303)
 
 
-def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
+def _synthesis_refs_html(refs: list[Any]) -> str:
+    rows = []
+    for ref in refs:
+        label = MATERIAL_KIND_LABELS.get(str(ref.kind), str(ref.kind))
+        if ref.kind == "asset_content":
+            link = (
+                f'<a href="/ui/reading-insights/assets/{escape(str(ref.target_id))}">'
+                f"{escape(str(ref.target_id))}</a>"
+            )
+        elif ref.kind == "verified_candidate":
+            link = (
+                '<a href="/ui/reading-insights/analysis/candidates/'
+                f'{escape(str(ref.target_id))}">候选 {escape(str(ref.target_id))}</a>'
+            )
+        elif ref.paper_id:
+            link = (
+                f'<a href="/ui/papers/{escape(str(ref.paper_id))}">{escape(str(ref.paper_id))}</a>'
+            )
+        else:
+            link = escape(str(ref.target_id))
+        private = ' <span class="muted">（私人材料）</span>' if ref.private else ""
+        rows.append(
+            f'<li>{link}{private} <span class="muted">· {escape(label)} · '
+            f"版本 {escape(str(ref.version_key))}</span></li>"
+        )
+    return "<ul>" + "".join(rows) + "</ul>"
+
+
+def _synthesis_report_html(content: InsightReportContentV2) -> str:
+    """知识整理与实际分析覆盖；全部来自冻结快照，不重算模型结果。"""
+    section = content.synthesis
+    context = content.analysis
+    body = (
+        "<h2>知识整理</h2>"
+        '<p class="muted">模型根据本次清单材料整理，待你核对；'
+        "它不改变事实统计，也不等于系统验证论文结论。</p>"
+    )
+    if section.redacted_private_items:
+        body += (
+            f'<p class="notice">这是脱敏副本：已移除 {section.redacted_private_items} '
+            "条依赖私人材料的归纳；原报告未修改。</p>"
+        )
+    if section.note:
+        body += f'<p class="muted">{escape(section.note)}</p>'
+    if section.insufficient_material:
+        body += '<p class="notice">本次材料不足，未形成专题判断；事实统计仍完整保存。</p>'
+    kind_labels = {
+        "cross_domain_transfer": "跨领域迁移（候选）",
+        "research_opportunity": "研究机会（候选）",
+    }
+    status_labels = {
+        "needs_evidence": "缺证据",
+        "depends_on_conditions": "条件不可比",
+        "unresolved": "仍未解决",
+    }
+    if section.topics:
+        body += "<h3>专题</h3>"
+        for topic in section.topics:
+            body += f'<article class="insight-topic"><h4>{escape(topic.question)}</h4>'
+            body += f"<p>{escape(topic.understanding)}</p>"
+            body += "<p>支持材料：</p>" + _synthesis_refs_html(list(topic.supporting_refs))
+            if topic.limiting_refs:
+                body += "<p>限制或不同结果：</p>" + _synthesis_refs_html(list(topic.limiting_refs))
+            if topic.comparison:
+                body += f"<p>条件对照：{escape(topic.comparison)}</p>"
+            if topic.unverified:
+                body += f"<p>待确认：{escape(topic.unverified)}</p>"
+            body += (
+                f'<p class="muted">独立来源 {topic.independent_sources} 项'
+                + (" · 依赖私人材料" if topic.private else "")
+                + "</p></article>"
+            )
+    if section.open_questions:
+        body += "<h3>仍未解决</h3><ul>"
+        for question in section.open_questions:
+            body += (
+                f"<li>{escape(question.question)}"
+                ' <span class="muted">（'
+                f"{escape(status_labels.get(question.status, question.status))}"
+                f" · 独立来源 {question.independent_sources} 项"
+                + (" · 私人材料" if question.private else "")
+                + "）</span></li>"
+            )
+        body += "</ul>"
+    if section.candidate_links:
+        body += "<h3>候选联系（未确认）</h3><ul>"
+        for link in section.candidate_links:
+            body += (
+                f"<li><strong>{escape(kind_labels.get(link.link_kind, link.link_kind))}</strong>："
+                f"{escape(link.statement)}"
+                + (f'<p class="muted">注意：{escape(link.caution)}</p>' if link.caution else "")
+                + "</li>"
+            )
+        body += "</ul>"
+    body += "<h2>实际分析覆盖</h2>"
+    body += (
+        '<table><thead><tr><th scope="col">项目</th><th scope="col">数值</th>'
+        '<th scope="col">说明</th></tr></thead><tbody>'
+    )
+    rows = [
+        (
+            "材料",
+            f"使用 {context.materials_used} / 清单 {context.materials_total} 条",
+            f"过期或缺失 {context.materials_stale} 条",
+        ),
+        (
+            "论文覆盖",
+            f"范围内 {context.papers_in_scope} 篇，有材料 {context.papers_with_materials} 篇",
+            f"缺失 {context.missing_papers_total} 篇",
+        ),
+        (
+            "预算省略",
+            f"论文 {context.omitted_papers} 篇 · 材料 {context.omitted_materials} 条",
+            "省略部分未参与本次综合，不冒充全量",
+        ),
+        (
+            "已核对候选／资产",
+            f"{context.verified_candidates} 条 / {context.assets_used} 个",
+            "只计入本次实际发送的材料",
+        ),
+        (
+            "服务端拒绝",
+            f"条目 {context.rejected_items} 条 · 引用 {context.rejected_refs} 个",
+            "来源编号无法核对的内容未保存",
+        ),
+    ]
+    for name, value, note in rows:
+        body += (
+            "<tr>"
+            f'<th scope="row">{escape(name)}</th>'
+            f'<td data-label="数值">{escape(value)}</td>'
+            f'<td data-label="说明" class="muted">{escape(note)}</td>'
+            "</tr>"
+        )
+    body += "</tbody></table>"
+    if context.missing_paper_ids:
+        links = "、".join(
+            f'<a href="/ui/papers/{escape(paper_id)}">{escape(paper_id)}</a>'
+            for paper_id in context.missing_paper_ids[:10]
+        )
+        body += f'<p class="muted">没有可用材料的论文（前 10 篇）：{links}</p>'
+    body += (
+        f'<p class="muted">清单 <code>{escape(context.manifest_id[:12])}…</code> · '
+        f"提示词 {escape(context.prompt_version)} · 模型配置版本 "
+        f"{escape(context.model_config_version or '未发送模型调用')}</p>"
+    )
+    if context.partial:
+        body += (
+            '<p class="notice">本次覆盖不完整：缺失、过期或省略的材料没有参与综合；'
+            "报告保留这一限制，不把部分结果标成完整专题。</p>"
+        )
+    if context.sources_changed_after_send:
+        body += '<p class="notice">生成后源数据已有变化；本报告保留生成时的固定内容。</p>'
+    return body
+
+
+def _report_detail_body(
+    session: SessionDep, detail: ReportDetail, *, series_offset: int = 0
+) -> str:
     """报告详情：全部内容来自保存快照，不重算。"""
-    from papersteward.reading.insights.reports import list_series_reports
+    from papersteward.reading.insights.reports import (
+        has_private_report_content,
+        list_series_reports,
+    )
+    from papersteward.storage.insights import ReadingDerivedCopyRepository
+    from papersteward.storage.repositories import RunRepository
 
     metrics = detail.content.metrics
     tz = ZoneInfo(detail.timezone)
     mode_label = _MODE_LABELS.get(detail.mode, detail.mode.value)
+    run_row = RunRepository(session).get(detail.run_id)
+    run_text = (
+        f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a>'
+        if run_row is not None
+        else f"运行 {escape(detail.run_id)}（无运行记录；可能是另存的脱敏版本）"
+    )
     body = (
         '<p class="notice">这是已保存的报告快照：内容不会随后续评分或日期修改变化。</p>'
         '<p class="muted">'
         f"模式 {escape(mode_label)} · 时区 {escape(detail.timezone)} · "
         f"知识截止 {escape(detail.knowledge_cutoff.isoformat())} · "
         f"生成时间 {escape(detail.generated_at.isoformat())} · "
-        f'运行 <a href="/ui/runs/{escape(detail.run_id)}">{escape(detail.run_id)}</a></p>'
+        f"{run_text}</p>"
     )
+    if isinstance(detail.content, InsightReportContentV2):
+        body += (
+            '<p class="notice">知识整理与材料清单是生成时的固定快照；之后新增材料或修订'
+            "不会补入本报告。需要重新综合时，到"
+            ' <a href="/ui/reading-insights/synthesis">知识版回顾</a> 重新预览并生成新版本。</p>'
+        )
+    lineage = [
+        item
+        for item in ReadingDerivedCopyRepository(session).lineage_for_report(detail.report_id)
+        if item.field_kind == "sanitized" and item.source_kind == "report"
+    ]
+    if lineage:
+        source_id = escape(lineage[0].source_id)
+        body += (
+            f'<p class="notice">这是报告 <a href="/ui/reading-insights/reports/{source_id}">'
+            f"{source_id}</a> 的脱敏版本：资产标题、正文及私人知识归纳已移除；"
+            "原报告未修改。</p>"
+        )
+    private_content = has_private_report_content(detail.content)
+    if private_content:
+        body += (
+            '<form method="post" action="'
+            + f"/ui/reading-insights/reports/{escape(detail.report_id)}/sanitize"
+            + '" class="inline">'
+            + "<button>另存脱敏版本</button></form>"
+            + '<span class="muted">（新建一份清除资产标题、正文与私人知识归纳的报告；'
+            "原报告保持不变）</span>"
+        )
     from papersteward.reading.insights.reports import report_input_status
 
     state = report_input_status(session, detail, now=utc_now())
-    message = (
-        "按此报告模式与周期重新检查，相关数据已有变化；可重新保存一版回顾。"
-        if state["changed"]
-        else "按此报告模式与周期重新检查，有效事实未变化。"
-    )
-    body += (
-        f'<p class="notice">{message} 比较截止 '
-        f"{escape(state['compared_cutoff'].isoformat())}。原快照保持不变。</p>"
-    )
+    if state["changed"] is None:
+        body += f'<p class="notice">{escape(state["reason"])}。</p>'
+    else:
+        message = (
+            "按此报告模式与周期重新检查，相关数据已有变化；可重新保存一版回顾。"
+            if state["changed"]
+            else "按此报告模式与周期重新检查，有效事实未变化。"
+        )
+        body += (
+            f'<p class="notice">{message} 比较截止 '
+            f"{escape(state['compared_cutoff'].isoformat())}。原快照保持不变。</p>"
+        )
+    if detail.context is not None:
+        scope = detail.context.scope
+        topic = (
+            "主题范围未知"
+            if not scope.topic_known
+            else (
+                f"{scope.topic.code} · {scope.topic.taxonomy_version or '跨分类版本代码筛选'}"
+                if scope.topic
+                else "全部主题"
+            )
+        )
+        body += f'<p class="muted">范围：{escape(topic)} · '
+        body += escape(scope.algorithm_version or "统计口径未知") + "</p>"
     body += (
         "<p>导出选择："
         f'<a href="/ui/reading-insights/export?report_id={escape(detail.report_id)}">'
         "事实分享副本／个人副本</a></p>"
     )
+    quick_label = (
+        "分享副本快捷导出"
+        if isinstance(detail.content, InsightReportContentV2)
+        else "事实副本快捷导出"
+    )
     body += (
-        "<p>事实副本快捷导出："
+        f"<p>{quick_label}："
         f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}'
         '?format=markdown">Markdown</a> · '
         f'<a href="/ui/reading-insights/reports/{escape(detail.report_id)}?format=json">JSON</a>　'
         '<a href="/ui/reading-insights/reports">全部报告</a></p>'
     )
+    if isinstance(detail.content, InsightReportContentV2):
+        body += _synthesis_report_html(detail.content)
     body += "<h2>指标</h2>" + _metrics_table(metrics)
     body += "<h2>分布</h2>" + _distributions_html(metrics)
     body += f"<h2>阅读明细（{len(detail.content.readings)}）</h2>"
@@ -834,6 +1397,13 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     )
     body += f"<h2>反馈修订（{len(detail.content.changes)}）</h2>"
     body += _report_changes_table(list(detail.content.changes))
+    body += f"<h2>结构化理由修订（{len(detail.content.structured_changes)}）</h2>"
+    if detail.content.structured_changes:
+        body += _changes_table(
+            sorted(detail.content.structured_changes, key=lambda change: change.recorded_at)
+        )
+    else:
+        body += '<p class="muted">无</p>'
     body += f"<h2>未定阅读日期（{len(detail.content.unassigned)}）</h2>"
     body += (
         _papers_table(
@@ -846,12 +1416,10 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
     )
     body += _report_assets_section(session, detail)
     body += '<p class="muted">查看依据：明细中的文献可点回原归档页核对；报告不含备注原文。</p>'
-    series = [
-        item for item in list_series_reports(session, detail) if item.report_id != detail.report_id
-    ]
+    series = list_series_reports(session, detail, limit=51, offset=series_offset)
     if series:
         body += "<h2>同系列版本</h2><ul>"
-        for item in series:
+        for item in series[:50]:
             body += (
                 f'<li><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
                 f"{escape(item.period_label)}</a> · {escape(item.generated_at.isoformat())} · "
@@ -859,6 +1427,13 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
                 f'?compare={escape(item.report_id)}">比较事实差异</a></li>'
             )
         body += "</ul>"
+        body += _pagination(
+            f"/ui/reading-insights/reports/{detail.report_id}",
+            {},
+            offset=series_offset,
+            total=series_offset + len(series),
+            page_size=50,
+        )
     body += (
         "<details><summary>删除此报告</summary>"
         "<p>只删除这份报告快照；归档、评分与阅读时间声明不受影响，已读数不变。</p>"
@@ -869,6 +1444,20 @@ def _report_detail_body(session: SessionDep, detail: ReportDetail) -> str:
         "<button>删除报告</button></form></details>"
     )
     return body
+
+
+@router.post("/reports/{report_id}/sanitize")
+async def sanitize_report_page(request: Request, report_id: str, session: SessionDep) -> Response:
+    """另存脱敏版本：新建清除私人标题与正文副本的报告；原报告保持不变。"""
+    from papersteward.reading.insights.reports import save_sanitized_report
+
+    try:
+        with write_tx(session):
+            ensure_active(session, action="reading_insights.report")
+            sanitized = save_sanitized_report(session, report_id, now=utc_now())
+    except (DomainError, AppError) as exc:
+        return failure(exc, back=f"/ui/reading-insights/reports/{report_id}")
+    return RedirectResponse(f"/ui/reading-insights/reports/{sanitized.report_id}", status_code=303)
 
 
 def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
@@ -889,10 +1478,13 @@ def _report_assets_section(session: SessionDep, detail: ReportDetail) -> str:
             body += "</li>"
             continue
         kind_label = _ASSET_KIND_LABELS.get(ref.kind, ref.kind)
+        title_text = ref.title or "（私人标题已移除）"
         body += (
             f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
-            f"{escape(ref.title)}</a> · {escape(kind_label)} · "
+            f"{escape(title_text)}</a> · {escape(kind_label)} · "
             f"{escape(_asset_status_text(ref.status))}"
+            + (f" · 范围内版本 {ref.revision}" if ref.revision is not None else "")
+            + (" · 跨主题来源" if ref.cross_topic else "")
             + (
                 "<details><summary>保存时的私人正文副本</summary><p>"
                 + escape(ref.body).replace("\n", "<br>")
@@ -987,7 +1579,24 @@ _ASSET_STATUS_LABELS = {
     "open": "待解决",
     "resolved": "已解决",
 }
-_ASSET_KIND_LABELS = {"harvest": "收获", "problem": "问题"}
+_ASSET_KIND_LABELS = {
+    "harvest": "收获",
+    "problem": "问题",
+    "method": "方法卡",
+    "evidence": "证据组",
+}
+_TYPED_FIELD_LABELS = {
+    "problem": "解决什么问题",
+    "conditions": "适用条件",
+    "approach": "关键做法",
+    "limitations": "限制",
+    "resources": "资源／数据要求（未知可留空）",
+    "claim": "待讨论的论点",
+    "supports": "支持材料",
+    "differing": "不同结果／限制",
+    "context": "研究条件／背景",
+    "unverified": "尚未核实的部分",
+}
 
 
 def _asset_status_text(status: str) -> str:
@@ -1094,7 +1703,14 @@ def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> s
         '<form method="get" class="queue-filters">'
         '<label>类型<select name="kind">'
         + select_options(
-            [("", "全部"), ("harvest", "收获"), ("problem", "问题")], selected=kind or None
+            [
+                ("", "全部"),
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=kind or None,
         )
         + '</select></label><label>状态<select name="status">'
         + select_options(
@@ -1115,6 +1731,150 @@ def _asset_filter_form(kind: str, status: str, paper_id: str, keyword: str) -> s
     )
 
 
+_TYPED_TEXT_FIELDS = ("problem", "conditions", "approach", "limitations", "resources")
+_TYPED_LIST_FIELDS = ("supports", "differing")
+_TYPED_EXTRA_FIELDS = ("claim", "context", "unverified")
+
+
+def _typed_fields_details(draft: dict[str, str] | None = None) -> str:
+    """方法卡/证据组的结构化字段（全部渲染，服务端按 kind 校验）。
+
+    无 JS 环境下无法按 kind 动态显隐：方法卡与证据组字段分两个 details，
+    并提示用户只填所选类型的字段。
+    """
+    draft = draft or {}
+
+    def textarea(name: str, label: str, *, rows: int = 2) -> str:
+        return (
+            f"<label>{escape(label)}"
+            f'<textarea name="typed_{escape(name)}" rows="{rows}" maxlength="2000">'
+            f"{escape(draft.get(f'typed_{name}', ''))}</textarea></label>"
+        )
+
+    method_fields = (
+        textarea("problem", "解决什么问题")
+        + textarea("conditions", "适用条件")
+        + textarea("approach", "关键做法", rows=4)
+        + textarea("limitations", "限制")
+        + textarea("resources", "资源／数据要求（未知可留空）")
+    )
+    evidence_fields = (
+        textarea("claim", "待讨论的论点")
+        + textarea("supports", "支持材料（每行一条）", rows=3)
+        + textarea("differing", "不同结果／限制（每行一条，可选）", rows=2)
+        + textarea("context", "研究条件／背景（可选）")
+        + textarea("unverified", "尚未核实的部分（可选）")
+    )
+    return (
+        "<details><summary>方法卡字段（类型选「方法卡」时填写）</summary>"
+        + method_fields
+        + "</details>"
+        + "<details><summary>证据组字段（类型选「证据组」时填写）</summary>"
+        + evidence_fields
+        + "</details>"
+    )
+
+
+def _typed_content_html(typed: dict[str, object] | None) -> str:
+    """类型化内容的只读分节展示；无内容返回空串。"""
+    if not typed:
+        return ""
+    rows = ""
+    for key, value in typed.items():
+        if value is None or value == []:
+            continue
+        label = _TYPED_FIELD_LABELS.get(key, key)
+        if isinstance(value, list):
+            text = "；".join(escape(str(item)) for item in value)
+            rows += f"<p><strong>{escape(label)}</strong>：{text}</p>"
+        else:
+            rows += f"<p><strong>{escape(label)}</strong>：{escape(str(value))}</p>"
+    return f'<section class="typed-content">{rows}</section>' if rows else ""
+
+
+def _typed_edit_fields(kind: str, typed: dict[str, object] | None, draft: dict[str, str]) -> str:
+    """修订表单的类型化字段（预填当前版本内容）；仅类型化 kind 渲染。"""
+    if kind not in TYPED_ASSET_KINDS:
+        return ""
+    current = typed or {}
+    specs = _TYPED_EDIT_SPECS[kind]
+    rows = []
+    for name, label, required, rows_count in specs:
+        value = draft.get(f"typed_{name}", str(current.get(name) or ""))
+        required_attr = " required" if required else ""
+        rows.append(
+            f"<label>{escape(label)}"
+            f'<textarea name="typed_{escape(name)}" rows="{rows_count}"'
+            f' maxlength="8000"{required_attr}>{value}</textarea></label>'
+        )
+    if kind == "evidence":
+        raw_supports = current.get("supports")
+        raw_differing = current.get("differing")
+        support_items: list[str] = (
+            [str(item) for item in raw_supports] if isinstance(raw_supports, list) else []
+        )
+        differing_items: list[str] = (
+            [str(item) for item in raw_differing] if isinstance(raw_differing, list) else []
+        )
+        supports = draft.get("typed_supports", "\n".join(support_items))
+        differing = draft.get("typed_differing", "\n".join(differing_items))
+        rows.append(
+            "<label>支持材料（每行一条）"
+            f'<textarea name="typed_supports" rows="3">{escape(supports)}</textarea></label>'
+        )
+        rows.append(
+            "<label>不同结果／限制（每行一条，可选）"
+            f'<textarea name="typed_differing" rows="2">{escape(differing)}</textarea></label>'
+        )
+    return (
+        "<details open><summary>结构化字段（该类型必填）</summary>" + "".join(rows) + "</details>"
+    )
+
+
+# (字段名, 标签, 是否必填, 行数)；supports/differing 列表字段单独处理。
+_TYPED_EDIT_SPECS = {
+    "method": (
+        ("problem", "解决什么问题", True, 2),
+        ("conditions", "适用条件", False, 2),
+        ("approach", "关键做法", True, 4),
+        ("limitations", "限制", False, 2),
+        ("resources", "资源／数据要求（未知可留空）", False, 2),
+    ),
+    "evidence": (
+        ("claim", "待讨论的论点", True, 2),
+        ("context", "研究条件／背景（可选）", False, 2),
+        ("unverified", "尚未核实的部分（可选）", False, 2),
+    ),
+}
+
+
+def _parse_typed(form: dict[str, str], kind: str) -> dict[str, object] | None:
+    """从表单解析类型化内容；非类型化 kind 返回 None。"""
+    if kind not in TYPED_ASSET_KINDS:
+        return None
+    if kind == "method":
+        return {
+            "problem": form.get("typed_problem", ""),
+            "conditions": form.get("typed_conditions") or None,
+            "approach": form.get("typed_approach", ""),
+            "limitations": form.get("typed_limitations") or None,
+            "resources": form.get("typed_resources") or None,
+        }
+    return {
+        "claim": form.get("typed_claim", ""),
+        "supports": [
+            line.strip() for line in (form.get("typed_supports") or "").splitlines() if line.strip()
+        ],
+        "differing": [
+            line.strip()
+            for line in (form.get("typed_differing") or "").splitlines()
+            if line.strip()
+        ],
+        "context": form.get("typed_context") or None,
+        "unverified": form.get("typed_unverified") or None,
+    }
+
+
 def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None = None) -> str:
     draft = draft or {}
     return (
@@ -1123,7 +1883,15 @@ def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None =
         + hidden("source_paper", source_paper)
         + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
         + '<label>类型<select name="kind">'
-        + select_options([("harvest", "收获"), ("problem", "问题")], selected=draft.get("kind"))
+        + select_options(
+            [
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=draft.get("kind"),
+        )
         + '</select></label><label>标题<input name="title" required maxlength="256" value="'
         + escape(draft.get("title", ""))
         + '"></label>'
@@ -1133,10 +1901,12 @@ def _asset_create_form(source_paper: str = "", *, draft: dict[str, str] | None =
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
         + escape(draft.get("applicability", ""))
         + "</textarea></label>"
+        + _typed_fields_details(draft)
         + '<label>来源论文 ID（每行一个，已归档文献）<textarea name="sources" rows="2">'
         + escape(draft.get("sources", source_paper))
         + "</textarea></label>"
-        + "<button>保存资产</button></form></details>"
+        + '<p class="muted">选「方法卡／证据组」时需填写下方对应的结构化字段；'
+        "收获／问题请留空这些字段。</p>" + "<button>保存资产</button></form></details>"
     )
 
 
@@ -1149,7 +1919,7 @@ async def create_asset_page(request: Request, session: SessionDep) -> Response:
         form = await form_fields(request)
         values = dict(form)
         body = _parse_asset_create(form)
-        with session.begin():
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = create_asset(session, body, now=utc_now())
         source_paper = form.get("source_paper") or ""
@@ -1181,12 +1951,14 @@ def _parse_asset_create(form: dict[str, str]) -> AssetCreateInput:
     lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
     if source_paper and source_paper not in lines:
         lines.insert(0, source_paper)
+    kind = form.get("kind", "")
     payload = {
-        "kind": form.get("kind", ""),
+        "kind": kind,
         "title": form.get("title", ""),
         "body": form.get("body", ""),
         "applicability": form.get("applicability") or None,
         "sources": [{"paper_id": pid} for pid in lines],
+        "typed": _parse_typed(form, kind),
         "idempotency_key": form.get("idempotency_key") or uuid4().hex,
     }
     return AssetCreateInput.model_validate(payload)
@@ -1202,7 +1974,7 @@ def _asset_form_error_page(message: str, values: dict[str, str]) -> HTMLResponse
 
 
 def _allowed_transitions(kind: str, status: str) -> list[str]:
-    if kind == "harvest":
+    if kind in {"harvest", "method", "evidence"}:
         return ["archived"] if status == "active" else []
     if status == "open":
         return ["resolved", "archived"]
@@ -1269,6 +2041,7 @@ def _asset_detail_body(
     )
     if revision.applicability:
         body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += _typed_content_html(revision.typed)
     body += f"<h2>来源（{len(revision.sources)}）</h2><ul>"
     for source in revision.sources:
         rating = (
@@ -1279,13 +2052,14 @@ def _asset_detail_body(
             f"{escape(source.paper_id)}</a>{rating}</li>"
         )
     body += "</ul>"
-    # 修订表单：全量内容 + 预期版本；冲突时保留草稿由查询参数带回。
+    # 修订表单：全量内容 + 预期版本 + 幂等键；冲突时保留草稿由查询参数带回。
     body += (
         "<h2>修订</h2>"
         '<form method="post" action="'
         + url
         + '/revisions" class="stacked-form">'
         + hidden("expected_revision", str(revision.revision))
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
         + '<label>标题<input name="title" required maxlength="256" value="'
         + escape(draft.get("title", revision.title))
         + '"></label>'
@@ -1295,6 +2069,7 @@ def _asset_detail_body(
         + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
         + escape(draft.get("applicability", revision.applicability) or "")
         + "</textarea></label>"
+        + _typed_edit_fields(view.kind, revision.typed, draft)
         + '<label>状态<select name="status">'
         + select_options(
             [
@@ -1305,7 +2080,24 @@ def _asset_detail_body(
             ],
             selected=draft.get("status", revision.status),
         )
-        + '</select></label><label>来源论文 ID（每行一个）<textarea name="sources" rows="2">'
+        + "</select></label>"
+    )
+    if revision.sources:
+        pins = " · ".join(
+            escape(
+                f"{source.paper_id}（引用反馈 {source.rating_at.isoformat()}）"
+                if source.rating_at is not None
+                else source.paper_id
+            )
+            for source in revision.sources
+        )
+        body += (
+            f'<p class="muted">当前来源：{pins}。'
+            "保留行即保留反馈引用；删除行即移除来源，新增行按未引用反馈处理。</p>"
+        )
+    body += (
+        "<label>来源论文 ID（每行一个，已归档文献；删行=移除来源）"
+        '<textarea name="sources" rows="2">'
         + escape(draft.get("sources", "\n".join(source.paper_id for source in revision.sources)))
         + "</textarea></label>"
         + "<button>保存为新版本</button></form>"
@@ -1317,33 +2109,69 @@ def _asset_detail_body(
             + '/status" class="inline">'
             + hidden("status", target)
             + hidden("expected_revision", str(revision.revision))
+            + hidden("idempotency_key", uuid4().hex)
             + f"<button>标记为{_asset_status_text(target)}</button></form>"
         )
     if view.history:
         body += "<h2>历史版本</h2><ul>"
         for item in view.history:
             body += (
-                f"<li>版本 {item.revision} · {escape(item.recorded_at.isoformat())} · "
+                f'<li><a href="{url}/revisions/{item.revision}">版本 {item.revision}</a> · '
+                f"{escape(item.recorded_at.isoformat())} · "
                 f"{escape(item.title)} · {escape(_asset_status_text(item.status))}</li>"
             )
         body += "</ul>"
     preview = delete_preview(session, view.asset_id)
+    from papersteward.storage.insights import ReadingAnalysisDecisionRepository
+
+    decisions = ReadingAnalysisDecisionRepository(session).by_asset(view.asset_id)
+    if decisions:
+        body += f"<h2>来自候选（{len(decisions)}）</h2><ul>"
+        for decision in decisions:
+            state = {
+                "confirmed": "确认为本资产",
+                "merged": "并入本资产（追加版本）",
+            }.get(str(decision.decision), str(decision.decision))
+            body += "<li>" + escape(state) + " · " + escape(str(decision.decided_at))
+            if decision.note:
+                body += " · " + escape(str(decision.note))
+            body += "</li>"
+        body += "</ul>"
     body += "<h2>删除</h2>"
     body += (
         f'<p class="muted">将删除 {preview["revision_count"]} 个版本、'
-        f"{preview['source_count']} 条来源引用。"
-        "仅引用此资产（不含正文副本）的报告会继续显示「来源已移除」。</p>"
+        f"{preview['source_count']} 条来源引用，以及此资产自身的标题、正文与适用说明。</p>"
     )
-    body += '<form method="post" action="' + url + '/delete" class="stacked-form">'
-    if preview["reports_with_body"]:
-        body += "<p>以下报告曾选入此资产的正文副本，可一并删除：</p><ul>"
-        for report_id in preview["reports_with_body"]:
+    memory_copies = preview.get("memory_copies", [])
+    if memory_copies:
+        body += (
+            "<p>以下研究记忆引用了此资产；删除资产后会标为需复核，本地措辞保留。"
+            "可先打开逐条删除：</p><ul>"
+        )
+        for memory_id in memory_copies:
             body += (
-                f'<li><label><input type="checkbox" name="also_{escape(report_id)}" value="1"> '
-                f'<a href="/ui/reading-insights/reports/{escape(report_id)}">'
-                f"{escape(report_id)}</a></label></li>"
+                f'<li><a href="/ui/reading-insights/memory/{escape(memory_id)}">'
+                f"{escape(memory_id)}</a></li>"
             )
         body += "</ul>"
+    copies = preview["private_copies"]
+    body += '<form method="post" action="' + url + '/delete" class="stacked-form">'
+    if copies:
+        body += "<p>以下报告含此资产的私人副本，可勾选一并删除：</p><ul>"
+        for item in copies:
+            field_text = "、".join("标题" if kind == "title" else "正文" for kind in item["fields"])
+            body += (
+                f'<li><label><input type="checkbox" name="also_{escape(item["report_id"])}" '
+                'value="1"> '
+                f'<a href="/ui/reading-insights/reports/{escape(item["report_id"])}">'
+                f"{escape(item['report_id'])}</a>（含{escape(field_text)}）</label></li>"
+            )
+        body += "</ul>"
+        body += (
+            '<p class="muted">不勾选的报告会保留原副本：可在该报告中删除整份，'
+            "或另存脱敏版本；已下载的导出文件与数据库备份不会自动收回。</p>"
+        )
+    body += '<p class="muted">仅引用此资产、不含私人副本的报告会继续显示「来源已移除」。</p>'
     body += (
         '<label>输入「删除资产」确认<input name="confirmation" autocomplete="off"></label>'
         "<button>删除资产</button></form>"
@@ -1353,7 +2181,11 @@ def _asset_detail_body(
 
 @router.post("/assets/{asset_id}/revisions")
 async def revise_asset_page(request: Request, asset_id: str, session: SessionDep) -> Response:
-    """追加修订；冲突或非法输入重渲染资产页并保留草稿（X-01）。"""
+    """追加修订；冲突或非法输入重渲染资产页并保留草稿（X-01）。
+
+    来源 textarea 只能表达论文 ID：按当前来源建立 paper_id → 反馈版本映射，
+    未主动增删的来源原样保留反馈引用（F05）。
+    """
     from papersteward.reading.insights.assets import append_revision, get_asset_view
 
     draft: dict[str, str] = {}
@@ -1365,9 +2197,12 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
             "applicability": form.get("applicability", ""),
             "status": form.get("status", ""),
             "sources": form.get("sources", ""),
+            "idempotency_key": form.get("idempotency_key", ""),
         }
-        body = _parse_asset_revision(form)
-        with session.begin():
+        current = get_asset_view(session, asset_id)
+        preserve = {source.paper_id: source.rating_at for source in current.revision.sources}
+        body = _parse_asset_revision(form, preserve, kind=current.kind)
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             view = append_revision(session, asset_id, body, now=utc_now())
         return RedirectResponse(f"/ui/reading-insights/assets/{asset_id}", status_code=303)
@@ -1399,7 +2234,18 @@ async def revise_asset_page(request: Request, asset_id: str, session: SessionDep
         return rendered
 
 
-def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
+def _parse_asset_revision(
+    form: dict[str, str],
+    preserve: dict[str, Any] | None = None,
+    *,
+    kind: str = "harvest",
+) -> AssetRevisionInput:
+    """表单只提交论文 ID：已有来源按映射回填反馈版本，新增来源不带引用。
+
+    ``preserve`` 是当前版本的 paper_id → rating_at 映射；列表中删行即移除
+    来源、加行即新增来源，都是显式动作。类型化资产的 typed 字段同步解析
+    （缺填在契约校验层报错，不静默保留旧内容之外的新形状）。
+    """
     from papersteward.reading.insights.contracts import AssetRevisionInput
 
     try:
@@ -1407,15 +2253,80 @@ def _parse_asset_revision(form: dict[str, str]) -> AssetRevisionInput:
     except ValueError as exc:
         raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
     lines = [line.strip() for line in (form.get("sources") or "").splitlines() if line.strip()]
+    mapping = preserve or {}
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for paper_id in lines:
+        if paper_id in seen:
+            continue
+        seen.add(paper_id)
+        pin = mapping.get(paper_id)
+        sources.append({"paper_id": paper_id, "rating_at": pin} if pin else {"paper_id": paper_id})
     return AssetRevisionInput.model_validate(
         {
             "expected_revision": expected,
+            "idempotency_key": form.get("idempotency_key") or uuid4().hex,
             "title": form.get("title", ""),
             "body": form.get("body", ""),
             "applicability": form.get("applicability") or None,
+            "typed": _parse_typed(form, kind),
             "status": form.get("status", ""),
-            "sources": [{"paper_id": pid} for pid in lines],
+            "sources": sources,
         }
+    )
+
+
+@router.get("/assets/{asset_id}/revisions/{revision_number}")
+def asset_revision_page(session: SessionDep, asset_id: str, revision_number: int) -> Response:
+    """逐版本详情：旧正文、适用说明与当时来源；缺失引用明确说明，不指向最新内容。"""
+    from papersteward.reading.insights.assets import get_asset_revision_detail
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        detail = get_asset_revision_detail(session, asset_id, revision_number)
+    except (DomainError, AppError) as exc:
+        rendered = _page("手工资产版本", f'<p role="alert">{escape(exc.message)}</p>', nav="归档")
+        rendered.status_code = exc.status_code if isinstance(exc, AppError) else 404
+        return rendered
+    revision = detail.revision
+    url = f"/ui/reading-insights/assets/{escape(asset_id)}"
+    kind_label = _ASSET_KIND_LABELS.get(detail.kind, detail.kind)
+    body = (
+        f'<p class="muted">{escape(kind_label)} · 版本 {revision.revision} · '
+        f"记录于 {escape(revision.recorded_at.isoformat())} · "
+        f"当时状态 {escape(_asset_status_text(revision.status))} · "
+        f'<a href="{url}">返回当前版本</a></p>'
+        f"<h2>{escape(revision.title)}</h2>"
+        "<p>" + escape(revision.body).replace("\n", "<br>") + "</p>"
+    )
+    if revision.applicability:
+        body += f'<p class="muted">适用说明：{escape(revision.applicability)}</p>'
+    body += _typed_content_html(revision.typed)
+    body += f"<h2>当时来源（{len(revision.sources)}）</h2><ul>"
+    for status in detail.source_status:
+        if not status.paper_exists:
+            body += f"<li>来源文献已删除（原 ID {escape(status.paper_id)}）</li>"
+            continue
+        paper_link = f'<a href="/ui/papers/{escape(status.paper_id)}">{escape(status.paper_id)}</a>'
+        if status.rating_at is None:
+            body += f"<li>{paper_link} · 归档哈希 {escape(status.archive_hash[:12])}…</li>"
+            continue
+        if not status.rating_exists:
+            body += (
+                f"<li>{paper_link} · 引用的反馈版本 {escape(status.rating_at.isoformat())}"
+                " 已不存在</li>"
+            )
+            continue
+        score = f"{status.rating_score}/5" if status.rating_score is not None else "未评分"
+        note = f" · 备注：{escape(status.rating_note[:80])}" if status.rating_note else ""
+        body += (
+            f"<li>{paper_link} · 引用反馈 {escape(status.rating_at.isoformat())}"
+            f" · 评分 {score}{note} · 归档哈希 {escape(status.archive_hash[:12])}…</li>"
+        )
+    body += "</ul>"
+    return _page(
+        f"手工资产 · {escape(revision.title)} · 版本 {revision.revision}", body, nav="归档"
     )
 
 
@@ -1429,7 +2340,7 @@ async def asset_status_page(request: Request, asset_id: str, session: SessionDep
             expected = int(form.get("expected_revision") or "0")
         except ValueError as exc:
             raise InvalidRequestError("版本号无效，请刷新页面后重试") from exc
-        with session.begin():
+        with write_tx(session):
             ensure_active(session, action="reading_insights.assets")
             change_status(
                 session,
@@ -1437,6 +2348,7 @@ async def asset_status_page(request: Request, asset_id: str, session: SessionDep
                 form.get("status", ""),
                 now=utc_now(),
                 expected_revision=expected,
+                idempotency_key=form.get("idempotency_key") or uuid4().hex,
             )
     except (DomainError, AppError, ValidationError) as exc:
         return failure(exc, back=f"/ui/reading-insights/assets/{asset_id}")
@@ -1452,9 +2364,9 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
         form = await form_fields(request)
         if form.get("confirmation") != "删除资产":
             raise InvalidRequestError("请输入「删除资产」以确认删除")
-        with session.begin():
+        with write_tx(session):
             preview = delete_preview(session, asset_id)
-            removable = set(preview["reports_with_body"])
+            removable = {item["report_id"] for item in preview["private_copies"]}
             also = [rid for rid in removable if form.get(f"also_{rid}")]
             ensure_active(session, action="reading_insights.assets")
             delete_asset(session, asset_id, also_report_ids=also)
@@ -1464,8 +2376,6 @@ async def delete_asset_page(request: Request, asset_id: str, session: SessionDep
 
 
 def _all_history_body(session: SessionDep, overview: InsightOverview) -> str:
-    from papersteward.reading.insights.assets import list_assets
-
     metrics = overview.metrics
     body = "<h2>全历史数据完整性与来源</h2><p>包含全部归档，不对长期偏好或领域掌握作推断。</p>"
     body += _entry_table(metrics.source_distribution, "来源", key_labels=_SOURCE_LABELS)
@@ -1474,19 +2384,1277 @@ def _all_history_body(session: SessionDep, overview: InsightOverview) -> str:
         "阅读日期精度",
         key_labels={"day": "具体日期", "month": "仅知月份", "unknown": "未知"},
     )
-    listing = list_assets(session, limit=10, offset=0)
-    body += f"<h2>当前手工资产（{listing['total']}）</h2><ul>"
-    for item in listing["items"]:
-        revision = item["revision"]
-        body += (
-            f'<li><a href="/ui/reading-insights/assets/{escape(item["asset_id"])}">'
-            f"{escape(revision['title'])}</a> · "
-            f"{escape(_asset_status_text(revision['status']))}</li>"
-        )
-    body += '</ul><p><a href="/ui/reading-insights/assets">查找全部资产</a> · '
+    body += _scope_assets_html(overview)
+    body += '<p><a href="/ui/reading-insights/assets">查找全部资产</a> · '
     today = utc_now().astimezone(ZoneInfo(metrics.period.timezone)).date()
     period_query = urlencode(
         {"kind": "custom", "start_date": today.replace(day=1), "end_date": today}
     )
     body += f'<a href="/ui/reading-insights?{escape(period_query)}">按阅读时期找回记录</a></p>'
     return body
+
+
+def _scope_assets_html(overview: InsightOverview) -> str:
+    body = f"<h2>当前手工资产（{len(overview.assets)}）</h2>"
+    body += '<p class="muted">以本范围内活动发生时的来源版本归属，跨主题资产只计一次。'
+    body += "全库库存仅供说明，不触发专题新版本。</p><ul>"
+    for ref in overview.assets[:10]:
+        body += (
+            f'<li><a href="/ui/reading-insights/assets/{escape(ref.asset_id)}">'
+            f"{escape(ref.title)}</a> · {escape(_asset_status_text(ref.status))} · "
+            f"范围内版本 {ref.revision}" + (" · 跨主题来源" if ref.cross_topic else "") + "</li>"
+        )
+    return body + "</ul>"
+
+
+# —— 知识版回顾页（R2-05）：范围、材料与授权预览；预览不联网 ————————
+
+
+def _synthesis_tag_options(session: SessionDep) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = [("", "全部标签")]
+    for taxonomy in TaxonomyRepository(session).list():
+        options += [
+            (f"{taxonomy.version}::{tag.code}", f"{tag.name}（{taxonomy.version}）")
+            for tag in taxonomy.tags
+            if tag.level.value == "primary"
+        ]
+    return options
+
+
+def _synthesis_kind_boxes(draft: dict[str, str]) -> str:
+    defaults = {"archive_metadata", "model_summary"}
+    boxes = []
+    for kind in MATERIAL_KIND_LABELS:
+        checked = bool(draft.get(f"kind_{kind}")) or (
+            not any(key.startswith("kind_") for key in draft) and kind in defaults
+        )
+        boxes.append(
+            f'<label class="check"><input type="checkbox" name="kind_{escape(kind)}" value="1"'
+            f"{' checked' if checked else ''}>"
+            f" {escape(MATERIAL_KIND_LABELS.get(kind, kind))}</label>"
+        )
+    return "".join(boxes)
+
+
+def _synthesis_scope_form(*, draft: dict[str, str], tag_options: list[tuple[str, str]]) -> str:
+    draft = draft or {}
+    kind = draft.get("kind") or "month"
+    if kind not in {"week", "month", "all", "custom"}:
+        kind = "month"
+    return (
+        '<form method="post" action="/ui/reading-insights/synthesis/preview" '
+        'class="stacked-form">'
+        '<label>回顾周期<select name="kind">'
+        + select_options(
+            [("week", "周报"), ("month", "月报"), ("all", "全部历史"), ("custom", "自选日期")],
+            selected=kind,
+        )
+        + "</select></label>"
+        '<label>周/月所属日<input type="date" name="anchor_date" value="'
+        + escape(draft.get("anchor_date", ""))
+        + '"></label><label>开始日<input type="date" name="start_date" value="'
+        + escape(draft.get("start_date", ""))
+        + '"></label><label>结束日<input type="date" name="end_date" value="'
+        + escape(draft.get("end_date", ""))
+        + '"></label><label>模式<select name="mode">'
+        + select_options(
+            [("as_recorded", "当时记录"), ("revised_now", "现在重新回顾")],
+            selected=draft.get("mode") or "as_recorded",
+        )
+        + '</select></label><label>主标签<select name="tag">'
+        + select_options(tag_options, selected=draft.get("tag") or "")
+        + "</select></label>"
+        + "<fieldset><legend>允许发送的材料类别</legend>"
+        + _synthesis_kind_boxes(draft)
+        + "</fieldset>"
+        + "<label>排除（每行「论文ID 原因」，可选）"
+        + '<textarea name="exclusions" rows="2" placeholder="p-xxxx 当前任务无关">'
+        + escape(draft.get("exclusions", ""))
+        + "</textarea></label>"
+        + '<p class="muted">预览只读取本地数据并展示清单、覆盖与省略；不会联网。'
+        "未授权类别不会进入清单；提交前后都会再次核对授权。</p>"
+        + '<button type="submit">生成材料预览</button></form>'
+    )
+
+
+def _synthesis_grant_form(*, draft: dict[str, str] | None = None) -> str:
+    draft = draft or {}
+    boxes = "".join(
+        f'<label class="check"><input type="checkbox" name="cls_{escape(kind)}" value="1"'
+        f"{' checked' if draft.get(f'cls_{kind}') else ''}>"
+        f" {escape(MATERIAL_KIND_LABELS.get(kind, kind))}</label>"
+        for kind in MATERIAL_KIND_LABELS
+    )
+    checked_once = " checked" if draft.get("scope_once") else ""
+    checked_ws = " checked" if not draft.get("scope_once") else ""
+    return (
+        '<form method="post" action="/ui/reading-insights/synthesis/grants" '
+        'class="stacked-form">'
+        + "<fieldset><legend>授权范围</legend>"
+        + '<label class="check"><input type="radio" name="scope_mode" '
+        + f'value="once"{checked_once}>'
+        + " 仅本次知识版回顾（提交时按清单核对）</label>"
+        + '<label class="check"><input type="radio" name="scope_mode" '
+        + f'value="workspace"{checked_ws}>'
+        + " 当前工作区持续（普通再次生成无需重复说明，撤回随时可停）</label>"
+        + "</fieldset>"
+        + f"<fieldset><legend>允许发送的材料类别</legend>{boxes}</fieldset>"
+        + '<label class="check"><input type="checkbox" name="acknowledged" value="1" required>'
+        + " 我已了解：勾选的类别会按清单发送到当前模型端点用于跨文献专题综合；"
+        + "私人材料只有在单独勾选后才会发送；不授权则综合调用次数为零。</label>"
+        + '<button type="submit">保存知识版回顾授权</button></form>'
+    )
+
+
+def _synthesis_grant_warning(status: AnalysisAuthorizationStatus, kinds: list[str]) -> str:
+    grants = [item for item in status.grants if item.revoked_at is None]
+    if not grants:
+        return (
+            '<p class="notice">尚未授权知识版回顾：可以先生成材料预览，但提交前需要'
+            "在上方保存授权。</p>"
+        )
+    missing_by_grant = [sorted(set(kinds) - set(grant.material_classes)) for grant in grants]
+    if any(not missing for missing in missing_by_grant):
+        return ""
+    missing = min(missing_by_grant, key=len)
+    labels = "、".join(MATERIAL_KIND_LABELS.get(kind, kind) for kind in missing)
+    return (
+        f'<p class="notice">所选材料类别超出授权范围：{escape(labels)}。'
+        "请重新授权扩大类别，或从预览中取消这些类别。</p>"
+    )
+
+
+def _synthesis_page_body(
+    status: AnalysisAuthorizationStatus,
+    *,
+    draft: dict[str, str],
+    preview: AnalysisManifestContent | None = None,
+    submit_token: str | None = None,
+    notice: str | None = None,
+    notice_role: str = "status",
+    tag_options: list[tuple[str, str]],
+    recent_reports: list[Any],
+) -> str:
+    notice_html = (
+        f'<p role="{escape(notice_role)}" tabindex="-1" autofocus>{escape(notice)}</p>'
+        if notice
+        else ""
+    )
+    body = (
+        '<p class="back-link"><a href="/ui/reading-insights">← 阅读回顾</a></p>'
+        "<h1>知识版回顾</h1>"
+        '<p class="muted">事实数字始终由系统的确定性统计提供；模型只整理有来源的'
+        "专题、开放问题与候选联系。知识整理是待你核对的个人归纳，不改变事实统计，"
+        "也不等于系统验证论文结论。未授权时不会发生任何模型调用。</p>"
+        + notice_html
+        + _analysis_llm_block(status)
+        + "<h2>用途授权（跨文献专题综合）</h2>"
+        + _analysis_grant_list(status, revoke_prefix="/ui/reading-insights/synthesis/grants")
+        + _synthesis_grant_form(draft=draft)
+        + "<h2>选择回顾范围与材料</h2>"
+        + _synthesis_scope_form(draft=draft, tag_options=tag_options)
+    )
+    if preview is not None:
+        body += "<h2>材料预览</h2>" + _analysis_preview_result(preview)
+        if preview.coverage.omitted_papers or preview.coverage.omitted_materials:
+            body += (
+                '<p class="notice">按预算省略：论文 '
+                f"{preview.coverage.omitted_papers} 篇、材料 "
+                f"{preview.coverage.omitted_materials} 条；报告会如实披露，"
+                "不会假装分析了全部记录。</p>"
+            )
+        if preview.scope_request is not None:
+            body += (
+                '<p class="muted">范围已冻结：'
+                f"{escape(preview.scope_request.period.kind.value)} · "
+                f"{escape(preview.scope_request.mode.value)} · 时区 "
+                f"{escape(preview.scope_request.period.timezone)}"
+                + (
+                    f" · 主标签 {escape(preview.scope_request.tag)}"
+                    if preview.scope_request.tag
+                    else " · 全部主题"
+                )
+                + "。提交时按此范围重算事实，不能只改界面参数。</p>"
+            )
+        selected_kinds = sorted(preview.coverage.by_kind)
+        warning = _synthesis_grant_warning(status, selected_kinds)
+        if warning:
+            body += warning
+        elif submit_token is not None:
+            body += _synthesis_submit_form(submit_token)
+    if recent_reports:
+        body += "<h2>最近的知识版报告</h2><ul>"
+        for item in recent_reports:
+            body += (
+                f'<li><a href="/ui/reading-insights/reports/{escape(item.report_id)}">'
+                f"{escape(item.period_label)}</a> · {escape(item.generated_at.isoformat())}</li>"
+            )
+        body += "</ul>"
+    return body
+
+
+def _synthesis_submit_form(token: str) -> str:
+    return (
+        '<form method="post" action="/ui/reading-insights/synthesis/runs" class="stacked-form">'
+        + hidden("preview_token", token)
+        + hidden("run_id", uuid4().hex)
+        + '<p class="muted">提交后在事务外调用一次模型；发送前与保存前都会复核授权、'
+        "端点与材料版本。失败不会保存半份知识整理，事实版回顾仍可单独生成。</p>"
+        + '<button type="submit">生成知识版回顾</button></form>'
+    )
+
+
+async def _synthesis_render(
+    session: SessionDep,
+    *,
+    draft: dict[str, str],
+    preview: AnalysisManifestContent | None = None,
+    submit_token: str | None = None,
+    notice: str | None = None,
+    notice_role: str = "status",
+    status_code: int = 200,
+) -> Response:
+    from papersteward.reading.insights.reports import list_reports
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    status = analysis_authorization_status(
+        session, settings=get_settings(), purpose=SYNTHESIS_PURPOSE
+    )
+    listing = list_reports(session, limit=5, offset=0)
+    recent = [item for item in listing["items"] if item.contract == SYNTHESIS_REPORT_CONTRACT]
+    body = _synthesis_page_body(
+        status,
+        draft=draft,
+        preview=preview,
+        submit_token=submit_token,
+        notice=notice,
+        notice_role=notice_role,
+        tag_options=_synthesis_tag_options(session),
+        recent_reports=recent,
+    )
+    response = _page("知识版回顾 · PaperSteward", body)
+    response.status_code = status_code
+    return response
+
+
+@router.get("/synthesis")
+async def synthesis_page(
+    session: SessionDep,
+    kind: str = "month",
+    anchor_date: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    mode: str = "as_recorded",
+    tag: str = "",
+) -> Response:
+    draft = {
+        "kind": kind,
+        "anchor_date": anchor_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "mode": mode,
+        "tag": tag,
+    }
+    return await _synthesis_render(session, draft=draft)
+
+
+def _synthesis_parse_query(session: SessionDep, values: dict[str, str]) -> InsightQueryRequest:
+    from papersteward.api.insights import parse_overview_query
+
+    return parse_overview_query(
+        session,
+        kind=values.get("kind"),
+        anchor_date=values.get("anchor_date"),
+        start_date=values.get("start_date"),
+        end_date=values.get("end_date"),
+        mode=values.get("mode"),
+        tag=values.get("tag"),
+    )[0]
+
+
+def _synthesis_parse_exclusions(text: str) -> list[MaterialExclusion]:
+    exclusions: list[MaterialExclusion] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        paper_id, _, reason = line.partition(" ")
+        exclusions.append(
+            MaterialExclusion.model_validate(
+                {"paper_id": paper_id, "reason": reason.strip() or "用户排除"}
+            )
+        )
+    return exclusions
+
+
+def _synthesis_kinds_from_form(form: dict[str, str]) -> list[MaterialKind]:
+    return [cast("MaterialKind", kind) for kind in MATERIAL_KIND_LABELS if form.get(f"kind_{kind}")]
+
+
+@router.post("/synthesis/preview")
+async def preview_synthesis_materials(request: Request, session: SessionDep) -> Response:
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        query = _synthesis_parse_query(session, form)
+        kinds = _synthesis_kinds_from_form(form)
+        if not kinds:
+            raise InvalidRequestError("请至少勾选一类材料")
+        exclusions = _synthesis_parse_exclusions(form.get("exclusions") or "")
+        now = utc_now()
+        content = build_synthesis_manifest(
+            session, query=query, kinds=kinds, exclusions=exclusions, now=now
+        )
+        with write_tx(session):
+            row, _created = store_manifest(session, content, now=now)
+            token = create_preview_token(
+                session, manifest_id=row.id, now=now, purpose=SYNTHESIS_PURPOSE
+            )
+        return await _synthesis_render(
+            session,
+            draft=draft,
+            preview=content,
+            submit_token=token.token,
+            notice="预览已生成；这只读取本地数据，未发送任何请求。确认范围与材料后可提交。",
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查回顾范围。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        return await _synthesis_render(
+            session,
+            draft=draft,
+            notice=f"{message}（已保留你的选择，可修正后重试）",
+            notice_role="alert",
+            status_code=status_code,
+        )
+
+
+@router.post("/synthesis/grants")
+async def save_synthesis_grant(request: Request, session: SessionDep) -> Response:
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        classes = [
+            cast("MaterialKind", kind) for kind in MATERIAL_KIND_LABELS if form.get(f"cls_{kind}")
+        ]
+        if not classes:
+            raise InvalidRequestError("请至少勾选一类允许发送的材料")
+        scope_mode = form.get("scope_mode") or "workspace"
+        if scope_mode not in {"once", "workspace"}:
+            raise InvalidRequestError("授权范围无效，请重新选择")
+        if form.get("acknowledged") != "1":
+            raise InvalidRequestError("需要勾选数据去向知情确认后才能保存授权")
+        with write_tx(session):
+            grant_analysis_authorization(
+                session,
+                scope_mode=scope_mode,
+                material_classes=classes,
+                settings=get_settings(),
+                now=utc_now(),
+                purpose=SYNTHESIS_PURPOSE,
+            )
+        return await _synthesis_render(
+            session, draft=draft, notice="已保存知识版回顾授权；模型设置变化后需重新授权。"
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查授权表单。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        return await _synthesis_render(
+            session,
+            draft=draft,
+            notice=f"{message}（已保留你的选择，可修正后重试）",
+            notice_role="alert",
+            status_code=status_code,
+        )
+
+
+@router.post("/synthesis/grants/{grant_id}/revoke")
+async def revoke_synthesis_grant(grant_id: str, session: SessionDep) -> Response:
+    try:
+        with write_tx(session):
+            revoke_analysis_authorization(session, grant_id=grant_id, now=utc_now())
+        return await _synthesis_render(
+            session, draft={}, notice="已撤回知识版回顾授权；之后的综合发送一律拒绝。"
+        )
+    except (DomainError, AppError) as exc:
+        return await _synthesis_render(
+            session,
+            draft={},
+            notice=exc.message,
+            notice_role="alert",
+            status_code=getattr(exc, "status_code", 409),
+        )
+
+
+@router.post("/synthesis/runs")
+async def submit_synthesis_page(request: Request, session: SessionDep) -> Response:
+    from papersteward.api.form_utils import conflict_redirect
+    from papersteward.api.insights import SynthesisSubmitInput, submit_synthesis
+
+    try:
+        form = await form_fields(request)
+        body = SynthesisSubmitInput.model_validate(
+            {
+                "preview_token": form.get("preview_token", ""),
+                "run_id": form.get("run_id") or None,
+            }
+        )
+        outcome = submit_synthesis(request, body, session)
+        return RedirectResponse(outcome["run_url"], status_code=303)
+    except ValidationError as exc:
+        return failure(
+            InvalidRequestError(f"知识版回顾参数无效：{json_details(exc)}"),
+            back="/ui/reading-insights/synthesis",
+        )
+    except (DomainError, AppError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        return failure(exc, back="/ui/reading-insights/synthesis")
+
+
+# —— 阅读分析页（R2-02）：授权、材料预览与数据去向说明；全部离线 ————————
+
+
+def _analysis_llm_block(status: AnalysisAuthorizationStatus) -> str:
+    if not status.llm_configured:
+        return (
+            "<h2>模型连接</h2>"
+            '<p class="muted">尚未连接模型。阅读分析需要模型，但连接在'
+            ' <a href="/ui/settings">设置页</a> 单独管理，连接本身不会开放任何分析。</p>'
+        )
+    endpoint = status.llm_endpoint_identity or ""
+    return (
+        "<h2>模型连接</h2>"
+        f"<p>端点 <code>{escape(endpoint)}</code> · 模型 "
+        f"<code>{escape(status.llm_model or '未知')}</code> · 配置版本 "
+        f"<code>{escape(status.llm_config_version or '')}</code></p>"
+        '<p class="muted">连接只在设置页修改；任何保存都会产生新配置版本，'
+        "既有阅读分析授权随即失效，需要重新核对数据去向并再次授权。</p>"
+    )
+
+
+def _analysis_grant_form(*, draft: dict[str, str] | None = None) -> str:
+    draft = draft or {}
+    # 单篇反思不使用已核对候选材料；该类别只在知识版回顾中出现。
+    boxes = "".join(
+        f'<label class="check"><input type="checkbox" name="cls_{escape(kind)}" value="1"'
+        f"{' checked' if draft.get(f'cls_{kind}') else ''}>"
+        f" {escape(MATERIAL_KIND_LABELS.get(kind, kind))}</label>"
+        for kind in MATERIAL_KIND_LABELS
+        if kind != "verified_candidate"
+    )
+    checked_once = " checked" if draft.get("scope_once") else ""
+    checked_ws = " checked" if not draft.get("scope_once") else ""
+    return (
+        '<form method="post" action="/ui/reading-insights/analysis/grants" '
+        'class="stacked-form">'
+        + "<fieldset><legend>授权范围</legend>"
+        + f'<label class="check"><input type="radio" name="scope_mode" value="once"{checked_once}>'
+        + " 仅本次分析（提交时按清单核对）</label>"
+        + (
+            f'<label class="check"><input type="radio" name="scope_mode" '
+            f'value="workspace"{checked_ws}>'
+            + " 当前工作区持续（普通再次生成无需重复弹窗，撤回随时可停）</label>"
+        )
+        + "</fieldset>"
+        + f"<fieldset><legend>允许发送的材料类别</legend>{boxes}</fieldset>"
+        + '<label class="check"><input type="checkbox" name="acknowledged" value="1" required>'
+        + " 我已了解：勾选的类别会按清单发送到上述端点用于阅读分析；"
+        + "备注等私人文本只有在单独勾选后才会发送；不授权则分析调用次数为零。</label>"
+        + '<button type="submit">保存授权</button></form>'
+    )
+
+
+def _analysis_grant_list(
+    status: AnalysisAuthorizationStatus,
+    *,
+    revoke_prefix: str = "/ui/reading-insights/analysis/grants",
+) -> str:
+    if not status.grants:
+        return '<p class="muted">还没有授权记录。</p>'
+    rows = ""
+    for grant in reversed(status.grants):
+        state = (
+            "已撤回 " + grant.revoked_at.isoformat() if grant.revoked_at is not None else "生效中"
+        )
+        classes = "、".join(MATERIAL_KIND_LABELS.get(code, code) for code in grant.material_classes)
+        rows += (
+            "<li>"
+            f"{escape(grant.created_at.isoformat())} · "
+            f"{'仅本次' if grant.scope_mode == 'once' else '工作区持续'} · "
+            f"类别：{escape(classes)} · {escape(state)}"
+        )
+        if grant.revoked_at is None:
+            rows += (
+                f'<form method="post" action="{escape(revoke_prefix)}/'
+                f'{escape(grant.grant_id)}/revoke" class="inline-form">'
+                '<button type="submit">撤回</button></form>'
+            )
+        rows += "</li>"
+    return f"<ul>{rows}</ul>"
+
+
+def _analysis_preview_form(*, draft: dict[str, str] | None = None) -> str:
+    draft = draft or {}
+    kind_boxes = "".join(
+        f'<label class="check"><input type="checkbox" name="kind_{escape(kind)}" value="1"'
+        f"{' checked' if draft.get(f'kind_{kind}') else ''}>"
+        f" {escape(MATERIAL_KIND_LABELS.get(kind, kind))}</label>"
+        for kind in MATERIAL_KIND_LABELS
+        if kind != "verified_candidate"
+    )
+    return (
+        '<details class="structured-form"><summary>材料清单预览（不发送任何请求）</summary>'
+        '<form method="post" action="/ui/reading-insights/analysis/preview" class="stacked-form">'
+        + "<label>论文 ID（每行一个，可从归档列表或详情页地址复制）"
+        + '<textarea name="paper_ids" rows="4" placeholder="p-xxxxxxxx">'
+        + escape(draft.get("paper_ids", ""))
+        + "</textarea></label>"
+        + f"<fieldset><legend>发送哪些类别</legend>{kind_boxes}</fieldset>"
+        + "<label>排除（每行「论文ID 原因」，可选）"
+        + '<textarea name="exclusions" rows="2" placeholder="p-xxxx 当前任务无关">'
+        + escape(draft.get("exclusions", ""))
+        + "</textarea></label>"
+        + '<button type="submit">生成预览</button></form></details>'
+    )
+
+
+def _analysis_preview_result(content: AnalysisManifestContent) -> str:
+    rows = ""
+    for ref in content.materials:
+        rows += (
+            "<tr>"
+            f'<td data-label="文献">{escape(ref.paper_id or "—")}</td>'
+            f'<td data-label="类别">{escape(MATERIAL_KIND_LABELS.get(ref.kind, ref.kind))}</td>'
+            f'<td data-label="版本锚点"><code>{escape(ref.version_key)}</code></td>'
+            f'<td data-label="内容哈希"><code>{escape(ref.ref_hash[:12])}…</code></td>'
+            f'<td data-label="限制" class="muted">'
+            f"{escape(MATERIAL_KIND_LIMITS.get(ref.kind, ''))}</td>"
+            "</tr>"
+        )
+    for exclusion in content.exclusions:
+        rows += (
+            '<tr><td data-label="文献">'
+            f"{escape(exclusion.paper_id)}</td>"
+            '<td data-label="类别">排除</td>'
+            '<td data-label="版本锚点">—</td><td data-label="内容哈希">—</td>'
+            f'<td data-label="限制" class="muted">{escape(exclusion.reason)}</td></tr>'
+        )
+    counts = (
+        "、".join(
+            f"{escape(MATERIAL_KIND_LABELS.get(kind, kind))} {count}"
+            for kind, count in sorted(content.coverage.by_kind.items())
+        )
+        or "暂无"
+    )
+    body = (
+        f"<p>选中 {content.coverage.selected_papers} 篇（全部归档 "
+        f"{content.coverage.archived_total} 篇）；各类别条数：{counts}。</p>"
+    )
+    if not rows:
+        return body + '<p class="muted">按当前勾选没有可发送的材料。</p>'
+    return (
+        body + '<table><thead><tr><th scope="col">文献</th><th scope="col">类别</th>'
+        '<th scope="col">版本锚点</th><th scope="col">内容哈希</th>'
+        '<th scope="col">展示限制</th></tr></thead><tbody>' + rows + "</tbody></table>"
+    )
+
+
+def _analysis_page_body(
+    status: AnalysisAuthorizationStatus,
+    *,
+    preview: AnalysisManifestContent | None,
+    draft: dict[str, str] | None,
+    submit: tuple[str, str, str] | None = None,
+) -> str:
+    body = (
+        '<p class="back-link"><a href="/ui/reading-insights">← 阅读回顾</a></p>'
+        "<h1>阅读分析</h1>"
+        '<p class="muted">分析前先核对使用哪几篇、哪类文本、发送到哪里；'
+        "没有授权时不会发生任何模型调用。这里只做单篇提炼；跨文献专题综合在"
+        ' <a href="/ui/reading-insights/synthesis">知识版回顾</a>。</p>'
+        + _analysis_llm_block(status)
+        + "<h2>用途授权</h2>"
+        + _analysis_grant_list(status)
+        + _analysis_grant_form(draft=draft)
+        + "<h2>材料清单预览</h2>"
+        + "<p>预览只读取本地数据库并展示将发送的材料清单；生成预览不会联网，"
+        "预览令牌 15 分钟有效、只能用于一次提交。</p>" + _analysis_preview_form(draft=draft)
+    )
+    if preview is not None:
+        body += _analysis_preview_result(preview)
+        if submit is not None:
+            token, manifest_id, manifest_hash = submit
+            body += _analysis_submit_form(token, manifest_id, manifest_hash)
+    return body
+
+
+def _analysis_submit_form(token: str, manifest_id: str, manifest_hash: str) -> str:
+    """预览确认后的显式提交表单；参数只含清单/令牌标识，无私人正文。"""
+    return (
+        '<form method="post" action="/ui/reading-insights/analysis/runs" class="stacked-form">'
+        + hidden("preview_token", token)
+        + hidden("manifest_id", manifest_id)
+        + hidden("manifest_hash", manifest_hash)
+        + hidden("run_id", uuid4().hex)
+        + '<p class="muted">提交后按清单逐篇分析（每篇发送前重新核对授权与端点）；'
+        "已有候选的篇目会自动跳过。</p>" + '<button type="submit">提交分析</button></form>'
+    )
+
+
+def _analysis_runs_section(session: SessionDep, *, selected_run: str | None) -> str:
+    """分析结果区：最近运行列表与选中运行的候选（只读，未确认）。"""
+    from papersteward.reading.insights.analysis import (
+        candidates_view_for_run,
+        list_analysis_runs,
+    )
+
+    runs = list_analysis_runs(session, limit=5)
+    if not runs:
+        return (
+            "<h2>分析结果</h2>"
+            '<p class="muted">还没有分析运行。生成预览并提交后，候选会显示在这里。</p>'
+        )
+    items = ""
+    for run in runs:
+        label = "已完成" if run["status"] == "succeeded" else run["status"]
+        link = f"/ui/reading-insights/analysis?run={escape(str(run['run_id']))}"
+        items += (
+            f'<li><a href="{link}">{escape(str(run["started_at"]))}</a> · '
+            f"{escape(str(label))} · 候选 {run['candidate_count']} 条"
+            f"（完成 {run['papers_completed']} / 失败 {run['papers_failed']} / "
+            f"材料不足 {run['papers_insufficient']}）</li>"
+        )
+    body = f"<h2>分析结果</h2><ul>{items}</ul>"
+    target = selected_run or (str(runs[0]["run_id"]) if runs else None)
+    if target is None:
+        return body
+    try:
+        candidates = candidates_view_for_run(session, target)
+    except (DomainError, AppError):
+        return body + '<p class="muted">所选运行不存在。</p>'
+    body += f"<h3>选中运行的候选（{len(candidates)}）</h3>"
+    if not candidates:
+        body += (
+            '<p class="muted">这次运行没有生成候选'
+            "（可能材料不足、全部被证据核对拒绝或尚未运行到该篇）。</p>"
+        )
+        return body
+    kind_labels = {"harvest": "收获", "question": "问题", "method": "方法"}
+    nature_labels = {
+        "paper_statement": "论文陈述",
+        "user_expression": "用户表达",
+        "model_inference": "模型归纳（待核对）",
+    }
+    body += (
+        '<p class="muted">候选未经你确认，不会写入资产或长期画像；'
+        "点开候选核对来源后确认／忽略。</p>"
+    )
+    from papersteward.reading.insights.decisions import decision_view_for_candidate
+
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for item in candidates:
+        grouped.setdefault(str(item["paper_id"]), []).append(item)
+    decision_states = {
+        "confirmed": "已确认为资产",
+        "dismissed": "已忽略",
+        "merged": "已并入资产",
+    }
+    for paper_id, group in grouped.items():
+        body += f"<h4>{escape(paper_id)}</h4><ul>"
+        for item in group:
+            candidate_link = (
+                f"/ui/reading-insights/analysis/candidates/{escape(str(item['candidate_id']))}"
+            )
+            kind_text = kind_labels.get(str(item["kind"]), str(item["kind"]))
+            nature_text = nature_labels.get(str(item["nature"]), str(item["nature"]))
+            decision = decision_view_for_candidate(session, str(item["candidate_id"]))
+            if decision is not None:
+                state = decision_states.get(str(decision["decision"]), "已处理")
+                target = (
+                    f' <a href="/ui/reading-insights/assets/'
+                    f'{escape(str(decision["asset_id"]))}">资产</a>'
+                    if decision.get("asset_id")
+                    else ""
+                )
+                body += (
+                    '<li><p class="muted">'
+                    + f"{escape(kind_text)} · {escape(state)}{target}"
+                    + f' · <a href="{candidate_link}">查看决定</a></p></li>'
+                )
+                continue
+            body += (
+                "<li><p>"
+                f"{escape(kind_text)} · {escape(nature_text)}"
+                + (" · 源已变化" if item["stale"] else "")
+                + "</p><p>"
+                + escape(str(item["statement"]))
+                + "</p>"
+            )
+            if item["quote"]:
+                body += f"<p>引文：{escape(str(item['quote']))}</p>"
+            body += (
+                f'<p><a href="{candidate_link}">核对并确认</a> · '
+                f'<a href="{candidate_link}">忽略</a>'
+                ' <span class="muted">（待核对）</span></p></li>'
+            )
+        body += "</ul>"
+    return body
+
+
+@router.get("/analysis")
+async def analysis_page(session: SessionDep, run: str | None = None) -> Response:
+    return await _analysis_render(session, selected_run=run)
+
+
+async def _analysis_render(
+    session: SessionDep,
+    *,
+    preview: AnalysisManifestContent | None = None,
+    draft: dict[str, str] | None = None,
+    notice: str | None = None,
+    notice_role: str = "status",
+    status_code: int = 200,
+    submit: tuple[str, str, str] | None = None,
+    selected_run: str | None = None,
+) -> Response:
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    authorization_status = analysis_authorization_status(session, settings=get_settings())
+    notice_html = (
+        f'<p role="{notice_role}" tabindex="-1" autofocus>{escape(notice)}</p>' if notice else ""
+    )
+    body = _analysis_page_body(authorization_status, preview=preview, draft=draft, submit=submit)
+    body += _analysis_runs_section(session, selected_run=selected_run)
+    response = _page("阅读分析 · PaperSteward", notice_html + body)
+    response.status_code = status_code
+    return response
+
+
+@router.post("/analysis/grants")
+async def save_analysis_grant(request: Request, session: SessionDep) -> Response:
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        classes = [
+            cast("MaterialKind", kind) for kind in MATERIAL_KIND_LABELS if form.get(f"cls_{kind}")
+        ]
+        if not classes:
+            raise InvalidRequestError("请至少勾选一类允许发送的材料")
+        scope_mode = form.get("scope_mode") or "workspace"
+        if scope_mode not in {"once", "workspace"}:
+            raise InvalidRequestError("授权范围无效，请重新选择")
+        if form.get("acknowledged") != "1":
+            raise InvalidRequestError("需要勾选数据去向知情确认后才能保存授权")
+        with write_tx(session):
+            grant_analysis_authorization(
+                session,
+                scope_mode=scope_mode,
+                material_classes=classes,
+                settings=get_settings(),
+                now=utc_now(),
+            )
+        return await _analysis_render(session, notice="已保存授权；模型设置变化后需重新授权。")
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查授权表单。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        return await _analysis_render(
+            session,
+            draft=draft,
+            notice=f"{message}（已保留你的选择，可修正后重试）",
+            notice_role="alert",
+            status_code=status_code,
+        )
+
+
+@router.post("/analysis/grants/{grant_id}/revoke")
+async def revoke_analysis_grant_page(grant_id: str, session: SessionDep) -> Response:
+    try:
+        with write_tx(session):
+            revoke_analysis_authorization(session, grant_id=grant_id, now=utc_now())
+        return await _analysis_render(session, notice="已撤回授权；之后的分析发送一律拒绝。")
+    except (DomainError, AppError) as exc:
+        return await _analysis_render(
+            session,
+            notice=exc.message,
+            notice_role="alert",
+            status_code=getattr(exc, "status_code", 409),
+        )
+
+
+@router.post("/analysis/preview")
+async def preview_analysis_materials(request: Request, session: SessionDep) -> Response:
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        paper_ids = [
+            line.strip() for line in (form.get("paper_ids") or "").splitlines() if line.strip()
+        ]
+        kinds = [
+            cast("MaterialKind", kind) for kind in MATERIAL_KIND_LABELS if form.get(f"kind_{kind}")
+        ]
+        if not paper_ids:
+            raise InvalidRequestError("请填写至少一个论文 ID")
+        if not kinds:
+            raise InvalidRequestError("请至少勾选一类材料")
+        exclusions: list[MaterialExclusion] = []
+        for line in (form.get("exclusions") or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            paper_id, _, reason = line.partition(" ")
+            exclusions.append(
+                MaterialExclusion.model_validate(
+                    {"paper_id": paper_id, "reason": reason.strip() or "用户排除"}
+                )
+            )
+        with write_tx(session):
+            manifest, _created = create_manifest(
+                session,
+                paper_ids=paper_ids,
+                kinds=kinds,
+                exclusions=exclusions,
+                now=utc_now(),
+            )
+            token = create_preview_token(session, manifest_id=manifest.id, now=utc_now())
+        content = manifest_content_of(manifest)
+        return await _analysis_render(
+            session,
+            preview=content,
+            draft=draft,
+            submit=(token.token, manifest.id, manifest.manifest_hash),
+            notice="预览已生成；这只读取本地数据，未发送任何请求。确认无误后可提交分析。",
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查选材内容。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        return await _analysis_render(
+            session,
+            draft=draft,
+            notice=f"{message}（已保留你的输入，可修正后重试）",
+            notice_role="alert",
+            status_code=status_code,
+        )
+
+
+# —— 归档详情：用户补充摘录（可选，私人材料）——————————————————————
+
+
+def excerpt_block(
+    paper_id: str, items: list[ExcerptView], *, draft: dict[str, str] | None = None
+) -> str:
+    """详情页的摘录块：说明、录入表单与逐条删除。"""
+    draft = draft or {}
+    listing = ""
+    if items:
+        rows = "".join(
+            "<li><p>"
+            + escape(item.content).replace("\n", "<br>")
+            + "</p>"
+            + (f'<p class="muted">出处：{escape(item.source_note)}</p>' if item.source_note else "")
+            + f'<p class="muted">录入于 {escape(item.recorded_at.isoformat())}</p>'
+            + '<form method="post" action="/ui/reading-insights/papers/'
+            + f'{escape(item.paper_id)}/excerpts/{escape(item.excerpt_id)}/delete" '
+            + 'class="inline-form"><button type="submit">删除</button></form></li>'
+            for item in items
+        )
+        listing = f"<ul>{rows}</ul>"
+    url = f"/ui/reading-insights/papers/{escape(paper_id)}/excerpt"
+    delete_url = f"/ui/reading-insights/papers/{escape(paper_id)}/excerpts"
+    listing = listing.replace(
+        'action="/ui/reading-insights/papers/',
+        f'action="{delete_url}/',
+    )
+    return (
+        "<h2>补充摘录（可选）</h2>"
+        "<p>把论文中你想留存的原文片段存进本地（私人材料），"
+        "只有阅读分析授权包含「用户补充摘录」时才会进入分析。</p>"
+        f'<form method="post" action="{url}" class="stacked-form" '
+        f'hx-post="{url}" hx-target="closest article" hx-swap="outerHTML" '
+        'hx-headers=\'{"X-PaperSteward-UI":"1"}\'>'
+        '<label>摘录内容<textarea name="content" rows="3" maxlength="8000" '
+        f"required>{escape(draft.get('content', ''))}</textarea></label>"
+        '<label>出处说明（可选，如章节或页码）<input name="source_note" maxlength="500" '
+        f'value="{escape(draft.get("source_note", ""))}"></label>'
+        '<button type="submit">保存摘录</button></form>' + listing
+    )
+
+
+@router.post("/papers/{paper_id}/excerpt")
+async def add_paper_excerpt_page(
+    paper_id: str, request: Request, session: SessionDep
+) -> HTMLResponse:
+    from papersteward.api.pages import _detail_article
+    from papersteward.reading.insights.contracts import ExcerptInput
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = {"content": form.get("content", ""), "source_note": form.get("source_note", "")}
+        body = ExcerptInput.model_validate(
+            {"content": form.get("content", ""), "source_note": form.get("source_note") or None}
+        )
+        with write_tx(session):
+            add_excerpt(session, paper_id, data=body, now=utc_now())
+        paper = PaperRepository(session).get(paper_id)
+        return HTMLResponse(
+            _detail_article(
+                session, paper_id, paper=paper, notice="已保存摘录（私人材料，仅本地）。"
+            ),
+            headers=HEADERS,
+        )
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查摘录内容。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            article = _detail_article(
+                session,
+                paper_id,
+                notice=f"{message}（已保留你的输入，可修正后重试）",
+                notice_role="alert",
+                excerpt_draft=draft,
+            )
+            return HTMLResponse(article, status_code=status_code, headers=HEADERS)
+        except (DomainError, AppError):
+            return HTMLResponse(
+                f'<article><p role="alert">{escape(message)}</p></article>',
+                status_code=status_code,
+                headers=HEADERS,
+            )
+
+
+@router.post("/papers/{paper_id}/excerpts/{excerpt_id}/delete")
+async def delete_paper_excerpt_page(
+    paper_id: str, excerpt_id: str, session: SessionDep
+) -> HTMLResponse:
+    from papersteward.api.pages import _detail_article
+
+    try:
+        with write_tx(session):
+            delete_excerpt(session, paper_id, excerpt_id)
+        paper = PaperRepository(session).get(paper_id)
+        return HTMLResponse(
+            _detail_article(session, paper_id, paper=paper, notice="已删除这条摘录。"),
+            headers=HEADERS,
+        )
+    except (DomainError, AppError) as exc:
+        try:
+            article = _detail_article(session, paper_id, notice=exc.message, notice_role="alert")
+            return HTMLResponse(
+                article, status_code=getattr(exc, "status_code", 409), headers=HEADERS
+            )
+        except (DomainError, AppError):
+            return HTMLResponse(
+                f'<article><p role="alert">{escape(exc.message)}</p></article>',
+                status_code=getattr(exc, "status_code", 409),
+                headers=HEADERS,
+            )
+
+
+@router.post("/analysis/runs")
+async def submit_analysis_page(request: Request, session: SessionDep) -> Response:
+    """提交单篇分析任务并跳运行进度页；冲突时引导到占用中的任务。"""
+    from papersteward.api.form_utils import conflict_redirect
+    from papersteward.api.insights import AnalysisSubmitInput, submit_analysis
+
+    try:
+        form = await form_fields(request)
+        body = AnalysisSubmitInput.model_validate(
+            {
+                "preview_token": form.get("preview_token", ""),
+                "run_id": form.get("run_id") or None,
+            }
+        )
+        outcome = submit_analysis(request, body, session)
+        return RedirectResponse(outcome["run_url"], status_code=303)
+    except ValidationError as exc:
+        return failure(
+            InvalidRequestError(f"分析参数无效：{json_details(exc)}"),
+            back="/ui/reading-insights/analysis",
+        )
+    except (DomainError, AppError) as exc:
+        redirected = conflict_redirect(exc)
+        if redirected is not None:
+            return redirected
+        return failure(exc, back="/ui/reading-insights/analysis")
+
+
+# —— 候选确认页（R2-04）：并列候选与来源，确认生成资产／并入／忽略 ————————
+
+
+def _candidate_source_rows(source_refs: list[dict[str, Any]]) -> str:
+    """来源引用解析为可核对链接（论文详情／资产详情）。"""
+    rows = ""
+    for ref in source_refs:
+        kind = str(ref.get("kind", ""))
+        target = str(ref.get("target_id", ""))
+        version = str(ref.get("version_key", ""))
+        label = MATERIAL_KIND_LABELS.get(kind, kind)
+        if kind == "asset_content":
+            link = f'<a href="/ui/reading-insights/assets/{escape(target)}">{escape(target)}</a>'
+        else:
+            link = f'<a href="/ui/papers/{escape(target)}">{escape(target)}</a>'
+        rows += f"<li>{escape(label)} · {link} · 版本 <code>{escape(version[:24])}…</code></li>"
+    return f"<ul>{rows}</ul>" if rows else '<p class="muted">无来源引用</p>'
+
+
+def _candidate_page_body(detail: dict[str, Any], *, draft: dict[str, str] | None) -> str:
+    draft = draft or {}
+    decision = detail.get("decision")
+    candidate_id = str(detail["candidate_id"])
+    url = f"/ui/reading-insights/analysis/candidates/{escape(candidate_id)}"
+    kind_labels = {"harvest": "收获", "question": "问题", "method": "方法"}
+    nature_labels = {
+        "paper_statement": "论文陈述",
+        "user_expression": "用户表达",
+        "model_inference": "模型归纳（待核对）",
+    }
+    head = (
+        '<p class="back-link">'
+        f'<a href="/ui/reading-insights/analysis">← 阅读分析</a></p>'
+        "<h1>核对候选</h1>"
+        f"<p>{escape(kind_labels.get(str(detail['kind']), str(detail['kind'])))} · "
+        f"{escape(nature_labels.get(str(detail['nature']), str(detail['nature'])))} · "
+        f'论文 <a href="/ui/papers/{escape(str(detail["paper_id"]))}">'
+        f"{escape(str(detail['paper_id']))}</a>"
+        + (" · 源已变化" if detail.get("stale") else "")
+        + "</p>"
+        + "<h2>候选陈述</h2><p>"
+        + escape(str(detail["statement"]))
+        + "</p>"
+    )
+    if detail.get("conditions"):
+        head += f'<p class="muted">适用条件：{escape(str(detail["conditions"]))}</p>'
+    if detail.get("limitations"):
+        head += f'<p class="muted">限制：{escape(str(detail["limitations"]))}</p>'
+    if detail.get("quote"):
+        head += f"<p>引文：{escape(str(detail['quote']))}</p>"
+    head += "<h2>来源（请对照原文核对）</h2>" + _candidate_source_rows(
+        detail.get("source_refs") or []
+    )
+    if decision is not None:
+        state = {"confirmed": "已确认为资产", "dismissed": "已忽略", "merged": "已并入资产"}[
+            str(decision["decision"])
+        ]
+        target = (
+            f'<a href="/ui/reading-insights/assets/{escape(str(decision["asset_id"]))}">'
+            "打开资产</a>"
+            if decision.get("asset_id")
+            else ""
+        )
+        return (
+            head
+            + f'<p class="success">{escape(state)}'
+            + f"（{escape(str(decision['decided_at']))}）{target}</p>"
+            + '<p class="muted">资产可以继续修订或删除；决定记录保留在候选上。</p>'
+        )
+
+    default_kind = {"harvest": "harvest", "question": "problem", "method": "method"}[
+        str(detail["kind"])
+    ]
+    confirm_form = (
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "confirm")
+        + hidden("idempotency_key", draft.get("idempotency_key") or uuid4().hex)
+        + "<fieldset><legend>确认为资产（写入资产库，可继续修订）</legend>"
+        + '<label>资产类型<select name="kind">'
+        + select_options(
+            [
+                ("harvest", "收获"),
+                ("problem", "问题"),
+                ("method", "方法卡"),
+                ("evidence", "证据组"),
+            ],
+            selected=draft.get("kind", default_kind),
+        )
+        + "</select></label>"
+        + '<label>标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title", f"候选：{detail['statement'][:40]}"))
+        + '"></label>'
+        + '<label>内容<textarea name="body" rows="3" required maxlength="20000">'
+        + escape(draft.get("body", str(detail["statement"])))
+        + "</textarea></label>"
+        + '<label>适用说明（可选）<textarea name="applicability" rows="2" maxlength="2000">'
+        + escape(draft.get("applicability", str(detail.get("conditions") or "")))
+        + "</textarea></label>"
+        + _typed_fields_details(draft)
+        + "<label>来源论文 ID（每行一个；默认引用候选来源，可修改）"
+        + '<textarea name="sources" rows="2">'
+        + escape(draft.get("sources", str(detail["paper_id"])))
+        + "</textarea></label>"
+        + '<p class="muted">确认表示你认可这条个人整理；不等于系统验证论文真实性。'
+        "用户新增、未提供证据的内容会按个人判断对待。</p>"
+        + '<button type="submit">确认并生成资产</button>'
+        + "</fieldset></form>"
+    )
+    dismiss_form = (
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "dismiss")
+        + hidden("idempotency_key", draft.get("dismiss_key") or uuid4().hex)
+        + "<fieldset><legend>忽略这条候选</legend>"
+        + '<label>原因备注（可选，仅自己可见）<input name="note" maxlength="2000" value="'
+        + escape(draft.get("note", ""))
+        + '"></label>'
+        + '<p class="muted">忽略后同一陈述不会再次弹出；改写后的新候选仍会展示。'
+        "决定记录保留，可随时在此回看。</p>"
+        + '<button type="submit">忽略候选</button></fieldset></form>'
+    )
+    merge_form = (
+        "<details><summary>并入已有资产（把候选内容追加为某资产的新版本）</summary>"
+        '<form method="post" action="'
+        + url
+        + '/decide" class="stacked-form">'
+        + hidden("decision", "merge")
+        + hidden("idempotency_key", draft.get("merge_key") or uuid4().hex)
+        + '<label>目标资产 ID<input name="target_asset_id" required maxlength="64" value="'
+        + escape(draft.get("target_asset_id", ""))
+        + '"></label>'
+        + '<label>预期版本<input name="expected_revision" type="number" min="1" required value="'
+        + escape(draft.get("expected_revision", ""))
+        + '"></label>'
+        + '<label>追加内容标题<input name="title" required maxlength="256" value="'
+        + escape(draft.get("title", f"并入候选：{detail['statement'][:40]}"))
+        + '"></label>'
+        + '<label>追加内容<textarea name="body" rows="3" required maxlength="20000">'
+        + escape(draft.get("body", str(detail["statement"])))
+        + "</textarea></label>"
+        + '<p class="muted">合并会在目标资产上追加新版本并保留其来源；'
+        "原资产与历史引用不变。</p>" + '<button type="submit">并入资产</button></form></details>'
+    )
+    return head + confirm_form + dismiss_form + merge_form
+
+
+@router.get("/analysis/candidates/{candidate_id}")
+async def candidate_review_page(session: SessionDep, candidate_id: str) -> Response:
+    from papersteward.reading.insights.decisions import candidate_with_decision
+
+    if get_onboarding(session).stage.value != "active":
+        return RedirectResponse("/ui/setup", status_code=303)
+    try:
+        detail = candidate_with_decision(session, candidate_id)
+    except (DomainError, AppError) as exc:
+        return failure(exc, back="/ui/reading-insights/analysis")
+    return _page("核对候选 · PaperSteward", _candidate_page_body(detail, draft=None))
+
+
+@router.post("/analysis/candidates/{candidate_id}/decide")
+async def decide_candidate_page(
+    session: SessionDep, candidate_id: str, request: Request
+) -> Response:
+    from papersteward.reading.insights.contracts import CandidateDecisionInput
+    from papersteward.reading.insights.decisions import (
+        candidate_with_decision,
+        decide_candidate,
+    )
+
+    draft: dict[str, str] = {}
+    try:
+        form = await form_fields(request)
+        draft = dict(form)
+        kind = form.get("kind") or None
+        typed = _parse_typed(form, kind) if kind else None
+        sources = [
+            {"paper_id": line.strip()}
+            for line in (form.get("sources") or "").splitlines()
+            if line.strip()
+        ]
+        expected = form.get("expected_revision") or None
+        body = CandidateDecisionInput.model_validate(
+            {
+                "candidate_id": candidate_id,
+                "decision": form.get("decision", ""),
+                "idempotency_key": form.get("idempotency_key") or uuid4().hex,
+                "note": form.get("note") or None,
+                "kind": kind,
+                "title": form.get("title") or None,
+                "body": form.get("body") or None,
+                "applicability": form.get("applicability") or None,
+                "typed": typed,
+                "sources": sources or None,
+                "target_asset_id": form.get("target_asset_id") or None,
+                "expected_revision": int(expected) if expected else None,
+                "status": "active",
+            }
+        )
+        with write_tx(session):
+            ensure_active(session, action="reading_insights.assets")
+            outcome = decide_candidate(session, body, now=utc_now())
+        if body.decision == "confirm" and outcome.asset_id:
+            return RedirectResponse(
+                f"/ui/reading-insights/assets/{outcome.asset_id}", status_code=303
+            )
+        return RedirectResponse("/ui/reading-insights/analysis", status_code=303)
+    except (DomainError, AppError, ValidationError) as exc:
+        message = (
+            exc.message if isinstance(exc, DomainError | AppError) else "输入无效，请检查表单。"
+        )
+        status_code = (
+            422
+            if isinstance(exc, ValidationError)
+            else exc.status_code
+            if isinstance(exc, AppError)
+            else 409
+        )
+        try:
+            detail = candidate_with_decision(session, candidate_id)
+            rendered = _page(
+                "核对候选 · PaperSteward",
+                _candidate_page_body(detail, draft=draft)
+                + f'<p role="alert" tabindex="-1" autofocus>{escape(message)}'
+                "（已保留你的输入，可修正后重试）</p>",
+            )
+            rendered.status_code = status_code
+            return rendered
+        except (DomainError, AppError):
+            return failure(exc, back="/ui/reading-insights/analysis")

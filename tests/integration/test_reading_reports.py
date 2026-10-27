@@ -366,3 +366,69 @@ def test_report_detail_compare_and_delete_page(client, migrated_engine):
     )
     assert gone.status_code == 303
     assert gone.headers["location"] == "/ui/reading-insights/reports"
+
+
+def test_report_detail_freezes_structured_sections(client, migrated_engine):
+    """报告冻结结构化理由覆盖与修订；理由码进入快照，自由文本不进入。"""
+    from papersteward.reading.insights.contracts import StructuredFeedbackInput
+    from papersteward.reading.insights.structured_feedback import revise_structured_feedback
+    from papersteward.storage.mappers import as_utc
+
+    activate(client)
+    seed_week(client)
+    factory = create_session_factory(client.app.state.engine)
+    at1 = datetime(2026, 10, 22, 3, 0, tzinfo=UTC)
+    at2 = datetime(2026, 10, 23, 3, 0, tzinfo=UTC)
+    with session_scope(factory) as session:
+        revise_structured_feedback(
+            session,
+            "rp-sys-0",
+            StructuredFeedbackInput.model_validate(
+                {
+                    "expected_revision": 0,
+                    "idempotency_key": "rp-sf-1",
+                    "value_sources": ["method_reusable"],
+                    "takeaway": "私人收获原文",
+                }
+            ),
+            now=as_utc(at1),
+        )
+        revise_structured_feedback(
+            session,
+            "rp-sys-0",
+            StructuredFeedbackInput.model_validate(
+                {
+                    "expected_revision": 1,
+                    "idempotency_key": "rp-sf-2",
+                    "value_sources": ["method_reusable", "aids_understanding"],
+                }
+            ),
+            now=as_utc(at2),
+        )
+    submit_review(client, "rp-sf-gen")
+    report = wait(client.app.state.ui_flows, "rp-sf-gen")
+    assert report.status is RunStatus.SUCCEEDED
+    report_id = report.stats_json["generated"]["report_id"]
+
+    page = client.get(f"/ui/reading-insights/reports/{report_id}")
+    assert page.status_code == 200
+    assert "结构化理由覆盖" in page.text
+    assert "结构化理由修订（1）" in page.text
+    assert "+帮助理解" in page.text
+    # 冻结正文不含自由文本原文。
+    assert "私人收获原文" not in page.text
+
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        saved = read_report(session, report_id)
+    dumped = json.dumps(saved.content.model_dump(mode="json"), ensure_ascii=False)
+    assert "私人收获原文" not in dumped
+    target = next(p for p in saved.content.readings if p.paper_id == "rp-sys-0")
+    assert [v.revision for v in target.structured_feedback] == [1, 2]
+    assert saved.content.metrics.structured_coverage.covered == 1
+    assert saved.content.metrics.structured_change_stats.events == 1
+
+    markdown = client.get(f"/reading-insights/reports/{report_id}/export?format=markdown")
+    assert "结构化理由修订（1）" in markdown.text
+    assert "+帮助理解" in markdown.text
+    assert "私人收获原文" not in markdown.text

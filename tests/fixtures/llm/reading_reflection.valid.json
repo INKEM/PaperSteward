@@ -1,0 +1,17 @@
+{
+  "paper_id": "p001",
+  "candidates": [
+    {
+      "kind": "harvest",
+      "nature": "model_inference",
+      "statement": "作者用分层抽样控制了平台流量的季节性",
+      "conditions": "适用于流量数据可用且分层字段完整时",
+      "limitations": "论文未报告分层后的样本量",
+      "quote": "we stratify the sample by platform region and season",
+      "source_indexes": [0],
+      "quote_source_index": 0
+    }
+  ],
+  "insufficient_material": false,
+  "note": null
+}

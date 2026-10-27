@@ -28,6 +28,9 @@ SchemaName = Literal[
     "event",
     "profile_extraction",
     "query_planning",
+    "reading_reflection",
+    "reading_synthesis",
+    "reading_profile_inference",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -351,6 +354,103 @@ class QueryPlanningOutput(_OutputModel):
     strategy_note: str = Field(min_length=1, max_length=1000)
 
 
+class ReflectionCandidateOutput(_OutputModel):
+    """单条阅读反思候选：类型、结论性质、陈述、条件与来源引用。
+
+    ``source_indexes``/``quote_source_index`` 指向 prompt 中编号的材料列表；
+    引文必须逐字来自所引材料（发送边界后的服务端验证会逐条核对）。
+    """
+
+    kind: Literal["harvest", "question", "method"]
+    nature: Literal["paper_statement", "user_expression", "model_inference"]
+    statement: str = Field(min_length=1, max_length=2000)
+    conditions: str | None = Field(default=None, max_length=1000)
+    limitations: str | None = Field(default=None, max_length=1000)
+    quote: str | None = Field(default=None, max_length=1000)
+    source_indexes: list[int] = Field(min_length=1, max_length=16)
+    quote_source_index: int | None = Field(default=None, ge=0)
+
+
+class ReadingReflectionOutput(_OutputModel):
+    """单篇阅读反思输出；「无足够材料」是合法结果。"""
+
+    paper_id: str = Field(min_length=1, max_length=64)
+    candidates: list[ReflectionCandidateOutput] = Field(default_factory=list, max_length=8)
+    insufficient_material: bool
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def insufficient_has_no_candidates(self) -> ReadingReflectionOutput:
+        if self.insufficient_material and self.candidates:
+            raise ValueError("insufficient_material 为真时不得同时给出候选")
+        return self
+
+
+class SynthesisTopicOutput(_OutputModel):
+    """跨文献专题的一条条件对照；来源编号指向 prompt 中的材料列表。"""
+
+    question: str = Field(min_length=1, max_length=500)
+    understanding: str = Field(min_length=1, max_length=2000)
+    supporting_indexes: list[int] = Field(min_length=1, max_length=12)
+    limiting_indexes: list[int] = Field(default_factory=list, max_length=12)
+    comparison: str | None = Field(default=None, max_length=1000)
+    unverified: str | None = Field(default=None, max_length=1000)
+
+
+class SynthesisOpenQuestionOutput(_OutputModel):
+    """仍未解决的问题；来源指向引发该问题的材料。"""
+
+    question: str = Field(min_length=1, max_length=500)
+    status: Literal["unresolved", "needs_evidence", "depends_on_conditions"]
+    source_indexes: list[int] = Field(min_length=1, max_length=12)
+
+
+class SynthesisLinkOutput(_OutputModel):
+    """候选联系：跨领域迁移或研究机会，不得写成已确认结论。"""
+
+    statement: str = Field(min_length=1, max_length=1000)
+    link_kind: Literal["cross_domain_transfer", "research_opportunity"]
+    source_indexes: list[int] = Field(min_length=1, max_length=12)
+    caution: str | None = Field(default=None, max_length=1000)
+
+
+class ReadingSynthesisOutput(_OutputModel):
+    """跨文献专题综合输出；「材料不足」时不得凭空生成专题。"""
+
+    topics: list[SynthesisTopicOutput] = Field(default_factory=list, max_length=4)
+    open_questions: list[SynthesisOpenQuestionOutput] = Field(default_factory=list, max_length=6)
+    candidate_links: list[SynthesisLinkOutput] = Field(default_factory=list, max_length=4)
+    insufficient_material: bool
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def coherent(self) -> ReadingSynthesisOutput:
+        if self.insufficient_material and (self.topics or self.candidate_links):
+            raise ValueError("insufficient_material 为真时不得同时给出专题或候选联系")
+        if not self.insufficient_material and not self.topics:
+            raise ValueError("材料足够时必须至少给出一条专题归纳；材料不足请显式说明")
+        return self
+
+
+class ReadingProfileCandidateOutput(_OutputModel):
+    """模型只为服务端证据组提出措辞，不决定强度、来源或确认状态。"""
+
+    group_key: str = Field(min_length=1, max_length=256)
+    statement: str = Field(min_length=1, max_length=2000)
+    uncertainty: str = Field(min_length=1, max_length=1000)
+
+
+class ReadingProfileInferenceOutput(_OutputModel):
+    candidates: list[ReadingProfileCandidateOutput] = Field(default_factory=list, max_length=16)
+    insufficient_material: bool
+
+    @model_validator(mode="after")
+    def coherent(self) -> ReadingProfileInferenceOutput:
+        if self.insufficient_material and self.candidates:
+            raise ValueError("材料不足时不得给出画像候选")
+        return self
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -362,6 +462,9 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "event": EventEnvelope,
         "profile_extraction": ProfileExtractionOutput,
         "query_planning": QueryPlanningOutput,
+        "reading_reflection": ReadingReflectionOutput,
+        "reading_synthesis": ReadingSynthesisOutput,
+        "reading_profile_inference": ReadingProfileInferenceOutput,
     }
 )
 
@@ -465,6 +568,12 @@ __all__ = [
     "ProfileExtractionOutput",
     "PlannedQueryOutput",
     "QueryPlanningOutput",
+    "ReadingReflectionOutput",
+    "ReadingSynthesisOutput",
+    "ReflectionCandidateOutput",
+    "SynthesisLinkOutput",
+    "SynthesisOpenQuestionOutput",
+    "SynthesisTopicOutput",
     "QuasiScoreOutput",
     "RelevanceEvidenceOutput",
     "SpecialEvidenceOutput",

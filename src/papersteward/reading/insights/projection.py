@@ -1,7 +1,7 @@
 """批量只读历史投影：以归档为准，固定知识截止，共享同一真实只读快照。
 
 不调用 ``read_archive`` 逐篇取值，不查当前论文与当前分类法；
-查询数随批次增长（每批 3 条 IN 查询），不受页面 ``limit=200`` 限制。
+查询数随批次增长（每批 5 条 IN 查询），不受页面 ``limit=200`` 限制。
 """
 
 from collections.abc import Callable, Iterable
@@ -15,7 +15,10 @@ from papersteward.core.entities import ReadingTimeRevision
 from papersteward.core.enums import EventType
 from papersteward.core.errors import InvariantViolation
 from papersteward.reading.archive import verified_archive_content
-from papersteward.reading.insights.aggregate import feedback_changes
+from papersteward.reading.insights.aggregate import (
+    feedback_changes,
+    structured_feedback_changes,
+)
 from papersteward.reading.insights.contracts import (
     PROJECTION_VERSION,
     FeedbackVersion,
@@ -26,6 +29,7 @@ from papersteward.reading.insights.contracts import (
     ReadingTime,
     ReadingTimeBasis,
     ResolvedPeriod,
+    StructuredFeedbackVersion,
     TimePrecision,
 )
 from papersteward.reading.insights.periods import (
@@ -35,9 +39,17 @@ from papersteward.reading.insights.periods import (
     recorded_in_period,
     resolve_period,
 )
-from papersteward.storage.insights import ReadingTimeRevisionRepository
+from papersteward.storage.insights import (
+    ReadingStructuredFeedbackRepository,
+    ReadingTimeRevisionRepository,
+)
 from papersteward.storage.mappers import as_utc
-from papersteward.storage.models import ArchiveSnapshotRow, EventRow, RatingRow
+from papersteward.storage.models import (
+    ArchiveSnapshotRow,
+    EventRow,
+    RatingRow,
+    ReadingStructuredFeedbackRow,
+)
 
 BATCH_SIZE = 500
 _UNKNOWN_READING = ReadingTime(precision=TimePrecision.UNKNOWN, basis=ReadingTimeBasis.UNKNOWN)
@@ -117,7 +129,8 @@ def _project_batch(
     period: ResolvedPeriod,
     cutoff: datetime,
 ) -> list[PaperProjection]:
-    """每批恰好 4 条 IN 查询：快照已由调用方取出，这里补评分、归档事件与日期声明。"""
+    """每批恰好 5 条 IN 查询：快照已由调用方取出，这里补评分、归档事件、
+    日期声明与结构化理由。"""
     ids = [row.paper_id for row in rows]
     ratings_by_paper: dict[str, list[RatingRow]] = {}
     for rating in session.scalars(
@@ -151,6 +164,14 @@ def _project_batch(
         visible = [item for item in items if as_utc(item.recorded_at) < cutoff]
         if visible:
             declarations[paper_id] = visible[-1]
+    # 结构化理由按知识截止全量带版本：多次修订由截止前版本列表表达。
+    structured_by_paper: dict[str, list[StructuredFeedbackVersion]] = {}
+    for paper_id, feedback_rows in (
+        ReadingStructuredFeedbackRepository(session).list_for_papers(ids).items()
+    ):
+        visible_rows = [row for row in feedback_rows if as_utc(row.recorded_at) < cutoff]
+        if visible_rows:
+            structured_by_paper[paper_id] = [_structured_version(row) for row in visible_rows]
 
     projections = []
     for row in rows:
@@ -181,9 +202,12 @@ def _project_batch(
                 else _UNKNOWN_READING
             )
         versions = _feedback_versions(row, ratings_by_paper.get(row.paper_id, []), archived_at)
+        structured = structured_by_paper.get(row.paper_id, [])
         projections.append(
             PaperProjection(
                 paper_id=row.paper_id,
+                archive_hash=row.content_hash,
+                reading_revision=declared.revision if declared is not None else 0,
                 archived_at=archived_at,
                 source=source,
                 content_available=available,
@@ -198,9 +222,28 @@ def _project_batch(
                 taxonomy_version=row.taxonomy_version,
                 feedback=versions,
                 changes=feedback_changes(row.paper_id, versions),
+                structured_feedback=structured,
+                structured_changes=structured_feedback_changes(row.paper_id, structured),
             )
         )
     return projections
+
+
+def _structured_version(row: ReadingStructuredFeedbackRow) -> StructuredFeedbackVersion:
+    """投影侧只取码与有无标记；自由文本原文不进入任何统计或概览输出。"""
+    return StructuredFeedbackVersion(
+        revision=row.revision,
+        recorded_at=as_utc(row.recorded_at),
+        rating_at=as_utc(row.rating_at) if row.rating_at is not None else None,
+        value_sources=[str(code) for code in (row.value_sources_json or [])],
+        limited_reasons=[str(code) for code in (row.limited_reasons_json or [])],
+        has_context_note=bool(row.context_note),
+        has_applicability=bool(row.applicability),
+        has_takeaway=bool(row.takeaway),
+        has_question=bool(row.question),
+        has_usage_result=bool(row.usage_result),
+        vocabulary_version=row.vocabulary_version,
+    )
 
 
 def _source_kind(

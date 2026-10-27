@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Collection
+from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -12,11 +15,23 @@ from papersteward.storage.mappers import (
     reading_time_revision_to_row,
 )
 from papersteward.storage.models import (
+    ReadingAnalysisCandidateRow,
+    ReadingAnalysisDecisionRow,
+    ReadingAnalysisExcerptRow,
+    ReadingAnalysisGrantRow,
+    ReadingAnalysisManifestRow,
+    ReadingAnalysisPreviewRow,
+    ReadingAnalysisRevokeEventRow,
     ReadingAssetRevisionRow,
     ReadingAssetRow,
     ReadingAssetSourceRow,
+    ReadingAssetTypedRow,
+    ReadingDerivedCopyRow,
+    ReadingReportContextRow,
     ReadingReportRow,
+    ReadingStructuredFeedbackRow,
     ReadingTimeRevisionRow,
+    ReadingWriteReceiptRow,
 )
 from papersteward.storage.repositories import _Repository
 
@@ -93,6 +108,43 @@ class ReadingReportRepository(_Repository):
         ).all()
         return list(rows), int(total)
 
+    def save_context(self, report_id: str, payload: dict[str, Any], series_key: str | None) -> None:
+        self._session.add(
+            ReadingReportContextRow(
+                report_id=report_id, context_json=payload, series_key=series_key
+            )
+        )
+        self._flush()
+
+    def contexts_for_reports(self, report_ids: builtins.list[str]) -> dict[str, dict[str, Any]]:
+        if not report_ids:
+            return {}
+        return {
+            row.report_id: row.context_json
+            for row in self._session.scalars(
+                select(ReadingReportContextRow).where(
+                    ReadingReportContextRow.report_id.in_(report_ids)
+                )
+            )
+        }
+
+    def list_series(
+        self, series_key: str, *, limit: int, offset: int
+    ) -> builtins.list[ReadingReportRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingReportRow)
+                .join(
+                    ReadingReportContextRow,
+                    ReadingReportContextRow.report_id == ReadingReportRow.id,
+                )
+                .where(ReadingReportContextRow.series_key == series_key)
+                .order_by(ReadingReportRow.generated_at.desc(), ReadingReportRow.id)
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+
     def delete(self, report_id: str) -> bool:
         row = self._session.get(ReadingReportRow, report_id)
         if row is None:
@@ -102,10 +154,384 @@ class ReadingReportRepository(_Repository):
         return True
 
 
+class ReadingWriteReceiptRepository(_Repository):
+    """写入回执；查询按幂等键，插入由调用方与业务写入同事务提交。"""
+
+    def find(self, key: str) -> ReadingWriteReceiptRow | None:
+        return self._session.scalars(
+            select(ReadingWriteReceiptRow).where(ReadingWriteReceiptRow.idempotency_key == key)
+        ).first()
+
+    def add(self, row: ReadingWriteReceiptRow) -> None:
+        self._session.add(row)
+        self._flush()
+
+
+class ReadingDerivedCopyRepository(_Repository):
+    """私人派生副本登记；只追加与按来源/目标查询，报告删除级联清理。"""
+
+    def add_many(self, rows: list[ReadingDerivedCopyRow]) -> None:
+        for row in rows:
+            self._session.add(row)
+        self._flush()
+
+    def for_source(self, source_kind: str, source_id: str) -> list[ReadingDerivedCopyRow]:
+        """某来源（资产版本）的全部登记行；按派生对象与字段类别排序。"""
+        return list(
+            self._session.scalars(
+                select(ReadingDerivedCopyRow)
+                .where(
+                    ReadingDerivedCopyRow.source_kind == source_kind,
+                    ReadingDerivedCopyRow.source_id == source_id,
+                )
+                .order_by(
+                    ReadingDerivedCopyRow.derived_id,
+                    ReadingDerivedCopyRow.field_kind,
+                )
+            ).all()
+        )
+
+    def lineage_for_report(self, report_id: str) -> list[ReadingDerivedCopyRow]:
+        """以某报告为派生目标的登记行（含 sanitized 谱系与私人字段）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingDerivedCopyRow)
+                .where(ReadingDerivedCopyRow.derived_id == report_id)
+                .order_by(ReadingDerivedCopyRow.source_kind, ReadingDerivedCopyRow.source_id)
+            ).all()
+        )
+
+    def delete_for_target(self, derived_kind: str, derived_id: str) -> int:
+        """清空某派生对象的登记行；报告删除的显式级联（外键已随重建移除）。"""
+        rows = self._session.scalars(
+            select(ReadingDerivedCopyRow).where(
+                ReadingDerivedCopyRow.derived_kind == derived_kind,
+                ReadingDerivedCopyRow.derived_id == derived_id,
+            )
+        ).all()
+        for row in rows:
+            self._session.delete(row)
+        self._flush()
+        return len(rows)
+
+
+class ReadingStructuredFeedbackRepository(_Repository):
+    """结构化阅读理由版本；只追加与按论文读取，不提供 update/delete。"""
+
+    def add(self, row: ReadingStructuredFeedbackRow) -> ReadingStructuredFeedbackRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingStructuredFeedbackRow]:
+        statement = (
+            select(ReadingStructuredFeedbackRow)
+            .where(ReadingStructuredFeedbackRow.paper_id == paper_id)
+            .order_by(ReadingStructuredFeedbackRow.revision)
+        )
+        return list(self._session.scalars(statement).all())
+
+    def list_for_papers(
+        self, paper_ids: Collection[str]
+    ) -> dict[str, list[ReadingStructuredFeedbackRow]]:
+        """批量按论文取全部版本；每篇内部按 revision 升序，与逐篇版一致。"""
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(ReadingStructuredFeedbackRow)
+            .where(ReadingStructuredFeedbackRow.paper_id.in_(ids))
+            .order_by(ReadingStructuredFeedbackRow.paper_id, ReadingStructuredFeedbackRow.revision)
+        ).all()
+        by_paper: dict[str, list[ReadingStructuredFeedbackRow]] = {}
+        for row in rows:
+            by_paper.setdefault(row.paper_id, []).append(row)
+        return by_paper
+
+
+class ReadingAnalysisGrantRepository(_Repository):
+    """阅读分析用途授权；只追加与按用途查活动授权，撤回置 revoked_at。"""
+
+    def add(self, row: ReadingAnalysisGrantRow) -> ReadingAnalysisGrantRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, grant_id: str) -> ReadingAnalysisGrantRow | None:
+        return self._session.get(ReadingAnalysisGrantRow, grant_id)
+
+    def active_for_purpose(self, purpose: str) -> list[ReadingAnalysisGrantRow]:
+        """未撤回的授权，按创建时间倒序（最新在前）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisGrantRow)
+                .where(
+                    ReadingAnalysisGrantRow.purpose == purpose,
+                    ReadingAnalysisGrantRow.revoked_at.is_(None),
+                )
+                .order_by(ReadingAnalysisGrantRow.created_at.desc(), ReadingAnalysisGrantRow.id)
+            ).all()
+        )
+
+    def list_all(self) -> list[ReadingAnalysisGrantRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisGrantRow).order_by(
+                    ReadingAnalysisGrantRow.created_at.desc(), ReadingAnalysisGrantRow.id
+                )
+            ).all()
+        )
+
+
+class ReadingAnalysisRevokeRepository(_Repository):
+    """授权撤回审计；只追加与按授权查询，不含任何私人正文。"""
+
+    def add(self, row: ReadingAnalysisRevokeEventRow) -> ReadingAnalysisRevokeEventRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def list_for_grant(self, grant_id: str) -> list[ReadingAnalysisRevokeEventRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisRevokeEventRow)
+                .where(ReadingAnalysisRevokeEventRow.grant_id == grant_id)
+                .order_by(ReadingAnalysisRevokeEventRow.created_at)
+            ).all()
+        )
+
+
+class ReadingAnalysisManifestRepository(_Repository):
+    """分析材料清单；同一用途同选材（哈希一致）复用同一行。"""
+
+    def add(self, row: ReadingAnalysisManifestRow) -> ReadingAnalysisManifestRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, manifest_id: str) -> ReadingAnalysisManifestRow | None:
+        return self._session.get(ReadingAnalysisManifestRow, manifest_id)
+
+    def by_hash(self, purpose: str, manifest_hash: str) -> ReadingAnalysisManifestRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisManifestRow).where(
+                ReadingAnalysisManifestRow.purpose == purpose,
+                ReadingAnalysisManifestRow.manifest_hash == manifest_hash,
+            )
+        ).first()
+
+
+class ReadingAnalysisPreviewRepository(_Repository):
+    """分析预览令牌；按 token 查找，消费置 consumed_at。"""
+
+    def add(self, row: ReadingAnalysisPreviewRow) -> ReadingAnalysisPreviewRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def find_by_token(self, token: str) -> ReadingAnalysisPreviewRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisPreviewRow).where(ReadingAnalysisPreviewRow.token == token)
+        ).first()
+
+
+class ReadingAnalysisExcerptRepository(_Repository):
+    """用户补充摘录；只追加与按论文读取，删除按行。"""
+
+    def add(self, row: ReadingAnalysisExcerptRow) -> ReadingAnalysisExcerptRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def get(self, excerpt_id: str) -> ReadingAnalysisExcerptRow | None:
+        return self._session.get(ReadingAnalysisExcerptRow, excerpt_id)
+
+    def find_by_hash(self, paper_id: str, content_hash: str) -> ReadingAnalysisExcerptRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisExcerptRow).where(
+                ReadingAnalysisExcerptRow.paper_id == paper_id,
+                ReadingAnalysisExcerptRow.content_hash == content_hash,
+            )
+        ).first()
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingAnalysisExcerptRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisExcerptRow)
+                .where(ReadingAnalysisExcerptRow.paper_id == paper_id)
+                .order_by(ReadingAnalysisExcerptRow.recorded_at, ReadingAnalysisExcerptRow.id)
+            ).all()
+        )
+
+    def list_for_papers(
+        self, paper_ids: Collection[str]
+    ) -> dict[str, list[ReadingAnalysisExcerptRow]]:
+        ids = list(paper_ids)
+        if not ids:
+            return {}
+        rows = self._session.scalars(
+            select(ReadingAnalysisExcerptRow)
+            .where(ReadingAnalysisExcerptRow.paper_id.in_(ids))
+            .order_by(ReadingAnalysisExcerptRow.paper_id, ReadingAnalysisExcerptRow.recorded_at)
+        ).all()
+        by_paper: dict[str, list[ReadingAnalysisExcerptRow]] = {}
+        for row in rows:
+            by_paper.setdefault(row.paper_id, []).append(row)
+        return by_paper
+
+    def delete(self, excerpt_id: str) -> bool:
+        row = self._session.get(ReadingAnalysisExcerptRow, excerpt_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._flush()
+        return True
+
+
+class ReadingAnalysisCandidateRepository(_Repository):
+    """分析候选；只追加与按运行/清单/论文查询，去留由后续用户决定流程处理。"""
+
+    def add_many(
+        self, rows: list[ReadingAnalysisCandidateRow]
+    ) -> list[ReadingAnalysisCandidateRow]:
+        for row in rows:
+            self._session.add(row)
+        self._flush()
+        return rows
+
+    def by_run(self, run_id: str) -> list[ReadingAnalysisCandidateRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(ReadingAnalysisCandidateRow.run_id == run_id)
+                .order_by(
+                    ReadingAnalysisCandidateRow.paper_id, ReadingAnalysisCandidateRow.created_at
+                )
+            ).all()
+        )
+
+    def by_manifest_paper(
+        self, manifest_hash: str, paper_id: str
+    ) -> list[ReadingAnalysisCandidateRow]:
+        """同清单同篇的历史候选（runner 用它跳过已完成篇目）。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(
+                    ReadingAnalysisCandidateRow.manifest_hash == manifest_hash,
+                    ReadingAnalysisCandidateRow.paper_id == paper_id,
+                    ReadingAnalysisCandidateRow.stale == 0,
+                )
+                .order_by(ReadingAnalysisCandidateRow.created_at)
+            ).all()
+        )
+
+    def list_for_paper(self, paper_id: str) -> list[ReadingAnalysisCandidateRow]:
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisCandidateRow)
+                .where(ReadingAnalysisCandidateRow.paper_id == paper_id)
+                .order_by(ReadingAnalysisCandidateRow.created_at)
+            ).all()
+        )
+
+
+class ReadingAssetTypedRepository(_Repository):
+    """方法卡/证据组的类型化版本内容；随资产版本级联，旧版本无行即无内容。"""
+
+    def put(self, asset_id: str, revision: int, content_json: dict[str, Any]) -> None:
+        self._session.add(
+            ReadingAssetTypedRow(asset_id=asset_id, revision=revision, content_json=content_json)
+        )
+        self._flush()
+
+    def get(self, asset_id: str, revision: int) -> ReadingAssetTypedRow | None:
+        return self._session.get(ReadingAssetTypedRow, {"asset_id": asset_id, "revision": revision})
+
+    def for_asset(self, asset_id: str) -> dict[int, dict[str, Any]]:
+        return {
+            row.revision: dict(row.content_json or {})
+            for row in self._session.scalars(
+                select(ReadingAssetTypedRow).where(ReadingAssetTypedRow.asset_id == asset_id)
+            ).all()
+        }
+
+
+class ReadingAnalysisDecisionRepository(_Repository):
+    """候选的用户决定；只追加，候选唯一（重复确认只生成一次）。"""
+
+    def add(self, row: ReadingAnalysisDecisionRow) -> ReadingAnalysisDecisionRow:
+        self._session.add(row)
+        self._flush()
+        return row
+
+    def find_by_candidate(self, candidate_id: str) -> ReadingAnalysisDecisionRow | None:
+        return self._session.scalars(
+            select(ReadingAnalysisDecisionRow).where(
+                ReadingAnalysisDecisionRow.candidate_id == candidate_id
+            )
+        ).first()
+
+    def dismissed_statement_hashes(self, paper_id: str, kind: str) -> set[str]:
+        """某论文某类型已被忽略的陈述哈希集合（拒绝记忆持久）。"""
+        rows = self._session.scalars(
+            select(ReadingAnalysisDecisionRow.statement_hash).where(
+                ReadingAnalysisDecisionRow.decision == "dismissed",
+                ReadingAnalysisDecisionRow.paper_id == paper_id,
+                ReadingAnalysisDecisionRow.kind == kind,
+            )
+        ).all()
+        return set(rows)
+
+    def list_confirmed_for_papers(
+        self, paper_ids: Collection[str], *, before: datetime
+    ) -> list[ReadingAnalysisDecisionRow]:
+        """已确认/已并入的单篇结果（专题综合的材料来源）；忽略与待核对不选入。"""
+        ids = list(paper_ids)
+        if not ids:
+            return []
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisDecisionRow)
+                .where(
+                    ReadingAnalysisDecisionRow.paper_id.in_(ids),
+                    ReadingAnalysisDecisionRow.decision.in_(("confirmed", "merged")),
+                    ReadingAnalysisDecisionRow.decided_at < before,
+                )
+                .order_by(
+                    ReadingAnalysisDecisionRow.paper_id,
+                    ReadingAnalysisDecisionRow.decided_at,
+                    ReadingAnalysisDecisionRow.id,
+                )
+            ).all()
+        )
+
+    def by_asset(self, asset_id: str) -> list[ReadingAnalysisDecisionRow]:
+        """以某资产为决定目标的记录（确认生成/合并追加），按时间排序。"""
+        return list(
+            self._session.scalars(
+                select(ReadingAnalysisDecisionRow)
+                .where(ReadingAnalysisDecisionRow.asset_id == asset_id)
+                .order_by(ReadingAnalysisDecisionRow.decided_at)
+            ).all()
+        )
+
+
 __all__ = [
+    "ReadingAnalysisCandidateRepository",
+    "ReadingAnalysisDecisionRepository",
+    "ReadingAnalysisExcerptRepository",
+    "ReadingAnalysisGrantRepository",
+    "ReadingAssetTypedRepository",
+    "ReadingAnalysisManifestRepository",
+    "ReadingAnalysisPreviewRepository",
+    "ReadingAnalysisRevokeRepository",
     "ReadingAssetRepository",
+    "ReadingDerivedCopyRepository",
     "ReadingReportRepository",
+    "ReadingStructuredFeedbackRepository",
     "ReadingTimeRevisionRepository",
+    "ReadingWriteReceiptRepository",
 ]
 
 
@@ -196,10 +622,16 @@ class ReadingAssetRepository(_Repository):
         status: str | None = None,
         paper_id: str | None = None,
         keyword: str | None = None,
+        recorded_from: datetime | None = None,
+        recorded_to: datetime | None = None,
         limit: int,
         offset: int,
     ) -> tuple[list[tuple[ReadingAssetRow, ReadingAssetRevisionRow]], int]:
-        """按最新版本视图筛选资产；来源/关键词只作用于当前版本。"""
+        """按最新版本视图筛选资产；来源/关键词/记录时期只作用于当前版本。
+
+        ``recorded_to`` 为不含上界，调用方把结束日换算到次日零点即可按自然日筛选；
+        过滤在 SQL 内完成，避免先取一页新资产再截断时漏掉较早的证据。
+        """
         latest = (
             select(func.max(ReadingAssetRevisionRow.revision))
             .where(ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
@@ -234,6 +666,10 @@ class ReadingAssetRepository(_Repository):
                 ReadingAssetRevisionRow.title.like(pattern, escape="\\")
                 | ReadingAssetRevisionRow.body.like(pattern, escape="\\")
             )
+        if recorded_from is not None:
+            conditions.append(ReadingAssetRevisionRow.recorded_at >= recorded_from)
+        if recorded_to is not None:
+            conditions.append(ReadingAssetRevisionRow.recorded_at < recorded_to)
         if conditions:
             statement = statement.where(*conditions)
         total = (
@@ -248,6 +684,45 @@ class ReadingAssetRepository(_Repository):
             .limit(limit)
         ).all()
         return [(row[0], row[1]) for row in rows], int(total)
+
+    def asset_ids_sourced_from_papers(
+        self, paper_ids: Collection[str], *, before: datetime
+    ) -> list[str]:
+        """在截止前引用了这些论文的资产 ID（任一名义版本），稳定排序。"""
+        ids = list(paper_ids)
+        if not ids:
+            return []
+        statements = list(
+            self._session.scalars(
+                select(ReadingAssetSourceRow.asset_id)
+                .join(
+                    ReadingAssetRevisionRow,
+                    (ReadingAssetSourceRow.asset_id == ReadingAssetRevisionRow.asset_id)
+                    & (ReadingAssetSourceRow.revision == ReadingAssetRevisionRow.revision),
+                )
+                .where(
+                    ReadingAssetSourceRow.paper_id.in_(ids),
+                    ReadingAssetRevisionRow.recorded_at < before,
+                )
+                .distinct()
+                .order_by(ReadingAssetSourceRow.asset_id)
+            ).all()
+        )
+        return list(dict.fromkeys(statements))
+
+    def latest_revision_before(
+        self, asset_id: str, cutoff: datetime
+    ) -> ReadingAssetRevisionRow | None:
+        """截止前最后一个版本；用于历史回顾，不把之后修订倒灌旧范围。"""
+        return self._session.scalars(
+            select(ReadingAssetRevisionRow)
+            .where(
+                ReadingAssetRevisionRow.asset_id == asset_id,
+                ReadingAssetRevisionRow.recorded_at < cutoff,
+            )
+            .order_by(ReadingAssetRevisionRow.revision.desc())
+            .limit(1)
+        ).first()
 
     def assets_for_paper(
         self, paper_id: str

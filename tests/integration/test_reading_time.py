@@ -7,6 +7,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from test_reading_insight_projection import (
     T_DONE,
@@ -31,6 +32,7 @@ from papersteward.storage.models import (
     PaperRow,
     RatingRow,
     ReadingTimeRevisionRow,
+    ReadingWriteReceiptRow,
 )
 from papersteward.storage.workspace import clear_workspace
 
@@ -127,6 +129,202 @@ def test_idempotency_key_replays_same_input_only(insights_factory):
                 expected_revision=1,
                 idempotency_key="key-1",
             )
+
+
+def test_same_key_on_other_paper_conflicts_without_writing(insights_factory):
+    """F04：同一键用于另一篇论文必须明确冲突，不得虚报保存成功。"""
+    factory = insights_factory
+    with session_scope(factory) as session:
+        seed_import(session, "imp-x", title="导入X")
+        seed_import(session, "imp-y", title="导入Y")
+        record_reading_time(
+            session,
+            "imp-x",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=0,
+            idempotency_key="cross-key",
+        )
+        with pytest.raises(InvariantViolation):
+            record_reading_time(
+                session,
+                "imp-y",
+                day_declaration("2026-10-03"),
+                now=NOW2,
+                expected_revision=0,
+                idempotency_key="cross-key",
+            )
+        view = read_time_view(session, "imp-y")
+        assert view.current_revision == 0
+
+
+def test_retry_after_lost_response_replays_original_result(insights_factory):
+    """F04：成功响应丢失后的原样重试重放原结果，即使 expected_revision 已过期。"""
+    factory = insights_factory
+    with session_scope(factory) as session:
+        seed_import(session, "imp-r", title="导入R")
+        first = record_reading_time(
+            session,
+            "imp-r",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=0,
+            idempotency_key="lost-key",
+        )
+        assert first.current_revision == 1
+    with session_scope(factory) as session:
+        # 另一个窗口把阅读时间改成了月份（版本 2）。
+        record_reading_time(
+            session,
+            "imp-r",
+            month_declaration("2026-09"),
+            now=NOW2,
+            expected_revision=1,
+            idempotency_key="later-key",
+        )
+    with session_scope(factory) as session:
+        replay = record_reading_time(
+            session,
+            "imp-r",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=1,
+            idempotency_key="lost-key",
+        )
+        # 重放保存的原结果（当时版本 1），不产生新版本。
+        assert replay.current_revision == 1
+        assert replay.effective.precision.value == "day"
+        assert str(replay.effective.day) == "2026-10-03"
+        view = read_time_view(session, "imp-r")
+        assert view.current_revision == 2
+
+
+def test_expected_conflict_does_not_consume_idempotency_key(insights_factory):
+    """版本冲突修正后同键重试成功：冲突路径不把键当作已消费。"""
+    factory = insights_factory
+    with session_scope(factory) as session:
+        seed_import(session, "imp-k", title="导入K")
+        record_reading_time(
+            session,
+            "imp-k",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=0,
+            idempotency_key="base-key",
+        )
+    with session_scope(factory) as session, pytest.raises(ConflictError):
+        record_reading_time(
+            session,
+            "imp-k",
+            day_declaration("2026-10-05"),
+            now=NOW2,
+            expected_revision=0,
+            idempotency_key="fix-key",
+        )
+    with session_scope(factory) as session:
+        view = record_reading_time(
+            session,
+            "imp-k",
+            day_declaration("2026-10-05"),
+            now=NOW2,
+            expected_revision=1,
+            idempotency_key="fix-key",
+        )
+        assert view.current_revision == 2
+
+
+def test_orphan_key_without_receipt_conflicts(insights_factory):
+    """版本行已有键但回执缺失（无法证明原请求）时按冲突处理，不虚报新写入。"""
+    factory = insights_factory
+    with session_scope(factory) as session:
+        seed_import(session, "imp-o", title="导入O")
+        record_reading_time(
+            session,
+            "imp-o",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=0,
+            idempotency_key="orphan-key",
+        )
+        session.execute(
+            sa_delete(ReadingWriteReceiptRow).where(
+                ReadingWriteReceiptRow.idempotency_key == "orphan-key"
+            )
+        )
+    with session_scope(factory) as session, pytest.raises(InvariantViolation):
+        record_reading_time(
+            session,
+            "imp-o",
+            day_declaration("2026-10-03"),
+            now=NOW2,
+            expected_revision=1,
+            idempotency_key="orphan-key",
+        )
+
+
+def test_concurrent_same_key_serializes_and_second_replays(client, migrated_engine):
+    """真实双会话并发：第二会话等第一把写锁，提交后命中重放而非重复创建。"""
+    import threading
+
+    from papersteward.storage.tx import write_tx
+
+    activate_workspace(client.app.state.engine)
+    factory = create_session_factory(client.app.state.engine)
+    with session_scope(factory) as session:
+        seed_import(session, "imp-cc", title="导入CC")
+    lock_held = threading.Event()
+    release = threading.Event()
+    outcome: dict[str, str] = {}
+
+    def writer_first() -> None:
+        session = factory()
+        try:
+            with write_tx(session):
+                view = record_reading_time(
+                    session,
+                    "imp-cc",
+                    day_declaration("2026-10-03"),
+                    now=NOW2,
+                    expected_revision=0,
+                    idempotency_key="race-key",
+                )
+                outcome["first"] = view.paper_id
+                lock_held.set()
+                assert release.wait(timeout=5)
+        finally:
+            session.close()
+
+    def writer_second() -> None:
+        session = factory()
+        try:
+            # BEGIN IMMEDIATE 阻塞等第一把写锁，拿锁后回执已提交 → 重放。
+            with write_tx(session):
+                view = record_reading_time(
+                    session,
+                    "imp-cc",
+                    day_declaration("2026-10-03"),
+                    now=NOW2,
+                    expected_revision=0,
+                    idempotency_key="race-key",
+                )
+                outcome["second"] = view.paper_id
+        finally:
+            session.close()
+
+    first = threading.Thread(target=writer_first)
+    second = threading.Thread(target=writer_second)
+    first.start()
+    assert lock_held.wait(timeout=5)
+    second.start()
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not second.is_alive()
+    with session_scope(factory) as session:
+        revisions = session.scalars(
+            select(ReadingTimeRevisionRow).where(ReadingTimeRevisionRow.paper_id == "imp-cc")
+        ).all()
+        assert len(revisions) == 1
 
 
 def test_declaration_not_later_than_workspace_today(insights_factory):

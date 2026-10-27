@@ -688,7 +688,10 @@ class ReadingAssetRow(Base):
 
     __tablename__ = "reading_asset"
     __table_args__ = (
-        CheckConstraint("kind IN ('harvest', 'problem')", name="asset_kind_allowed"),
+        CheckConstraint(
+            "kind IN ('harvest', 'problem', 'method', 'evidence')",
+            name="asset_kind_allowed",
+        ),
         Index("uq_reading_asset_idempotency", "idempotency_key", unique=True),
     )
 
@@ -781,6 +784,19 @@ class ReadingReportRow(Base):
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class ReadingReportContextRow(Base):
+    """报告的独立范围、规范化请求和有效输入清单；不依赖运行记录存续。"""
+
+    __tablename__ = "reading_report_context"
+    __table_args__ = (Index("ix_reading_report_context_series", "series_key"),)
+
+    report_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_report.id", ondelete="CASCADE"), primary_key=True
+    )
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    series_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class ReadingTimeRevisionRow(Base):
     """阅读时间声明版本；只追加，不改归档快照/评分/事件。
 
@@ -815,6 +831,341 @@ class ReadingTimeRevisionRow(Base):
     declared_month: Mapped[str | None] = mapped_column(String(7), nullable=True)
     basis: Mapped[str] = mapped_column(String(16), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class ReadingWriteReceiptRow(Base):
+    """写入回执：幂等键绑定操作、目标与规范化请求哈希，可重放原结果。
+
+    身份是幂等键（工作区内唯一，唯一索引兜底并发）；``request_hash`` 为空
+    表示无法证明原始请求内容，命中即冲突。无外键：回执比目标存得久，
+    目标删除后回执仍能解释「同键重放」而不是变成一次新写入。
+    """
+
+    __tablename__ = "reading_write_receipt"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('reading_time.record', 'asset.create', 'asset.revise', 'asset.status',"
+            " 'structured_feedback.revise')",
+            name="receipt_operation_allowed",
+        ),
+        Index("uq_reading_write_receipt_key", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingDerivedCopyRow(Base):
+    """私人派生副本登记：来源（论文材料/资产版本/报告）到含其内容的持久对象。
+
+    只登记 ID 与字段类别，不保存私人原文；按来源版本可找出全部副本，
+    供删除预览与授权撤回复用。``derived_id`` 无外键（同一列需指向报告或
+    分析候选两张父表）：报告删除由 ``delete_report`` 在同事务显式清登记，
+    候选删除由后续批次的用户决定流程负责；来源侧无外键——来源删除后
+    登记保留供定位残留副本。
+    """
+
+    __tablename__ = "reading_derived_copy"
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind IN ('asset', 'report', 'paper', 'candidate')",
+            name="derived_source_allowed",
+        ),
+        CheckConstraint(
+            "derived_kind IN ('report', 'candidate', 'memory')", name="derived_target_allowed"
+        ),
+        CheckConstraint(
+            "field_kind IN ('title', 'body', 'sanitized', "
+            "'statement', 'quote', 'synthesis', 'memory')",
+            name="derived_field_allowed",
+        ),
+        Index("ix_reading_derived_copy_source", "source_kind", "source_id", "source_revision"),
+        Index("ix_reading_derived_copy_target", "derived_kind", "derived_id"),
+        Index(
+            "uq_reading_derived_copy_entry",
+            "source_kind",
+            "source_id",
+            "source_revision",
+            "derived_kind",
+            "derived_id",
+            "field_kind",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    derived_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    derived_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    field_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingStructuredFeedbackRow(Base):
+    """结构化阅读理由版本；只追加，不写评分/备注/归档。
+
+    理由码与自由文本只决定写入结果，哈希进回执；``rating_at`` 指向具体评分
+    版本（``rating.created_at``），后续评分修订不移动该关联。``(paper_id,
+    revision)`` 主键提供乐观并发兜底，幂等键唯一索引支撑重放。
+    """
+
+    __tablename__ = "reading_structured_feedback"
+    __table_args__ = (Index("uq_reading_structured_feedback_key", "idempotency_key", unique=True),)
+
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    rating_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    value_sources_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    limited_reasons_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applicability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    takeaway: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vocabulary_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class ReadingAnalysisGrantRow(Base):
+    """阅读分析用途授权；独立于既有模型连接的 consent，发送边界逐一核对。
+
+    绑定当前工作区（同库即工作区）、用途、规范化端点身份与模型配置版本
+    （llm_config 行版本，任何设置保存都换版本 → 强制重新授权）。材料类别
+    是授权覆盖的上限，类别扩大须重新授权；once 授权额外绑定清单哈希。
+    """
+
+    __tablename__ = "reading_analysis_grant"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('reading_reflection', 'reading_synthesis', 'reading_profile_inference')",
+            name="grant_purpose_allowed",
+        ),
+        CheckConstraint("scope_mode IN ('once', 'workspace')", name="grant_scope_allowed"),
+        Index("ix_reading_analysis_grant_purpose", "purpose", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    endpoint_identity: Mapped[str] = mapped_column(String(512), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    material_classes_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    manifest_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReadingAnalysisRevokeEventRow(Base):
+    """授权撤回审计；只存授权 ID 与原因，不存任何私人正文。"""
+
+    __tablename__ = "reading_analysis_revoke_event"
+    __table_args__ = (
+        CheckConstraint("reason IN ('user')", name="revoke_reason_allowed"),
+        Index("ix_reading_analysis_revoke_grant", "grant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisManifestRow(Base):
+    """分析材料清单；materials_json 只存材料 ID/版本锚点/哈希/类别，不存原文。
+
+    同一用途下相同选材（哈希一致）复用同一行，预览令牌与提交按清单哈希
+    绑定核对。
+    """
+
+    __tablename__ = "reading_analysis_manifest"
+    __table_args__ = (
+        Index("uq_reading_analysis_manifest", "purpose", "manifest_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisPreviewRow(Base):
+    """分析预览令牌；短期有效，绑定清单哈希与模型配置版本，提交时重新核对。"""
+
+    __tablename__ = "reading_analysis_preview"
+    __table_args__ = (
+        CheckConstraint(
+            "consumed_at IS NULL OR consumed_at >= created_at",
+            name="preview_consumed_after_created",
+        ),
+        Index("uq_reading_analysis_preview_token", "token", unique=True),
+        Index("ix_reading_analysis_preview_manifest", "manifest_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisExcerptRow(Base):
+    """用户补充摘录；私人材料，独立授权后才可作为清单材料发送。
+
+    ``content_hash`` 同时做 ``(paper_id, content_hash)`` 唯一约束的幂等去重，
+    不走写入回执（创建语义简单，重复提交返回既有行）。
+    """
+
+    __tablename__ = "reading_analysis_excerpt"
+    __table_args__ = (
+        Index("uq_reading_analysis_excerpt", "paper_id", "content_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("paper.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAnalysisCandidateRow(Base):
+    """单篇分析候选（R2-03）：收获/问题/方法，带来源、性质与核对状态。
+
+    ``verification`` 只能由用户决定流程从 ``pending_user`` 推进（模型不能
+    给自己生成已确认状态）；决定历史在 ``reading_analysis_decision``。``source_refs_json`` 记录所引
+    材料的类别/目标/版本锚点（与清单一致），``stale`` 表示落库时源版本已
+    漂移（不假装基于最新材料）。无外键：Run 行不删除，候选去留由用户
+    决定流程处理。
+    """
+
+    __tablename__ = "reading_analysis_candidate"
+    __table_args__ = (
+        CheckConstraint("kind IN ('harvest', 'question', 'method')", name="candidate_kind_allowed"),
+        CheckConstraint(
+            "nature IN ('paper_statement', 'user_expression', 'model_inference')",
+            name="candidate_nature_allowed",
+        ),
+        CheckConstraint("verification IN ('pending_user')", name="candidate_verification_allowed"),
+        Index("ix_reading_analysis_candidate_run", "run_id"),
+        Index("ix_reading_analysis_candidate_manifest", "manifest_hash", "paper_id"),
+        Index("ix_reading_analysis_candidate_paper", "paper_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_config_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    paper_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    nature: Mapped[str] = mapped_column(String(24), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    limitations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quote_source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_refs_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    verification: Mapped[str] = mapped_column(String(16), nullable=False, default="pending_user")
+    stale: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReadingAssetTypedRow(Base):
+    """方法卡/证据组的类型化版本内容；随资产版本级联删除。
+
+    结构化字段与自由正文分列存储（不把方法 JSON 硬塞进 body）；
+    旧版本无对应行即无类型化内容，不原地升级。
+    """
+
+    __tablename__ = "reading_asset_typed"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["asset_id", "revision"],
+            ["reading_asset_revision.asset_id", "reading_asset_revision.revision"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class ReadingAnalysisDecisionRow(Base):
+    """候选的用户决定（R2-04）：确认/忽略/合并，可回看、不删候选行。
+
+    ``candidate_id`` 唯一——重复确认只生成一次；``statement_hash`` 供
+    「拒绝记忆持久」（再次分析时同陈述不重复弹出，改措辞的新候选仍展示）。
+    ``asset_id``/``asset_revision`` 指向确认生成的资产或合并追加的版本。
+    """
+
+    __tablename__ = "reading_analysis_decision"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('confirmed', 'dismissed', 'merged')",
+            name="candidate_decision_allowed",
+        ),
+        Index("uq_reading_analysis_decision_candidate", "candidate_id", unique=True),
+        Index(
+            "ix_reading_analysis_decision_memory",
+            "paper_id",
+            "kind",
+            "statement_hash",
+        ),
+        Index("ix_reading_analysis_decision_asset", "asset_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    asset_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    paper_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    statement_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
 class LLMCacheRow(Base):
@@ -960,3 +1311,50 @@ __all__ = [
     "TagRow",
     "TaxonomyRow",
 ]
+
+
+class ReadingMemoryRow(Base):
+    """研究记忆身份；按确定性证据组去重，不写入 ResearchProfile。"""
+
+    __tablename__ = "reading_memory"
+    __table_args__ = (Index("uq_reading_memory_group", "group_key", unique=True),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReadingMemoryRevisionRow(Base):
+    """只追加的候选、用户决定和复核记录；请求键绑定操作与内容。"""
+
+    __tablename__ = "reading_memory_revision"
+    __table_args__ = (
+        CheckConstraint("kind IN ('interest', 'value_standard')", name="memory_kind_allowed"),
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'deferred', "
+            "'not_preference', 'disabled', 'needs_review')",
+            name="memory_status_allowed",
+        ),
+        CheckConstraint("scope IN ('general', 'task_only')", name="memory_scope_allowed"),
+        CheckConstraint(
+            "origin IN ('model', 'user', 'source_change')", name="memory_origin_allowed"
+        ),
+        Index("uq_reading_memory_request", "request_key", unique=True),
+    )
+    memory_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_memory.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    group_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

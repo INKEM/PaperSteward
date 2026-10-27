@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import inspect, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -24,6 +24,8 @@ from papersteward.storage import (
 ROOT = Path(__file__).resolve().parents[2]
 NOW_MIGRATIONS = datetime(2026, 10, 21, 8, tzinfo=UTC)
 DOMAIN_TABLES = {
+    "reading_memory",
+    "reading_memory_revision",
     "archive_snapshot",
     "bucket",
     "config",
@@ -48,9 +50,21 @@ DOMAIN_TABLES = {
     "view_config",
     "reading_time_revision",
     "reading_report",
+    "reading_report_context",
     "reading_asset",
     "reading_asset_revision",
     "reading_asset_source",
+    "reading_write_receipt",
+    "reading_derived_copy",
+    "reading_structured_feedback",
+    "reading_analysis_grant",
+    "reading_analysis_revoke_event",
+    "reading_analysis_manifest",
+    "reading_analysis_preview",
+    "reading_analysis_excerpt",
+    "reading_analysis_candidate",
+    "reading_asset_typed",
+    "reading_analysis_decision",
 }
 
 
@@ -248,6 +262,14 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "content_hash",
             "run_id",
         }
+        assert {column["name"] for column in inspector.get_columns("reading_report_context")} == {
+            "report_id",
+            "context_json",
+            "series_key",
+        }
+        assert "ix_reading_report_context_series" in {
+            index["name"] for index in inspector.get_indexes("reading_report_context")
+        }
         report_indexes = {index["name"] for index in inspector.get_indexes("reading_report")}
         assert {
             "uq_reading_report_run",
@@ -275,14 +297,149 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             },
         }.items():
             assert {column["name"] for column in inspector.get_columns(table)} == columns
+        assert {column["name"] for column in inspector.get_columns("reading_write_receipt")} == {
+            "id",
+            "idempotency_key",
+            "operation",
+            "target_id",
+            "request_hash",
+            "result_json",
+            "created_at",
+        }
+        receipt_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_write_receipt")
+        }
+        assert "uq_reading_write_receipt_key" in receipt_indexes
+        assert {column["name"] for column in inspector.get_columns("reading_derived_copy")} == {
+            "id",
+            "source_kind",
+            "source_id",
+            "source_revision",
+            "derived_kind",
+            "derived_id",
+            "field_kind",
+            "created_at",
+        }
+        derived_indexes = {index["name"] for index in inspector.get_indexes("reading_derived_copy")}
+        assert {
+            "ix_reading_derived_copy_source",
+            "ix_reading_derived_copy_target",
+            "uq_reading_derived_copy_entry",
+        } <= derived_indexes
         asset_indexes = {index["name"] for index in inspector.get_indexes("reading_asset")}
         assert "uq_reading_asset_idempotency" in asset_indexes
+        assert {
+            column["name"] for column in inspector.get_columns("reading_structured_feedback")
+        } == {
+            "paper_id",
+            "revision",
+            "recorded_at",
+            "rating_at",
+            "value_sources_json",
+            "limited_reasons_json",
+            "context_note",
+            "applicability",
+            "takeaway",
+            "question",
+            "usage_result",
+            "vocabulary_version",
+            "idempotency_key",
+        }
+        structured_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_structured_feedback")
+        }
+        assert "uq_reading_structured_feedback_key" in structured_indexes
+        assert inspector.get_pk_constraint("reading_structured_feedback")[
+            "constrained_columns"
+        ] == ["paper_id", "revision"]
         assert inspector.get_pk_constraint("reading_asset_revision")["constrained_columns"] == [
             "asset_id",
             "revision",
         ]
+        assert {column["name"] for column in inspector.get_columns("reading_analysis_grant")} == {
+            "id",
+            "purpose",
+            "scope_mode",
+            "endpoint_identity",
+            "model_config_version",
+            "model_name",
+            "material_classes_json",
+            "manifest_hash",
+            "consent_version",
+            "created_at",
+            "revoked_at",
+        }
+        assert {column["name"] for column in inspector.get_columns("reading_analysis_excerpt")} == {
+            "id",
+            "paper_id",
+            "content",
+            "source_note",
+            "content_hash",
+            "recorded_at",
+        }
+        excerpt_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_excerpt")
+        }
+        assert "uq_reading_analysis_excerpt" in excerpt_indexes
+        assert {
+            column["name"] for column in inspector.get_columns("reading_analysis_candidate")
+        } == {
+            "id",
+            "run_id",
+            "manifest_id",
+            "manifest_hash",
+            "grant_id",
+            "model_config_version",
+            "paper_id",
+            "kind",
+            "nature",
+            "statement",
+            "conditions",
+            "limitations",
+            "quote",
+            "quote_source_id",
+            "source_refs_json",
+            "verification",
+            "stale",
+            "created_at",
+        }
+        candidate_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_candidate")
+        }
+        assert {
+            "ix_reading_analysis_candidate_run",
+            "ix_reading_analysis_candidate_manifest",
+            "ix_reading_analysis_candidate_paper",
+        } <= candidate_indexes
+        assert {column["name"] for column in inspector.get_columns("reading_asset_typed")} == {
+            "asset_id",
+            "revision",
+            "content_json",
+        }
+        assert {
+            column["name"] for column in inspector.get_columns("reading_analysis_decision")
+        } == {
+            "id",
+            "candidate_id",
+            "decision",
+            "asset_id",
+            "asset_revision",
+            "paper_id",
+            "kind",
+            "statement_hash",
+            "note",
+            "decided_at",
+        }
+        decision_indexes = {
+            index["name"] for index in inspector.get_indexes("reading_analysis_decision")
+        }
+        assert {
+            "uq_reading_analysis_decision_candidate",
+            "ix_reading_analysis_decision_memory",
+            "ix_reading_analysis_decision_asset",
+        } <= decision_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0023"
+        assert current == "0032"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -616,3 +773,1083 @@ def test_migrated_schema_enforces_unique_primary_tag(sqlite_engine: Engine) -> N
                 assigned_by=AssignedBy.USER,
             )
         )
+
+
+def test_0024_context_backfill_keeps_frozen_reports_and_unknowns(sqlite_engine: Engine) -> None:
+    """旧请求只恢复有证据的字段；无运行记录的主题不默认为全部，往返不改正文。
+
+    冻结正文按 0024 之前代码的产物形态手工构造（对齐 0026 测试做法），
+    避免在旧 schema 上运行新版投影代码。
+    """
+    from papersteward.core.entities import Run
+    from papersteward.reading.insights.reports import read_report, report_input_status
+    from papersteward.storage.delivery import content_hash
+    from papersteward.storage.models import ReadingReportContextRow, ReadingReportRow, RunRow
+    from papersteward.storage.repositories import RunRepository
+
+    _upgrade(sqlite_engine, "0023")
+    from conftest import activate_workspace
+
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from papersteward.storage.models import (
+        ReadingAssetRevisionRow,
+        ReadingAssetRow,
+        ReadingAssetSourceRow,
+        ReadingTimeRevisionRow,
+    )
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    from papersteward.storage.delivery import content_hash as _content_hash
+
+    legacy_content = system_content(title="旧冻结论文", completed_at=at)
+    with session_scope(factory) as session:
+        seed_paper(session, "legacy-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "legacy-paper",
+            archived_at=at,
+            content=legacy_content,
+        )
+        # 直接写旧行形态（无回执），模拟旧版本代码的产物。
+        session.add(
+            ReadingAssetRow(
+                id="legacy-asset-row",
+                kind="problem",
+                idempotency_key="legacy-asset",
+                created_at=at,
+            )
+        )
+        session.flush()
+        session.add(
+            ReadingAssetRevisionRow(
+                asset_id="legacy-asset-row",
+                revision=1,
+                recorded_at=at,
+                title="旧私人标题",
+                body="旧私人正文",
+                applicability=None,
+                status="open",
+            )
+        )
+        session.add(
+            ReadingAssetSourceRow(
+                id="legacy-src-1",
+                asset_id="legacy-asset-row",
+                revision=1,
+                paper_id="legacy-paper",
+                archive_hash=_content_hash(legacy_content),
+                rating_at=None,
+            )
+        )
+        session.add(
+            ReadingTimeRevisionRow(
+                paper_id="legacy-paper",
+                revision=1,
+                recorded_at=at,
+                precision="day",
+                declared_date=at.date(),
+                declared_month=None,
+                basis="declared",
+                idempotency_key="legacy-time",
+            )
+        )
+
+    def related_state():
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                    "reading_time_revision",
+                )
+            }
+
+    before = related_state()
+    assert all(before.values())
+    frozen = {
+        "contract": "reading-insights.report/1",
+        "metrics": {
+            "period": {
+                "kind": "week",
+                "timezone": "Asia/Shanghai",
+                "label": "2026-W43",
+                "start_date": "2026-10-19",
+                "end_date_inclusive": "2026-10-25",
+                "start_utc": "2026-10-18T16:00:00Z",
+                "end_utc_exclusive": "2026-10-25T16:00:00Z",
+            },
+            "mode": "as_recorded",
+            "knowledge_cutoff": NOW_MIGRATIONS.isoformat(),
+            "collected_at": NOW_MIGRATIONS.isoformat(),
+            "readings_total": 1,
+            "readings_system": 1,
+            "readings_imported": 0,
+            "readings_backfilled": 0,
+            "system_completions": 1,
+            "backfills_total": 0,
+            "unassigned_total": 0,
+            "partial_month_total": 0,
+            "coverage": {"scored": 1, "noted": 0, "total": 1},
+            "backfill_coverage": {"scored": 0, "noted": 0, "total": 0},
+            "score_distribution": {
+                "score_1": 0,
+                "score_2": 0,
+                "score_3": 0,
+                "score_4": 1,
+                "score_5": 0,
+                "unrated": 0,
+            },
+            "feedback_changes": {"score_events": 0, "note_events": 0, "papers_affected": 0},
+            "all_history_total": 1,
+        },
+        "readings": [
+            {
+                "paper_id": "legacy-paper",
+                "archived_at": at.isoformat(),
+                "source": "system",
+                "content_available": True,
+                "reading": {
+                    "precision": "day",
+                    "basis": "declared",
+                    "day": at.date().isoformat(),
+                    "month": None,
+                    "recorded_at_utc": at.isoformat(),
+                },
+                "membership": "in_period",
+                "recorded_in_period": True,
+                "title": "旧冻结论文",
+                "feedback": [],
+            }
+        ],
+        "backfills": [],
+        "unassigned": [],
+        "changes": [],
+        "assets": [
+            {
+                "asset_id": "legacy-asset-row",
+                "title": "旧私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": "旧私人正文",
+            }
+        ],
+    }
+    assert frozen["assets"][0]["title"] == "旧私人标题"
+    frozen_hash = content_hash(frozen)
+    requests = {
+        "explicit": {
+            "review": {
+                "period": "week",
+                "anchor_date": "2026-10-22",
+                "mode": "as_recorded",
+                "tag": "tv-test::T01",
+                "asset_bodies": False,
+            }
+        },
+        "omitted": {
+            "review": {"period": "week", "anchor_date": "2026-10-22", "mode": "as_recorded"}
+        },
+        "all": {
+            "review": {
+                "period": "week",
+                "anchor_date": "2026-10-22",
+                "mode": "as_recorded",
+                "tag": None,
+            }
+        },
+    }
+    with session_scope(factory) as session:
+        for key in ("explicit", "omitted", "all", "missing-run"):
+            if key in requests:
+                RunRepository(session).add(
+                    Run(
+                        id=key,
+                        run_type="ui.review",
+                        started_at=NOW_MIGRATIONS,
+                        stats_json={"request": requests[key]},
+                    )
+                )
+            session.add(
+                ReadingReportRow(
+                    id=key,
+                    report_kind="week",
+                    period_label="2026-W43",
+                    period_start=date(2026, 10, 19),
+                    period_end=date(2026, 10, 25),
+                    timezone="Asia/Shanghai",
+                    review_mode="as_recorded",
+                    knowledge_cutoff=NOW_MIGRATIONS,
+                    generated_at=NOW_MIGRATIONS,
+                    contract=frozen["contract"],
+                    input_fingerprint=content_hash({"fixture": key}),
+                    content_json=frozen,
+                    content_hash=frozen_hash,
+                    run_id=key,
+                )
+            )
+    _upgrade(sqlite_engine, "0024")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        explicit = read_report(session, "explicit")
+        assert explicit.context.scope.topic.code == "T01"
+        assert explicit.context.scope.topic.taxonomy_version == "tv-test"
+        assert explicit.context.scope.algorithm_version is None
+        assert explicit.context.status == "legacy_unknown"
+        assert explicit.context.scope.topic_known is True
+        assert read_report(session, "all").context.scope.topic_known is True
+        assert read_report(session, "all").context.scope.topic is None
+        for key in ("omitted", "missing-run"):
+            detail = read_report(session, key)
+            assert detail.context.scope.topic_known is False
+            assert report_input_status(session, detail, now=NOW_MIGRATIONS)["changed"] is None
+        row = session.get(ReadingReportRow, "explicit")
+        assert row.content_json == frozen and row.content_hash == frozen_hash
+        session.execute(delete(RunRow))
+    with session_scope(factory) as session:
+        assert read_report(session, "explicit").context.scope.topic.code == "T01"
+        assert session.get(ReadingReportContextRow, "explicit").series_key is None
+    _downgrade(sqlite_engine, "0023")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        row = session.get(ReadingReportRow, "explicit")
+        assert row.content_json == frozen and row.content_hash == frozen_hash
+    _upgrade(sqlite_engine, "0024")
+    assert related_state() == before
+    with session_scope(factory) as session:
+        assert read_report(session, "explicit").context.scope.topic_known is False
+        assert session.get(ReadingReportRow, "explicit").content_json == frozen
+
+
+def test_0025_receipt_backfill_recovers_request_hashes(sqlite_engine: Engine) -> None:
+    """既有键回填的请求哈希必须与服务写入时的哈希一致；业务行在往返中原样保留。"""
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from conftest import activate_workspace
+    from papersteward.core.entities import Rating
+    from papersteward.reading.insights.assets import create_asset
+    from papersteward.reading.insights.contracts import AssetCreateInput, ReadTimeDeclaration
+    from papersteward.reading.insights.idempotency import (
+        ASSET_CREATE,
+        READING_TIME_RECORD,
+        asset_content_payload,
+        reading_time_payload,
+        request_hash,
+    )
+    from papersteward.reading.insights.timeline import record_reading_time
+    from papersteward.storage.mappers import as_utc
+    from papersteward.storage.repositories import RatingRepository
+
+    _upgrade(sqlite_engine)
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    with session_scope(factory) as session:
+        seed_paper(session, "receipt-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "receipt-paper",
+            archived_at=at,
+            content=system_content(title="回执种子论文", completed_at=at),
+        )
+        RatingRepository(session).add(
+            Rating("receipt-paper", 4, "有具体反馈", (), None, as_utc(at))
+        )
+        create_asset(
+            session,
+            AssetCreateInput(
+                kind="harvest",
+                title="回执资产",
+                body="正文内容",
+                sources=[{"paper_id": "receipt-paper", "rating_at": as_utc(at)}],
+                idempotency_key="receipt-asset-key",
+            ),
+            now=at,
+        )
+        record_reading_time(
+            session,
+            "receipt-paper",
+            ReadTimeDeclaration(precision="day", day=at.date()),
+            now=at,
+            expected_revision=0,
+            idempotency_key="receipt-time-key",
+        )
+
+    def receipts() -> dict[str, dict]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT idempotency_key, operation, target_id, request_hash, result_json"
+                    " FROM reading_write_receipt"
+                )
+            ).all()
+        return {
+            row.idempotency_key: {
+                "operation": row.operation,
+                "target_id": row.target_id,
+                "request_hash": row.request_hash,
+                "result_json": row.result_json,
+            }
+            for row in rows
+        }
+
+    def business_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                    "reading_time_revision",
+                )
+            }
+
+    written = receipts()
+    before = business_state()
+    _downgrade(sqlite_engine, "0024")
+    assert business_state() == before
+    _upgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    recovered = receipts()
+    # 回填恢复的哈希与降级前服务写入的哈希完全一致：同一规范化口径。
+    assert recovered == {
+        "receipt-time-key": {
+            "operation": "reading_time.record",
+            "target_id": "receipt-paper",
+            "request_hash": written["receipt-time-key"]["request_hash"],
+            "result_json": None,
+        },
+        "receipt-asset-key": {
+            "operation": "asset.create",
+            "target_id": "",
+            "request_hash": written["receipt-asset-key"]["request_hash"],
+            "result_json": None,
+        },
+    }
+    # 哈希可由共享规范化函数从存储行重现。
+    assert recovered["receipt-time-key"]["request_hash"] == request_hash(
+        READING_TIME_RECORD,
+        "receipt-paper",
+        reading_time_payload(
+            paper_id="receipt-paper",
+            precision="day",
+            day=at.date().isoformat(),
+            month=None,
+        ),
+    )
+    assert recovered["receipt-asset-key"]["request_hash"] == request_hash(
+        ASSET_CREATE,
+        "",
+        asset_content_payload(
+            "harvest",
+            title="回执资产",
+            body="正文内容",
+            applicability=None,
+            sources=[("receipt-paper", as_utc(at).isoformat())],
+        ),
+    )
+
+
+def test_0026_derived_copy_backfill_registers_private_fields(sqlite_engine: Engine) -> None:
+    """既有报告的私人字段按冻结正文登记；旧报告缺版本记 None，往返不改业务行。"""
+    from papersteward.storage.delivery import content_hash
+    from papersteward.storage.models import ReadingDerivedCopyRow, ReadingReportRow
+
+    _upgrade(sqlite_engine, "0025")
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    frozen = {
+        "contract": "reading-insights.report/1",
+        "metrics": {},
+        "readings": [],
+        "backfills": [],
+        "unassigned": [],
+        "changes": [],
+        "assets": [
+            {
+                "asset_id": "copy-asset",
+                "title": "私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": "私人正文",
+                "revision": 3,
+                "source_paper_ids": ["copy-paper"],
+                "cross_topic": False,
+            },
+            {
+                # 旧报告形态：无 revision、无正文副本。
+                "asset_id": "copy-asset",
+                "title": "私人标题",
+                "kind": "problem",
+                "status": "open",
+                "body": None,
+                "source_paper_ids": ["copy-paper"],
+                "cross_topic": False,
+            },
+        ],
+    }
+    with session_scope(factory) as session:
+        for key in ("copy-report-a", "copy-report-b"):
+            session.add(
+                ReadingReportRow(
+                    id=key,
+                    report_kind="week",
+                    period_label="测试周",
+                    period_start=None,
+                    period_end=None,
+                    timezone="Asia/Shanghai",
+                    review_mode="as_recorded",
+                    knowledge_cutoff=at,
+                    generated_at=at,
+                    contract="reading-insights.report/1",
+                    input_fingerprint=content_hash({"fixture": key}),
+                    content_json=frozen,
+                    content_hash=content_hash(frozen),
+                    run_id=key,
+                )
+            )
+
+    def derived_rows() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT source_kind, source_id, source_revision, derived_kind,"
+                    " derived_id, field_kind FROM reading_derived_copy"
+                    " ORDER BY derived_id, source_revision, field_kind"
+                )
+            ).all()
+
+    def business_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in ("reading_report", "reading_asset", "reading_write_receipt")
+            }
+
+    before = business_state()
+    _upgrade(sqlite_engine, "0026")
+    expected = [
+        # SQLite ASC 排序中 NULL 在最前。
+        ("asset", "copy-asset", None, "report", "copy-report-a", "title"),
+        ("asset", "copy-asset", 3, "report", "copy-report-a", "body"),
+        ("asset", "copy-asset", 3, "report", "copy-report-a", "title"),
+        ("asset", "copy-asset", None, "report", "copy-report-b", "title"),
+        ("asset", "copy-asset", 3, "report", "copy-report-b", "body"),
+        ("asset", "copy-asset", 3, "report", "copy-report-b", "title"),
+    ]
+    assert derived_rows() == expected
+    assert business_state() == before
+
+    _downgrade(sqlite_engine, "0025")
+    assert business_state() == before
+    _upgrade(sqlite_engine, "0026")
+    assert business_state() == before
+    assert derived_rows() == expected
+    with session_scope(factory) as session:
+        count = session.scalar(select(func.count()).select_from(ReadingDerivedCopyRow))
+    assert count == len(expected)
+
+
+def test_0027_receipt_rebuild_preserves_rows_and_extends_operations(
+    sqlite_engine: Engine,
+) -> None:
+    """回执表重建逐行保留既有回执；新 CHECK 接受结构化操作码，降级移除。"""
+    from test_reading_insight_projection import seed_archive, seed_paper, system_content
+
+    from conftest import activate_workspace
+    from papersteward.reading.insights.contracts import ReadTimeDeclaration
+    from papersteward.reading.insights.timeline import record_reading_time
+
+    _upgrade(sqlite_engine, "0026")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+
+    at = NOW_MIGRATIONS - timedelta(hours=2)
+    with session_scope(factory) as session:
+        seed_paper(session, "sf-paper", first_seen_at=at)
+        seed_archive(
+            session,
+            "sf-paper",
+            archived_at=at,
+            content=system_content(title="结构化种子论文", completed_at=at),
+        )
+        record_reading_time(
+            session,
+            "sf-paper",
+            ReadTimeDeclaration(precision="day", day=at.date()),
+            now=at,
+            expected_revision=0,
+            idempotency_key="sf-time-key",
+        )
+
+    def receipts() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT idempotency_key, operation, target_id, request_hash,"
+                    " result_json, created_at FROM reading_write_receipt"
+                    " ORDER BY idempotency_key"
+                )
+            ).all()
+        return [tuple(row) for row in rows]
+
+    before = receipts()
+    assert before, "种子写入应产生既有操作码回执行"
+
+    # 0026 的 CHECK 拒绝新操作码（验证扩展确实由本迁移引入）。
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_write_receipt (id, idempotency_key, operation,"
+                " target_id, request_hash, result_json, created_at) VALUES ("
+                "'rej', 'newop-key', 'structured_feedback.revise', 'sf-paper',"
+                " NULL, NULL, '2026-10-21 08:00:00.000000')"
+            )
+        )
+
+    _upgrade(sqlite_engine, "0027")
+    assert receipts() == before, "回执表重建必须逐行保留既有数据"
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_write_receipt (id, idempotency_key, operation,"
+                " target_id, request_hash, result_json, created_at) VALUES ("
+                "'acc', 'sf-key-1', 'structured_feedback.revise', 'sf-paper',"
+                " 'aabbccdd', NULL, '2026-10-21 08:00:00.000000')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_structured_feedback (paper_id, revision, recorded_at,"
+                " rating_at, value_sources_json, limited_reasons_json, context_note,"
+                " applicability, takeaway, question, usage_result, vocabulary_version,"
+                " idempotency_key) VALUES ("
+                "'sf-paper', 1, '2026-10-21 08:00:00.000000', NULL, '[\"aids_understanding\"]',"
+                " '[]', NULL, NULL, '学到了X', NULL, NULL, 'reading-feedback.vocab/1', 'sf-key-1')"
+            )
+        )
+
+    _downgrade(sqlite_engine, "0026")
+    assert receipts() == before, "降级移除新操作码回执，旧回执原样保留"
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_structured_feedback" not in tables
+
+    _upgrade(sqlite_engine, "0027")
+    assert receipts() == before, "再升级不恢复已删除的数据"
+
+
+def test_0028_analysis_tables_roundtrip_with_data(sqlite_engine: Engine) -> None:
+    """0028 全为新表：head 种子后降级 0027 整体删除，再升级为空表。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+
+    _upgrade(sqlite_engine)
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+
+    with session_scope(factory) as session:
+        seed_paper(session, "ana-paper", first_seen_at=at)
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g1', 'reading_reflection', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"user_notes\"]', NULL, 'reading-analysis.consent/1',"
+                " :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_revoke_event (id, grant_id, purpose,"
+                " reason, created_at) VALUES ('r1', 'g1', 'reading_reflection',"
+                " 'user', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_manifest (id, purpose, manifest_hash,"
+                " content_json, created_at) VALUES ('m1', 'reading_reflection',"
+                " 'a'*64, '{}', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_preview (id, token, manifest_id,"
+                " manifest_hash, purpose, model_config_version, expires_at,"
+                " consumed_at, created_at) VALUES ('p1', 'tok', 'm1', 'a'*64,"
+                " 'reading_reflection', 'v-test', :expires, NULL, :at)"
+            ),
+            {"at": at.isoformat(), "expires": (at + timedelta(minutes=15)).isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_excerpt (id, paper_id, content,"
+                " source_note, content_hash, recorded_at) VALUES ('e1', 'ana-paper',"
+                " '摘录内容', '第 2 页', 'b'*64, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    def analysis_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name}")).all()
+                for name in (
+                    "reading_analysis_grant",
+                    "reading_analysis_revoke_event",
+                    "reading_analysis_manifest",
+                    "reading_analysis_preview",
+                    "reading_analysis_excerpt",
+                )
+            }
+
+    before = analysis_state()
+    assert all(len(rows) == 1 for rows in before.values())
+
+    _upgrade(sqlite_engine)
+    assert analysis_state() == before
+
+    _downgrade(sqlite_engine, "0027")
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert not set(before) & tables
+
+    _upgrade(sqlite_engine, "0028")
+    assert all(not rows for rows in analysis_state().values())
+
+
+def test_0029_derived_copy_rebuild_and_candidate_roundtrip(sqlite_engine: Engine) -> None:
+    """登记行经重建逐行不变；候选随升级可用；降级遇候选登记明确拒绝。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+
+    _upgrade(sqlite_engine, "0028")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with session_scope(factory) as session:
+        seed_paper(session, "cand-paper", first_seen_at=at)
+        from papersteward.storage.delivery import content_hash
+        from papersteward.storage.models import ReadingReportRow
+
+        frozen = {"contract": "reading-insights.report/1", "metrics": {}}
+        session.add(
+            ReadingReportRow(
+                id="rep1",
+                report_kind="week",
+                period_label="2026-W43",
+                period_start=None,
+                period_end=None,
+                timezone="Asia/Shanghai",
+                review_mode="as_recorded",
+                knowledge_cutoff=at,
+                generated_at=at,
+                contract="reading-insights.report/1",
+                input_fingerprint=content_hash({"fixture": "rep1"}),
+                content_json=frozen,
+                content_hash=content_hash(frozen),
+                run_id="rep1",
+            )
+        )
+        session.flush()
+        connection = session.connection()
+        # 既有报告登记行（旧 source_kind/field_kind 组合）
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d1', 'asset', 'a1', 2, 'report', 'rep1', 'title', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    def derived_rows() -> list[tuple]:
+        with sqlite_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT id, source_kind, source_id, source_revision, derived_kind,"
+                    " derived_id, field_kind FROM reading_derived_copy"
+                    " ORDER BY id"
+                )
+            ).fetchall()
+        return [tuple(row) for row in rows]
+
+    before = derived_rows()
+    assert before == [("d1", "asset", "a1", 2, "report", "rep1", "title")]
+
+    _upgrade(sqlite_engine, "0029")
+    assert derived_rows() == before, "重建必须逐行保留既有登记"
+
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_candidate (id, run_id, manifest_id,"
+                " manifest_hash, grant_id, model_config_version, paper_id, kind,"
+                " nature, statement, conditions, limitations, quote, quote_source_id,"
+                " source_refs_json, verification, stale, created_at) VALUES ("
+                "'c1', 'run-1', 'm1', 'a'*64, 'g1', 'v1', 'cand-paper', 'harvest',"
+                " 'model_inference', '候选陈述', NULL, NULL, NULL, NULL, '[]',"
+                " 'pending_user', 0, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d2', 'paper', 'cand-paper', NULL, 'candidate', 'c1',"
+                " 'statement', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    # 降级遇候选登记明确拒绝；清掉候选与登记后可降级且旧登记保留。
+    with pytest.raises(RuntimeError, match="0029"):
+        _downgrade(sqlite_engine, "0028")
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id = 'd2'"))
+        connection.execute(text("DELETE FROM reading_analysis_candidate WHERE id = 'c1'"))
+    _downgrade(sqlite_engine, "0028")
+    assert derived_rows() == before
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_analysis_candidate" not in tables
+
+    _upgrade(sqlite_engine, "0029")
+    assert derived_rows() == before
+
+
+def test_0030_asset_rebuild_and_decisions_roundtrip(sqlite_engine: Engine) -> None:
+    """资产三表经重建逐行不变；typed/decision 随升级可用；降级有守卫。"""
+    from test_reading_insight_projection import seed_paper
+
+    from conftest import activate_workspace
+
+    _upgrade(sqlite_engine, "0029")
+    activate_workspace(sqlite_engine)
+    factory = create_session_factory(sqlite_engine)
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with session_scope(factory) as session:
+        seed_paper(session, "d-paper", first_seen_at=at)
+        from test_reading_insight_projection import seed_archive, system_content
+
+        seed_archive(
+            session,
+            "d-paper",
+            archived_at=at,
+            content=system_content(title="决定种子", completed_at=at),
+            rating_col=4,
+            ratings=[(at, 4, None)],
+        )
+        # 裸 SQL 种旧行形态（0029 时不跑含 typed 查询的新版 ORM 代码）。
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at)"
+                " VALUES ('old-asset', 'problem', 'd-asset-key', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at,"
+                " title, body, applicability, status) VALUES"
+                " ('old-asset', 1, :at, '旧资产标题', '旧资产正文', NULL, 'open')"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_source (id, asset_id, revision, paper_id,"
+                " archive_hash, rating_at) VALUES"
+                " ('old-src', 'old-asset', 1, 'd-paper', 'c'*64, :rating)"
+            ),
+            {"rating": at.isoformat()},
+        )
+
+    def asset_state() -> dict:
+        with sqlite_engine.connect() as connection:
+            return {
+                name: connection.execute(text(f"SELECT * FROM {name} ORDER BY 1")).all()
+                for name in (
+                    "reading_asset",
+                    "reading_asset_revision",
+                    "reading_asset_source",
+                )
+            }
+
+    before = asset_state()
+    assert before["reading_asset"], "种子资产行必须存在"
+
+    _upgrade(sqlite_engine, "0030")
+    assert asset_state() == before, "三表重建必须逐行保留"
+
+    with session_scope(factory) as session:
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at)"
+                " VALUES ('m1', 'method', 'm-key', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at,"
+                " title, body, applicability, status) VALUES ('m1', 1, :at,"
+                " '方法卡', '关键做法正文', NULL, 'active')"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_typed (asset_id, revision, content_json)"
+                ' VALUES (\'m1\', 1, \'{"problem": "P", "approach": "A"}\')'
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_decision (id, candidate_id, decision,"
+                " asset_id, asset_revision, paper_id, kind, statement_hash, note,"
+                " decided_at) VALUES ('dec1', 'c1', 'confirmed', 'm1', 1,"
+                " 'd-paper', 'method', 'a'*64, NULL, :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "UPDATE reading_analysis_candidate SET verification = 'confirmed'"
+                " WHERE id = 'x'"  # 无行，占位保证 UPDATE 语法可见性
+            )
+        )
+
+    # 降级守卫：新 kind 资产存在即拒绝
+    with pytest.raises(RuntimeError, match="0030"):
+        _downgrade(sqlite_engine, "0029")
+
+    # 清掉新类型与决定 → 可降级且旧数据保留
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_decision"))
+        connection.execute(text("DELETE FROM reading_asset_typed"))
+        connection.execute(text("DELETE FROM reading_asset WHERE kind = 'method'"))
+    _downgrade(sqlite_engine, "0029")
+    assert asset_state() == before
+    with sqlite_engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+    assert "reading_asset_typed" not in tables
+    assert "reading_analysis_decision" not in tables
+
+    _upgrade(sqlite_engine, "0030")
+    assert asset_state() == before
+
+
+def test_0031_synthesis_grant_and_derived_copy_roundtrip(sqlite_engine: Engine) -> None:
+    """授权用途与私人综合登记扩展：旧行保留，新值可写，降级遇新值拒绝。"""
+    _upgrade(sqlite_engine, "0030")
+    at = NOW_MIGRATIONS - timedelta(hours=1)
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-old', 'reading_reflection', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"user_notes\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-old', 'asset', 'asset-1', 1, 'report', 'report-1',"
+                " 'title', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+    # 0030 的 CHECK 拒绝新用途与新登记值（验证扩展确由本迁移引入）。
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-new', 'reading_synthesis', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-new', 'candidate', 'cand-1', NULL, 'report', 'report-1',"
+                " 'synthesis', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+
+    _upgrade(sqlite_engine, "0031")
+
+    def rows() -> tuple[list[tuple], list[tuple]]:
+        with sqlite_engine.connect() as connection:
+            grants = [
+                tuple(row)
+                for row in connection.execute(
+                    text("SELECT id, purpose FROM reading_analysis_grant ORDER BY id")
+                )
+            ]
+            copies = [
+                tuple(row)
+                for row in connection.execute(
+                    text("SELECT id, source_kind, field_kind FROM reading_derived_copy ORDER BY id")
+                )
+            ]
+        return grants, copies
+
+    grants, copies = rows()
+    assert grants == [("g-old", "reading_reflection")]
+    assert copies == [("d-old", "asset", "title")]
+
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-new', 'reading_synthesis', 'once',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', :hash, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat(), "hash": "a" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_derived_copy (id, source_kind, source_id,"
+                " source_revision, derived_kind, derived_id, field_kind, created_at)"
+                " VALUES ('d-new', 'candidate', 'cand-1', NULL, 'report', 'report-1',"
+                " 'synthesis', :at)"
+            ),
+            {"at": at.isoformat()},
+        )
+    assert rows()[0] == [("g-new", "reading_synthesis"), ("g-old", "reading_reflection")]
+
+    # 有新值时不猜测降级：明确拒绝，旧行保持不变。
+    with pytest.raises(RuntimeError, match="0031"):
+        _downgrade(sqlite_engine, "0030")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_grant WHERE id = 'g-new'"))
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id = 'd-new'"))
+    _downgrade(sqlite_engine, "0030")
+    grants, copies = rows()
+    assert grants == [("g-old", "reading_reflection")]
+    assert copies == [("d-old", "asset", "title")]
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO reading_analysis_grant (id, purpose, scope_mode,"
+                " endpoint_identity, model_config_version, model_name,"
+                " material_classes_json, manifest_hash, consent_version, created_at,"
+                " revoked_at) VALUES ('g-again', 'reading_synthesis', 'workspace',"
+                " 'http://127.0.0.1:9/v1', 'v-test', 'test-model',"
+                " '[\"asset_content\"]', NULL, 'reading-analysis.consent/1', :at, NULL)"
+            ),
+            {"at": at.isoformat()},
+        )
+    _upgrade(sqlite_engine, "0031")
+    assert rows() == (grants, copies)
+
+
+def test_0032_memory_preserves_rows_and_guards_downgrade(sqlite_engine: Engine) -> None:
+    _upgrade(sqlite_engine, "0031")
+    at = NOW_MIGRATIONS.isoformat()
+    insert_grant = text(
+        "INSERT INTO reading_analysis_grant (id, purpose, scope_mode, endpoint_identity,"
+        " model_config_version, material_classes_json, consent_version, created_at)"
+        " VALUES (:id, :purpose, 'workspace', 'http://127.0.0.1:9/v1', 'v-test',"
+        " '[\"structured_reasons\"]', 'reading-analysis.consent/1', :at)"
+    )
+    insert_copy = text(
+        "INSERT INTO reading_derived_copy (id, source_kind, source_id, source_revision,"
+        " derived_kind, derived_id, field_kind, created_at)"
+        " VALUES (:id, 'asset', 'asset-old', 2, :target, 'target-old', :field, :at)"
+    )
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "old-grant", "purpose": "reading_synthesis", "at": at}
+        )
+        connection.execute(
+            insert_copy, {"id": "old-copy", "target": "report", "field": "synthesis", "at": at}
+        )
+
+    def snapshot():
+        with sqlite_engine.connect() as connection:
+            return tuple(
+                [
+                    tuple(row)
+                    for row in connection.execute(text(f"SELECT * FROM {name} ORDER BY id"))
+                ]
+                for name in ("reading_analysis_grant", "reading_derived_copy")
+            )
+
+    before = snapshot()
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "new-grant", "purpose": "reading_profile_inference", "at": at}
+        )
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_copy, {"id": "new-copy", "target": "memory", "field": "memory", "at": at}
+        )
+    _upgrade(sqlite_engine, "0032")
+    assert snapshot() == before
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "new-grant", "purpose": "reading_profile_inference", "at": at}
+        )
+        connection.execute(
+            insert_copy, {"id": "new-copy", "target": "memory", "field": "memory", "at": at}
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_memory (id, group_key, created_at) "
+                "VALUES ('mem', 'value:test', :at)"
+            ),
+            {"at": at},
+        )
+    with pytest.raises(RuntimeError, match="0032"):
+        _downgrade(sqlite_engine, "0031")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_memory"))
+    # Even an empty memory table cannot silently lose its grants and provenance.
+    with pytest.raises(RuntimeError, match="0032"):
+        _downgrade(sqlite_engine, "0031")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_grant WHERE id='new-grant'"))
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id='new-copy'"))
+    _downgrade(sqlite_engine, "0031")
+    assert snapshot() == before
+    _upgrade(sqlite_engine, "0032")
+    assert snapshot() == before

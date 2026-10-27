@@ -1,4 +1,4 @@
-"""通用 SQLite SAVEPOINT 工具；失败操作自身原子回滚，提交由外层事务决定。"""
+"""通用 SQLite 事务工具；失败操作自身原子回滚，提交由外层事务决定。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
@@ -21,4 +22,21 @@ def atomic(session: Session) -> Iterator[None]:
         yield
 
 
-__all__ = ["atomic"]
+@contextmanager
+def write_tx(session: Session) -> Iterator[None]:
+    """请求级短写事务：SQLite 上以 BEGIN IMMEDIATE 开写，提交或整体回滚。
+
+    回执查询、回执行插入、版本检查与业务写入必须在同一把写锁内完成；
+    延迟 BEGIN 的"读后写"升级会撞 BUSY_SNAPSHOT 立即失败，写接口一律用本工具。
+    """
+    if session.get_bind().dialect.name == "sqlite":
+        session.execute(text("BEGIN IMMEDIATE"))
+    try:
+        yield
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+__all__ = ["atomic", "write_tx"]

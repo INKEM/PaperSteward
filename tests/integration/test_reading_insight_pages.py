@@ -361,3 +361,156 @@ def test_archive_page_links_to_overview(client, migrated_engine):
     archive = client.get("/ui/archive")
     assert 'href="/ui/reading-insights"' in archive.text
     assert "阅读回顾" in archive.text
+
+
+# —— 结构化理由（R2-01）：折叠表单、保存/清除与输入保留 ——————————————————
+
+
+def _post_sf(client, paper_id: str, data: dict[str, str]):
+    return client.post(
+        f"/ui/reading-insights/papers/{paper_id}/feedback-context",
+        data={"expected_revision": "0", "idempotency_key": "sf-page-key", **data},
+        headers=HEADERS,
+    )
+
+
+def test_detail_shows_optional_structured_block(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化块论文")
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert detail.status_code == 200
+    assert "结构化理由（可选）" in detail.text
+    assert "尚未填写" in detail.text
+    assert "填写或修订理由" in detail.text
+    # 常用选项平铺，其余维度折叠；说明不填不影响评分与备注。
+    assert "方法可复用" in detail.text and "帮助理解" in detail.text
+    assert "价值有限的原因" in detail.text
+    assert "不填不影响评分与备注" in detail.text
+
+
+def test_structured_form_success_updates_detail(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化保存论文")
+    response = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-save-1",
+            "vs_method_reusable": "1",
+            "vs_aids_understanding": "1",
+            "lr_already_known": "1",
+            "takeaway": "学到了评估协议",
+            "context_note": "用于当前综述任务",
+        },
+    )
+    assert response.status_code == 200
+    assert "已记录结构化理由" in response.text
+    assert "方法可复用" in response.text
+    assert "理由修订记录" in response.text  # 版本列表含初始记录；统计侧不把它算修订
+    detail = client.get(f"/ui/papers/{paper_id}")
+    # 码表按字典序存储：aids_understanding 在 method_reusable 之前。
+    assert "当前：帮助理解 · 方法可复用 · 内容已知 · 有语境 · 有收获" in detail.text
+    assert "版本 1" in detail.text
+
+
+def test_structured_form_conflict_preserves_input(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化冲突论文")
+    first = _post_sf(client, paper_id, {"idempotency_key": "sf-c-1", "vs_usable_now": "1"})
+    assert first.status_code == 200
+    stale = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-c-2",
+            "expected_revision": "0",
+            "vs_method_reusable": "1",
+            "takeaway": "过期前提",
+        },
+    )
+    assert stale.status_code == 409
+    assert "已保留你的输入" in stale.text
+    assert 'name="vs_method_reusable" value="1" checked' in stale.text
+    assert "过期前提" in stale.text
+
+
+def test_structured_form_clear_keeps_history(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化清除论文")
+    first = _post_sf(client, paper_id, {"idempotency_key": "sf-cl-1", "vs_usable_now": "1"})
+    assert first.status_code == 200
+    cleared = _post_sf(
+        client,
+        paper_id,
+        {
+            "idempotency_key": "sf-cl-2",
+            "expected_revision": "1",
+            "action": "clear",
+        },
+    )
+    assert cleared.status_code == 200
+    detail = client.get(f"/ui/papers/{paper_id}")
+    assert "（已清除，历史保留）" in detail.text
+    assert "理由修订记录" in detail.text
+    # 表单回填清除后的状态：复选框不再勾选。
+    assert 'name="vs_usable_now" value="1" checked' not in detail.text
+
+
+def test_structured_form_links_rating_version(client, migrated_engine):
+    activate(client)
+    paper_id = _import_paper(client, "结构化关联评分论文")
+    detail = client.get(f"/ui/papers/{paper_id}")
+    # 导入论文有初始评分（4 分）：关联下拉应列出该评分版本。
+    assert "不关联具体评分" in detail.text
+
+
+def test_overview_shows_structured_coverage_and_revisions(client, migrated_engine):
+    """事实回顾新增结构化反馈覆盖与修改记录；空理由不补成中立。"""
+    activate(client)
+    paper_id = _import_paper(client, "概览结构化论文")
+    # 阅读时间明确才进入阅读样本集合（覆盖分母与评分覆盖同一口径）；
+    # 概览默认查今天所在周（NOW2 在上海为 2026-10-26），阅读日须在本周内。
+    assert (
+        _post_read_time(client, paper_id, {"precision": "day", "day": "2026-10-26"}).status_code
+        == 200
+    )
+    first = _post_sf(
+        client,
+        paper_id,
+        {"idempotency_key": "sf-ov-1", "vs_method_reusable": "1"},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        f"/ui/reading-insights/papers/{paper_id}/feedback-context",
+        data={
+            "expected_revision": "1",
+            "idempotency_key": "sf-ov-2",
+            "vs_method_reusable": "1",
+            "vs_aids_understanding": "1",
+        },
+        headers=HEADERS,
+    )
+    assert second.status_code == 200
+    page = client.get("/ui/reading-insights?kind=week")
+    assert page.status_code == 200
+    # 覆盖与修订两行指标；修订清单含理由事件（+帮助理解）。
+    assert "结构化理由覆盖" in page.text
+    assert "已填理由 1/1" in page.text
+    assert "结构化理由修订" in page.text
+    assert "1 次 · 涉及 1 篇" in page.text
+    assert "类型" in page.text and "理由" in page.text
+    assert "+帮助理解" in page.text
+
+
+def test_overview_without_structured_feedback_keeps_zero_counts(client, migrated_engine):
+    """没有结构化理由时显示 0/total，不推导、不显示中立。"""
+    activate(client)
+    paper_id = _import_paper(client, "概览无理由论文")
+    assert (
+        _post_read_time(client, paper_id, {"precision": "day", "day": "2026-10-26"}).status_code
+        == 200
+    )
+    page = client.get("/ui/reading-insights?kind=week")
+    assert page.status_code == 200
+    assert "已填理由 0/1" in page.text
+    assert "0 次 · 涉及 0 篇" in page.text

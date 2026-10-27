@@ -79,6 +79,13 @@ def test_database_table_and_constraint_freeze() -> None:
     }
 
 
+def test_reading_report_context_is_an_explicit_additive_table() -> None:
+    table = Base.metadata.tables["reading_report_context"]
+    assert {column.name for column in table.columns} == {"report_id", "context_json", "series_key"}
+    assert {key.target_fullname for key in table.foreign_keys} == {"reading_report.id"}
+    assert "ix_reading_report_context_series" in {index.name for index in table.indexes}
+
+
 def test_migration_revision_freeze() -> None:
     versions = ROOT / "migrations" / "versions"
     revision_files = sorted(versions.glob("*.py"))
@@ -102,6 +109,9 @@ def test_schema_registry_freeze() -> None:
         "event",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
+        "reading_synthesis",
+        "reading_profile_inference",
     }
     assert set(schema_for("classification")["required"]) == {
         "primary_tag",
@@ -140,6 +150,13 @@ def test_schema_registry_freeze() -> None:
         "explanation",
     }
     assert "type" in schema_for("event")["properties"]
+    # candidates 有默认空列表：非必填；insufficient_material 无默认，必填。
+    assert set(schema_for("reading_reflection")["required"]) == {
+        "paper_id",
+        "insufficient_material",
+    }
+    # 专题/问题/候选联系默认空列表；只有 insufficient_material 必填。
+    assert set(schema_for("reading_synthesis")["required"]) == {"insufficient_material"}
 
 
 def test_prompt_registry_and_fake_provider_freeze() -> None:
@@ -151,12 +168,22 @@ def test_prompt_registry_and_fake_provider_freeze() -> None:
         "special_nomination",
         "profile_extraction",
         "query_planning",
+        "reading_reflection",
+        "reading_synthesis",
+        "reading_profile_inference",
         "repair",
     )
     assert registry.get("classification").version == "classification/v2"
     assert registry.get("summary").schema == "summary"
     assert registry.get("relevance").schema == "relevance"
     assert registry.get("special_nomination").schema == "special_nomination"
+    assert registry.get("reading_reflection").version == "reading_reflection/v1"
+    assert registry.get("reading_reflection").schema == "reading_reflection"
+    assert registry.get("reading_synthesis").version == "reading_synthesis/v1"
+    assert registry.get("reading_synthesis").schema == "reading_synthesis"
+    assert registry.get("reading_profile_inference").version == "reading_profile_inference/v1"
+    assert registry.get("reading_profile_inference").schema == "reading_profile_inference"
+    assert set(schema_for("reading_profile_inference")["required"]) == {"insufficient_material"}
     assert registry.get("repair").schema is None
 
     provider = FakeLLM()
