@@ -457,6 +457,7 @@ def test_json_and_browser_journey(client, migrated_engine, monkeypatch):
     identity = rows[0]["memory_id"]
     page = client.get(f"/ui/reading-insights/memory/{identity}")
     assert "反馈形成时间" in page.text and "系统归档／补录" in page.text
+    assert "（系统记录）" in page.text
     assert "此前 8 周" in page.text and "独立文献 3 篇" in page.text
     key = re.search(r'name="idempotency_key" value="([^"]+)"', page.text)[1]
     response = client.post(
@@ -581,6 +582,8 @@ def test_once_authorization_preserves_preview_token_in_browser(
     )
     assert authorization.status_code == 200
     assert f'value="{token}"' in authorization.text
+    assert 'value="once" selected' in authorization.text
+    assert 'name="kind_structured_reasons" value="1" checked' in authorization.text
     assert provider.call_count == 0
     response = client.post(
         "/ui/reading-insights/memory/runs", data={"preview_token": token}, headers=HEADERS
@@ -590,3 +593,48 @@ def test_once_authorization_preserves_preview_token_in_browser(
     finished = wait(client.app.state.ui_flows, identity)
     assert finished.status.value == "succeeded"
     assert provider.call_count == 1
+
+
+@pytest.mark.parametrize("count,eligible", [(2, False), (3, True)])
+def test_exact_three_paper_two_month_boundary(insights_factory, count, eligible):
+    times = [TIMES[0], TIMES[1], TIMES[1] + timedelta(days=1)]
+    seed(insights_factory, times=times[:count])
+    group = next(item for item in groups(insights_factory) if item.key == KEY)
+    assert group.feedback_months == ["2026-08", "2026-09"]
+    assert group.stable_eligible is eligible
+
+
+def test_period_asset_search_does_not_hide_older_evidence(insights_factory):
+    from papersteward.api.reading_memory import _list_body
+    from papersteward.reading.insights.assets import create_asset
+
+    seed(insights_factory, times=TIMES[:1])
+    with session_scope(insights_factory) as session:
+        older = create_asset(
+            session,
+            AssetCreateInput(
+                kind="harvest",
+                title="早期可找回的证据",
+                body="老资产仍有价值",
+                sources=[AssetSourceInput(paper_id="m-0")],
+                idempotency_key="old-evidence",
+            ),
+            now=TIMES[0],
+        )
+        for index in range(201):
+            create_asset(
+                session,
+                AssetCreateInput(
+                    kind="harvest",
+                    title=f"近期资产-{index}",
+                    body="新近材料",
+                    sources=[AssetSourceInput(paper_id="m-0")],
+                    idempotency_key=f"new-evidence-{index}",
+                ),
+                now=TIMES[-1] + timedelta(seconds=index),
+            )
+    with session_scope(insights_factory) as session:
+        body = _list_body(session, start="2026-08-01", end="2026-08-31")
+        assert older.asset_id in body
+        assert "早期可找回的证据" in body
+        assert "近期资产-0" not in body

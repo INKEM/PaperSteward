@@ -311,15 +311,20 @@ def list_assets(
     status: str | None = None,
     paper_id: str | None = None,
     keyword: str | None = None,
+    recorded_from: datetime | None = None,
+    recorded_to: datetime | None = None,
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
+    """按当前版本筛选资产；``recorded_to`` 为不含上界，用于先过滤再分页。"""
     repository = ReadingAssetRepository(session)
     pairs, total = repository.list_current(
         kind=kind,
         status=status,
         paper_id=paper_id,
         keyword=keyword,
+        recorded_from=recorded_from,
+        recorded_to=recorded_to,
         limit=limit,
         offset=offset,
     )

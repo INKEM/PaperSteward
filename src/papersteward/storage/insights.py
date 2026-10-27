@@ -622,10 +622,16 @@ class ReadingAssetRepository(_Repository):
         status: str | None = None,
         paper_id: str | None = None,
         keyword: str | None = None,
+        recorded_from: datetime | None = None,
+        recorded_to: datetime | None = None,
         limit: int,
         offset: int,
     ) -> tuple[list[tuple[ReadingAssetRow, ReadingAssetRevisionRow]], int]:
-        """按最新版本视图筛选资产；来源/关键词只作用于当前版本。"""
+        """按最新版本视图筛选资产；来源/关键词/记录时期只作用于当前版本。
+
+        ``recorded_to`` 为不含上界，调用方把结束日换算到次日零点即可按自然日筛选；
+        过滤在 SQL 内完成，避免先取一页新资产再截断时漏掉较早的证据。
+        """
         latest = (
             select(func.max(ReadingAssetRevisionRow.revision))
             .where(ReadingAssetRevisionRow.asset_id == ReadingAssetRow.id)
@@ -660,6 +666,10 @@ class ReadingAssetRepository(_Repository):
                 ReadingAssetRevisionRow.title.like(pattern, escape="\\")
                 | ReadingAssetRevisionRow.body.like(pattern, escape="\\")
             )
+        if recorded_from is not None:
+            conditions.append(ReadingAssetRevisionRow.recorded_at >= recorded_from)
+        if recorded_to is not None:
+            conditions.append(ReadingAssetRevisionRow.recorded_at < recorded_to)
         if conditions:
             statement = statement.where(*conditions)
         total = (

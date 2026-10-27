@@ -1,6 +1,7 @@
 """研究记忆 JSON 与浏览器入口；私人表单仅 POST，不写入 URL。"""
 
 import json
+from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from typing import Any, Literal
 from urllib.parse import quote
@@ -71,6 +72,11 @@ from papersteward.storage.tx import write_tx
 router = APIRouter(prefix="/reading-insights/memory", tags=["reading-insights"])
 pages = APIRouter(prefix="/ui/reading-insights/memory", include_in_schema=False)
 ROOT = "/ui/reading-insights/memory"
+_READING_BASIS_LABELS = {
+    "system_recorded": "系统记录",
+    "declared": "用户回溯声明",
+    "unknown": "来源未明",
+}
 
 
 class MemoryGrantInput(AnalysisGrantInput):
@@ -200,6 +206,23 @@ def _checkboxes(draft: dict[str, str], *, grant: bool = False) -> str:
     )
 
 
+def _recorded_bounds(start: str, end: str) -> tuple[datetime | None, datetime | None]:
+    """把自然日筛选换算成资产记录的 UTC 半开区间；非法日期交给页面逐条比较。"""
+    try:
+        start_day = date.fromisoformat(start) if start else None
+    except ValueError:
+        start_day = None
+    try:
+        end_day = date.fromisoformat(end) if end else None
+    except ValueError:
+        end_day = None
+    recorded_from = datetime.combine(start_day, time.min, tzinfo=UTC) if start_day else None
+    recorded_to = (
+        datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=UTC) if end_day else None
+    )
+    return recorded_from, recorded_to
+
+
 def _list_body(
     session: Session, *, keyword: str = "", asset_kind: str = "", start: str = "", end: str = ""
 ) -> str:
@@ -240,17 +263,28 @@ def _list_body(
         if not selected:
             body += "<li>暂无条目；材料不足时不会补成长期偏好。</li>"
         body += "</ul></section>"
+    # 时期过滤在 SQL 内完成再分页；较早的证据不会被前 200 条新资产遮住。
+    recorded_from, recorded_to = _recorded_bounds(start, end)
     assets = list_assets(
-        session, kind=asset_kind or None, keyword=keyword or None, status=None, limit=200, offset=0
+        session,
+        kind=asset_kind or None,
+        keyword=keyword or None,
+        status=None,
+        recorded_from=recorded_from,
+        recorded_to=recorded_to,
+        limit=200,
+        offset=0,
     )
     body += "<section><h3>知识资产与开放问题</h3><ul>"
     for item in assets["items"]:
-        stamp = item["revision"].recorded_at.date().isoformat()
+        revision = item["revision"]
+        stamp = revision["recorded_at"].date().isoformat()
+        # 非法日期不参与 SQL 过滤，仍按原来的字符串比较拒绝越界项。
         if (start and stamp < start) or (end and stamp > end):
             continue
         body += (
             f'<li><a href="/ui/reading-insights/assets/{item["asset_id"]}">'
-            f"{escape(item['revision'].title)}</a> · {stamp}</li>"
+            f"{escape(revision['title'])}</a> · {stamp}</li>"
         )
     body += (
         "</ul><p>资产保持在同一资产库；近期没有新反馈不会删除旧资产。"
@@ -261,6 +295,11 @@ def _list_body(
 
 def _analysis_forms(session: Session, draft: dict[str, str], preview: dict[str, Any] | None) -> str:
     status = analysis_authorization_status(session, settings=get_settings(), purpose=MEMORY_PURPOSE)
+    draft = dict(draft)
+    if preview:
+        for kind in preview["manifest"]["coverage"]["by_kind"]:
+            draft["kind_" + kind] = "1"
+    scope_mode = draft.get("scope_mode") or "workspace"
     body = (
         "<section><h3>整理新的研究记忆</h3><p>先按全部历史原始反馈分组，再请模型提出措辞。"
         "稳定候选至少 3 篇、可核查反馈跨 2 个自然月；集中补录、回溯声明及单任务样本会降低强度。"
@@ -306,17 +345,20 @@ def _analysis_forms(session: Session, draft: dict[str, str], preview: dict[str, 
         body += hidden("preview_token", preview["preview"]["token"])
     body += (
         '<label>授权范围<select name="scope_mode">'
-        '<option value="workspace">当前工作区持续授权</option>'
-        '<option value="once">仅本次清单（需先预览）</option></select></label>'
+        f'<option value="workspace"{" selected" if scope_mode == "workspace" else ""}>'
+        "当前工作区持续授权</option>"
+        f'<option value="once"{" selected" if scope_mode == "once" else ""}>'
+        "仅本次清单（需先预览）</option></select></label>"
         '<label class="check"><input type="checkbox" name="acknowledged" value="1" required>'
         "我已核对上述端点、材料类别和研究记忆用途，选择将这些材料发送给该模型</label>"
         "<button>保存用途授权</button></fieldset></form>"
     )
     for grant in status.grants:
         labels = "、".join(MATERIAL_KIND_LABELS.get(kind, kind) for kind in grant.material_classes)
+        scope_label = "仅本次清单" if grant.scope_mode == "once" else "当前工作区持续授权"
         body += (
             f"<p>授权 {escape(grant.grant_id)} · {'已撤回' if grant.revoked_at else '未撤回'}；"
-            f"类别：{escape(labels)}</p>"
+            f"类别：{escape(labels)}；范围：{scope_label}。</p>"
         )
         if grant.revoked_at is None:
             body += (
@@ -463,12 +505,13 @@ def _detail_body(
             "contrary": "相反或限制",
             "context": "语境补充（不增加独立样本）",
         }[evidence.role]
+        basis = _READING_BASIS_LABELS.get(evidence.reading_basis, evidence.reading_basis)
         resolved = resolve_material_content(session, ref, built_at=item.recorded_at)
         body += (
             f"<details><summary>{role} · {escape(ref.target_id)} · "
             f"{escape(ref.version_key)}</summary>"
             f"<p>阅读日期：{escape(evidence.reading_start or '未知')}"
-            f"（{escape(evidence.reading_basis)}）；"
+            f"（{escape(basis)}）；"
             f"回溯声明／记录时间：{escape(str(evidence.reading_recorded_at or '未知'))}；"
             f"反馈形成时间：{escape(str(evidence.feedback_at or '未知'))}；"
             f"系统归档／补录：{escape(str(evidence.archived_at))}。</p>"
