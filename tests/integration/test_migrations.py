@@ -1541,8 +1541,6 @@ def test_0030_asset_rebuild_and_decisions_roundtrip(sqlite_engine: Engine) -> No
     from test_reading_insight_projection import seed_paper
 
     from conftest import activate_workspace
-    from papersteward.reading.insights.assets import create_asset
-    from papersteward.reading.insights.contracts import AssetCreateInput
 
     _upgrade(sqlite_engine, "0029")
     activate_workspace(sqlite_engine)
@@ -1560,18 +1558,30 @@ def test_0030_asset_rebuild_and_decisions_roundtrip(sqlite_engine: Engine) -> No
             rating_col=4,
             ratings=[(at, 4, None)],
         )
-        create_asset(
-            session,
-            AssetCreateInput.model_validate(
-                {
-                    "kind": "problem",
-                    "title": "旧资产标题",
-                    "body": "旧资产正文",
-                    "sources": [{"paper_id": "d-paper", "rating_at": at}],
-                    "idempotency_key": "d-asset-key",
-                }
+        # 裸 SQL 种旧行形态（0029 时不跑含 typed 查询的新版 ORM 代码）。
+        connection = session.connection()
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset (id, kind, idempotency_key, created_at)"
+                " VALUES ('old-asset', 'problem', 'd-asset-key', :at)"
             ),
-            now=at,
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_revision (asset_id, revision, recorded_at,"
+                " title, body, applicability, status) VALUES"
+                " ('old-asset', 1, :at, '旧资产标题', '旧资产正文', NULL, 'open')"
+            ),
+            {"at": at.isoformat()},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_asset_source (id, asset_id, revision, paper_id,"
+                " archive_hash, rating_at) VALUES"
+                " ('old-src', 'old-asset', 1, 'd-paper', 'c'*64, :rating)"
+            ),
+            {"rating": at.isoformat()},
         )
 
     def asset_state() -> dict:

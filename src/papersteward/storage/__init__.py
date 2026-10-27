@@ -73,6 +73,7 @@ __all__ = [
     "ReadingAnalysisGrantRepository",
     "ReadingAnalysisManifestRepository",
     "ReadingAnalysisPreviewRepository",
+    "ReadingAnalysisDecisionRepository",
     "ReadingAssetTypedRepository",
     "ReadingAnalysisRevokeRepository",
     "ReadingReportRepository",
