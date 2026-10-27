@@ -1092,9 +1092,7 @@ def report_detail_page(
             rendered.status_code = exc.status_code if isinstance(exc, AppError) else 409
             return rendered
     title = (
-        "知识版回顾报告"
-        if isinstance(detail.content, InsightReportContentV2)
-        else "阅读回顾报告"
+        "知识版回顾报告" if isinstance(detail.content, InsightReportContentV2) else "阅读回顾报告"
     )
     return _page(f"{title} · {escape(detail.period_label)}", body, nav="归档")
 
