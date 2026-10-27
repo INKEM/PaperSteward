@@ -81,24 +81,37 @@ def seed_note_paper(factory, paper_id: str, note: str) -> None:
         )
 
 
-def setup_run(factory, paper_notes: dict[str, str], *, kinds=None):
-    """连模型、种数据、建清单与授权；返回 (params, manifest_row, grant_view)。"""
+def setup_run(
+    factory,
+    paper_notes: dict[str, str],
+    *,
+    kinds=None,
+    now: datetime | None = None,
+    seed_papers: bool = True,
+):
+    """连模型、种数据、建清单与授权；返回 (params, manifest_row, grant_view)。
+
+    ``now`` 默认固定 NOW2；多次 setup_run 时传入递增时间，保证授权按
+    created_at 稳定排序（发送边界取最新 workspace 授权）。
+    """
+    at = now or NOW2
     connect_llm(factory)
-    for paper_id, note in paper_notes.items():
-        seed_note_paper(factory, paper_id, note)
+    if seed_papers:
+        for paper_id, note in paper_notes.items():
+            seed_note_paper(factory, paper_id, note)
     with session_scope(factory) as session:
         row, _ = create_manifest(
             session,
             paper_ids=list(paper_notes),
             kinds=kinds or ["user_notes"],
-            now=NOW2,
+            now=at,
         )
         grant = grant_analysis_authorization(
             session,
             scope_mode="workspace",
             material_classes=kinds or ["user_notes"],
             settings=SETTINGS,
-            now=NOW2,
+            now=at,
         )
         manifest_id, manifest_hash, grant_id = row.id, row.manifest_hash, grant.grant_id
     params = AnalysisRunParamsView(

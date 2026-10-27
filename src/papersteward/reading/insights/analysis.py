@@ -41,6 +41,7 @@ from papersteward.reading.insights.materials import (
 )
 from papersteward.schemas import ReadingReflectionOutput, ReflectionCandidateOutput
 from papersteward.storage.db import session_scope
+from papersteward.storage.delivery import content_hash
 from papersteward.storage.insights import (
     ReadingAnalysisCandidateRepository,
     ReadingAnalysisGrantRepository,
@@ -306,6 +307,10 @@ def _analyze_one(
     _close_provider(gateway)
     output = cast(ReadingReflectionOutput, result.data)
     valid, rejected = verify_candidates(output, batch.entries, paper_id=batch.paper_id)
+    # 拒绝记忆持久：同 (论文, 候选类型, 陈述哈希) 已被忽略的候选在落库前
+    # 过滤（改措辞的新候选仍会展示）。
+    with session_scope(factory) as session:
+        valid = _filter_dismissed(session, batch, valid)
     short_write = _persist_paper(
         factory,
         settings,
@@ -448,6 +453,30 @@ def _authorized_on(
         manifest_hash=params.manifest_hash,
         material_kinds=kinds,
     )
+
+
+def _filter_dismissed(
+    session: Session,
+    batch: _PaperBatch,
+    candidates: list[ReflectionCandidateOutput],
+) -> list[ReflectionCandidateOutput]:
+    """拒绝记忆持久：过滤掉同 (论文, 候选类型, 陈述哈希) 已被忽略的候选
+    （改措辞的新候选仍会展示）；未命中原列表原样返回。"""
+    from papersteward.reading.insights.decisions import dismissed_statement_hashes
+
+    hits: set[tuple[str, str, str]] = set()
+    for kind in {candidate.kind for candidate in candidates}:
+        for digest in dismissed_statement_hashes(session, batch.paper_id, kind):
+            hits.add((batch.paper_id, kind, digest))
+    if not hits:
+        return candidates
+    kept = [
+        candidate
+        for candidate in candidates
+        if (batch.paper_id, candidate.kind, content_hash({"statement": candidate.statement}))
+        not in hits
+    ]
+    return kept
 
 
 def _materials_drifted(session: Session, batch: _PaperBatch) -> bool:
