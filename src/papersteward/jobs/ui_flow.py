@@ -48,8 +48,11 @@ from papersteward.reading.insights.analysis import (
     AnalysisRunParamsView,
     run_insight_analysis,
 )
+from papersteward.reading.insights.authorization import ensure_send_authorized
 from papersteward.reading.insights.contracts import SYNTHESIS_PURPOSE
 from papersteward.reading.insights.materials import manifest_content_of
+from papersteward.reading.insights.memory import run_insight_memory
+from papersteward.reading.insights.memory_contracts import MEMORY_PURPOSE
 from papersteward.reading.insights.reports import (
     ReportPreparationCancelled,
     prepare_report,
@@ -154,6 +157,10 @@ class AnalysisRunParams(BaseModel):
     purpose: str = Field(default="reading_reflection", min_length=1, max_length=32)
 
 
+class MemoryRunParams(AnalysisRunParams):
+    purpose: Literal["reading_profile_inference"] = "reading_profile_inference"
+
+
 class SynthesisRunParams(BaseModel):
     """知识版回顾任务参数；范围＋清单/授权标识＋用途，无私人正文。
 
@@ -191,7 +198,15 @@ class SynthesisRunParams(BaseModel):
 class FlowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    kind: Literal["sync", "refresh", "extract", "review", "insight_analysis", "insight_synthesis"]
+    kind: Literal[
+        "sync",
+        "refresh",
+        "extract",
+        "review",
+        "insight_analysis",
+        "insight_synthesis",
+        "insight_memory",
+    ]
     source: Literal["arxiv", "openalex", "semantic_scholar"] = "arxiv"
     # 可选关注点：作为品味信号喂给检索规划 Agent；不填则纯按档案与已读历史决定。
     focus: str = Field(default="", max_length=500)
@@ -203,6 +218,7 @@ class FlowRequest(BaseModel):
     analysis: AnalysisRunParams | None = None
     # 知识版回顾参数；仅 kind="insight_synthesis" 使用。
     synthesis: SynthesisRunParams | None = None
+    memory: MemoryRunParams | None = None
 
     @model_validator(mode="after")
     def coherent(self) -> FlowRequest:
@@ -229,6 +245,13 @@ class FlowRequest(BaseModel):
                 raise ValueError("知识版回顾任务不接受其他任务参数")
         elif self.synthesis is not None:
             raise ValueError("synthesis 参数仅用于知识版回顾任务")
+        if self.kind == "insight_memory":
+            if self.memory is None:
+                raise ValueError("研究记忆任务必须提供 memory 参数")
+            if self.focus or self.target or self.source != "arxiv":
+                raise ValueError("研究记忆任务不使用关注点、来源或目标篇数字段")
+        elif self.memory is not None:
+            raise ValueError("memory 参数仅用于研究记忆任务")
         return self
 
 
@@ -348,6 +371,7 @@ class UIFlowManager:
                                 "ui.review",
                                 "ui.insight_analysis",
                                 "ui.insight_synthesis",
+                                "ui.insight_memory",
                             ]
                         ),
                         RunRow.status == "running",
@@ -416,6 +440,25 @@ class UIFlowManager:
                         raise InvalidRequestError("阅读分析授权不存在或已撤回，请重新核对数据去向")
                     if grant.scope_mode == "once" and grant.manifest_hash != analysis.manifest_hash:
                         raise InvalidRequestError("本次授权与清单不匹配，请重新预览并授权")
+                elif request.kind == "insight_memory":
+                    params = request.memory
+                    assert params is not None
+                    manifest = ReadingAnalysisManifestRepository(session).get(params.manifest_id)
+                    if (
+                        manifest is None
+                        or manifest.purpose != MEMORY_PURPOSE
+                        or manifest.manifest_hash != params.manifest_hash
+                    ):
+                        raise InvalidRequestError("研究记忆清单不存在或与参数不符，请重新预览")
+                    resolved = ensure_send_authorized(
+                        session,
+                        settings=self.settings,
+                        purpose=MEMORY_PURPOSE,
+                        manifest_hash=params.manifest_hash,
+                        material_kinds=list(manifest_content_of(manifest).coverage.by_kind),
+                    )
+                    if resolved.grant_id != params.grant_id:
+                        raise InvalidRequestError("研究记忆授权已变化，请重新预览")
                 elif request.kind == "insight_synthesis":
                     if problem := processing_problem(session, self.settings):
                         raise InvalidRequestError(problem)
@@ -652,6 +695,24 @@ class UIFlowManager:
                 )
                 self._update(identity, generated=generated)
                 completed = ["analyzing", "saving"]
+            elif request.kind == "insight_memory":
+                self._update(identity, stage="reading")
+                if self._finalize_stop(identity) or self._terminated(identity):
+                    return
+                assert request.memory is not None
+                generated = run_insight_memory(
+                    self.factory,
+                    self.settings,
+                    manifest_id=request.memory.manifest_id,
+                    manifest_hash=request.memory.manifest_hash,
+                    grant_id=request.memory.grant_id,
+                    run_id=identity,
+                    should_abort=lambda: self._is_stopping(identity),
+                    progress=lambda **values: self._update(identity, **values),
+                )
+                self._update(identity, generated=generated)
+                completed = ["reading", "synthesizing", "saving"]
+
             elif request.kind == "insight_synthesis":
                 self._update(identity, stage="reading")
                 if self._finalize_stop(identity) or self._terminated(identity):

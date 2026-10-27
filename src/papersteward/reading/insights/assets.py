@@ -353,7 +353,10 @@ def delete_preview(session: Session, asset_id: str) -> dict[str, Any]:
     revisions = repository.revisions(asset_id)
     source_count = sum(len(repository.sources(asset_id, row.revision)) for row in revisions)
     copies, referenced = _private_copies_for_asset(session, asset_id)
+    from papersteward.reading.insights.memory import affected_memory_sources
+
     return {
+        "memory_copies": affected_memory_sources(session, source_kind="asset", source_id=asset_id),
         "revision_count": len(revisions),
         "source_count": source_count,
         "private_copies": copies,
@@ -379,6 +382,9 @@ def delete_asset(
             )
         delete_report(session, report_id)
         removed.append(report_id)
+    from papersteward.reading.insights.memory import invalidate_memory_sources
+
+    invalidate_memory_sources(session, source_kind="asset", source_id=asset_id)
     if not repository.delete_asset(asset_id):
         raise NotFoundError("资产不存在")
     return removed

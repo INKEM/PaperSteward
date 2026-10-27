@@ -908,7 +908,7 @@ class AssetRevisionDetail(InsightsModel):
 ANALYSIS_CONSENT_VERSION = "reading-analysis.consent/1"
 ANALYSIS_PURPOSE = "reading_reflection"
 SYNTHESIS_PURPOSE = "reading_synthesis"
-AnalysisPurpose = Literal["reading_reflection", "reading_synthesis"]
+AnalysisPurpose = Literal["reading_reflection", "reading_synthesis", "reading_profile_inference"]
 PREVIEW_TTL_SECONDS = 15 * 60
 
 
@@ -955,6 +955,8 @@ class AnalysisManifestContent(InsightsModel):
     exclusions: list[MaterialExclusion] = Field(default_factory=list, max_length=500)
     coverage: ManifestCoverage
     scope_request: InsightQueryRequest | None = None
+    # 研究记忆预览绑定当前用户决定；修订后须重新预览。
+    memory_revision_hash: str | None = None
 
 
 class AnalysisGrantInput(InsightsModel):

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
@@ -19,6 +20,7 @@ from papersteward.config import Settings, validate_llm_base_url
 from papersteward.errors import InvalidRequestError, NotAuthorizedError, NotFoundError
 from papersteward.llm.factory import build_llm_provider
 from papersteward.llm.gateway import LLMGateway
+from papersteward.llm.provider import LLMCompletion, LLMProvider
 from papersteward.llm.runtime import CONFIG_KEY, LLMRuntimeConfig, resolve_llm_config
 from papersteward.reading.insights.contracts import (
     ANALYSIS_CONSENT_VERSION,
@@ -77,7 +79,7 @@ def grant_analysis_authorization(
     manifest_hash: str | None = None,
 ) -> AnalysisGrantView:
     """新授权一条阅读分析用途；模型连接缺失或不可用时不接受授权。"""
-    if purpose not in {ANALYSIS_PURPOSE, SYNTHESIS_PURPOSE}:
+    if purpose not in {ANALYSIS_PURPOSE, SYNTHESIS_PURPOSE, "reading_profile_inference"}:
         raise InvalidRequestError("阅读分析用途无效", details={"field": "purpose"})
     runtime = resolve_llm_config(session, settings)
     if (problem := runtime.readiness_problem()) is not None:
@@ -120,6 +122,9 @@ def revoke_analysis_authorization(
                 created_at=as_utc(now),
             )
         )
+        from papersteward.reading.insights.memory import invalidate_memory_sources
+
+        invalidate_memory_sources(session, grant_id=grant.id)
         session.flush()
     return _grant_view(grant)
 
@@ -183,7 +188,10 @@ def ensure_send_authorized(
 
 
 def build_analysis_gateway(
-    resolved: ResolvedSendConfig, *, transport: object | None = None
+    resolved: ResolvedSendConfig,
+    *,
+    transport: object | None = None,
+    before_send: Callable[[], None] | None = None,
 ) -> LLMGateway:
     """分析发送专用的 gateway 构造；通用缓存一律关闭（计划 §6.3）。
 
@@ -192,7 +200,7 @@ def build_analysis_gateway(
     """
     provider = build_llm_provider(resolved.runtime, live=True, transport=transport)  # type: ignore[arg-type]
     return LLMGateway(
-        provider,
+        _GuardedProvider(provider, before_send) if before_send is not None else provider,
         max_attempts=resolved.runtime.max_attempts,
         timeout_s=resolved.runtime.timeout_s,
         cache=None,
@@ -235,3 +243,24 @@ def _grant_view(grant: ReadingAnalysisGrantRow) -> AnalysisGrantView:
         created_at=as_utc(grant.created_at),
         revoked_at=as_utc(grant.revoked_at) if grant.revoked_at is not None else None,
     )
+
+
+class _GuardedProvider:
+    """每次真实调用（包括 retry/repair）都重新核对授权、取消和材料版本。"""
+
+    def __init__(self, provider: LLMProvider, guard: Callable[[], None]):
+        self.provider = provider
+        self.guard = guard
+
+    @property
+    def model_id(self) -> str:
+        return self.provider.model_id
+
+    def complete(self, prompt: str, *, timeout_s: float) -> LLMCompletion:
+        self.guard()
+        return self.provider.complete(prompt, timeout_s=timeout_s)
+
+    def close(self) -> None:
+        close = getattr(self.provider, "close", None)
+        if close is not None:
+            close()

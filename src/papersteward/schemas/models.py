@@ -30,6 +30,7 @@ SchemaName = Literal[
     "query_planning",
     "reading_reflection",
     "reading_synthesis",
+    "reading_profile_inference",
 ]
 _CODE_PATTERN = r"^[A-Z][A-Z0-9_-]{1,31}$"
 
@@ -431,6 +432,25 @@ class ReadingSynthesisOutput(_OutputModel):
         return self
 
 
+class ReadingProfileCandidateOutput(_OutputModel):
+    """模型只为服务端证据组提出措辞，不决定强度、来源或确认状态。"""
+
+    group_key: str = Field(min_length=1, max_length=256)
+    statement: str = Field(min_length=1, max_length=2000)
+    uncertainty: str = Field(min_length=1, max_length=1000)
+
+
+class ReadingProfileInferenceOutput(_OutputModel):
+    candidates: list[ReadingProfileCandidateOutput] = Field(default_factory=list, max_length=16)
+    insufficient_material: bool
+
+    @model_validator(mode="after")
+    def coherent(self) -> ReadingProfileInferenceOutput:
+        if self.insufficient_material and self.candidates:
+            raise ValueError("材料不足时不得给出画像候选")
+        return self
+
+
 SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "classification": ClassificationOutput,
@@ -444,6 +464,7 @@ SCHEMA_MODELS: MappingProxyType[SchemaName, type[BaseModel]] = MappingProxyType(
         "query_planning": QueryPlanningOutput,
         "reading_reflection": ReadingReflectionOutput,
         "reading_synthesis": ReadingSynthesisOutput,
+        "reading_profile_inference": ReadingProfileInferenceOutput,
     }
 )
 

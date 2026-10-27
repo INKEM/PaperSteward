@@ -24,6 +24,8 @@ from papersteward.storage import (
 ROOT = Path(__file__).resolve().parents[2]
 NOW_MIGRATIONS = datetime(2026, 10, 21, 8, tzinfo=UTC)
 DOMAIN_TABLES = {
+    "reading_memory",
+    "reading_memory_revision",
     "archive_snapshot",
     "bucket",
     "config",
@@ -437,7 +439,7 @@ def test_upgrade_creates_formal_domain_tables(sqlite_engine: Engine) -> None:
             "ix_reading_analysis_decision_asset",
         } <= decision_indexes
         current = MigrationContext.configure(connection).get_current_revision()
-        assert current == "0031"
+        assert current == "0032"
 
 
 def test_downgrade_restores_p0_stub_tables(sqlite_engine: Engine) -> None:
@@ -1778,3 +1780,76 @@ def test_0031_synthesis_grant_and_derived_copy_roundtrip(sqlite_engine: Engine) 
         )
     _upgrade(sqlite_engine, "0031")
     assert rows() == (grants, copies)
+
+
+def test_0032_memory_preserves_rows_and_guards_downgrade(sqlite_engine: Engine) -> None:
+    _upgrade(sqlite_engine, "0031")
+    at = NOW_MIGRATIONS.isoformat()
+    insert_grant = text(
+        "INSERT INTO reading_analysis_grant (id, purpose, scope_mode, endpoint_identity,"
+        " model_config_version, material_classes_json, consent_version, created_at)"
+        " VALUES (:id, :purpose, 'workspace', 'http://127.0.0.1:9/v1', 'v-test',"
+        " '[\"structured_reasons\"]', 'reading-analysis.consent/1', :at)"
+    )
+    insert_copy = text(
+        "INSERT INTO reading_derived_copy (id, source_kind, source_id, source_revision,"
+        " derived_kind, derived_id, field_kind, created_at)"
+        " VALUES (:id, 'asset', 'asset-old', 2, :target, 'target-old', :field, :at)"
+    )
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "old-grant", "purpose": "reading_synthesis", "at": at}
+        )
+        connection.execute(
+            insert_copy, {"id": "old-copy", "target": "report", "field": "synthesis", "at": at}
+        )
+
+    def snapshot():
+        with sqlite_engine.connect() as connection:
+            return tuple(
+                [
+                    tuple(row)
+                    for row in connection.execute(text(f"SELECT * FROM {name} ORDER BY id"))
+                ]
+                for name in ("reading_analysis_grant", "reading_derived_copy")
+            )
+
+    before = snapshot()
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "new-grant", "purpose": "reading_profile_inference", "at": at}
+        )
+    with pytest.raises(IntegrityError), sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_copy, {"id": "new-copy", "target": "memory", "field": "memory", "at": at}
+        )
+    _upgrade(sqlite_engine, "0032")
+    assert snapshot() == before
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            insert_grant, {"id": "new-grant", "purpose": "reading_profile_inference", "at": at}
+        )
+        connection.execute(
+            insert_copy, {"id": "new-copy", "target": "memory", "field": "memory", "at": at}
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reading_memory (id, group_key, created_at) "
+                "VALUES ('mem', 'value:test', :at)"
+            ),
+            {"at": at},
+        )
+    with pytest.raises(RuntimeError, match="0032"):
+        _downgrade(sqlite_engine, "0031")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_memory"))
+    # Even an empty memory table cannot silently lose its grants and provenance.
+    with pytest.raises(RuntimeError, match="0032"):
+        _downgrade(sqlite_engine, "0031")
+    with sqlite_engine.begin() as connection:
+        connection.execute(text("DELETE FROM reading_analysis_grant WHERE id='new-grant'"))
+        connection.execute(text("DELETE FROM reading_derived_copy WHERE id='new-copy'"))
+    _downgrade(sqlite_engine, "0031")
+    assert snapshot() == before
+    _upgrade(sqlite_engine, "0032")
+    assert snapshot() == before

@@ -359,6 +359,9 @@ def delete_excerpt(session: Session, paper_id: str, excerpt_id: str) -> None:
     row = ReadingAnalysisExcerptRepository(session).get(excerpt_id)
     if row is None or row.paper_id != paper_id:
         raise NotFoundError("摘录不存在")
+    from papersteward.reading.insights.memory import invalidate_memory_sources
+
+    invalidate_memory_sources(session, source_kind="paper", source_id=excerpt_id)
     ReadingAnalysisExcerptRepository(session).delete(excerpt_id)
 
 

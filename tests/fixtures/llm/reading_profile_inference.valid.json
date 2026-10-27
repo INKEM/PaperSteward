@@ -1,0 +1,10 @@
+{
+  "candidates": [
+    {
+      "group_key": "value:method_reusable",
+      "statement": "多次反馈提到方法复用价值，仍需核对任务语境",
+      "uncertainty": "样本未覆盖其他任务，限制反馈需要核对"
+    }
+  ],
+  "insufficient_material": false
+}

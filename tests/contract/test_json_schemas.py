@@ -187,6 +187,7 @@ def test_schema_registry_and_generated_json_schema() -> None:
         "query_planning",
         "reading_reflection",
         "reading_synthesis",
+        "reading_profile_inference",
     }
 
     classification = schema_for("classification")
@@ -211,6 +212,19 @@ def test_schema_registry_and_generated_json_schema() -> None:
         ("event", _event()),
         ("reading_reflection", _reading_reflection()),
         ("reading_synthesis", _reading_synthesis()),
+        (
+            "reading_profile_inference",
+            {
+                "candidates": [
+                    {
+                        "group_key": "value:method_reusable",
+                        "statement": "多次反馈提到方法复用价值，仍需核对任务语境",
+                        "uncertainty": "样本未覆盖其他任务，限制反馈需要核对",
+                    }
+                ],
+                "insufficient_material": False,
+            },
+        ),
     ],
 )
 def test_valid_payloads(name: str, payload: dict[str, object]) -> None:
@@ -450,3 +464,21 @@ def test_profile_extraction_fixture_validates() -> None:
     data = model.model_dump(mode="json")
     assert len(data["tags"]) == 5
     assert abs(sum(item["target_share"] for item in data["profile"]["subdirections"]) - 1) < 1e-9
+
+
+def test_reading_profile_inference_cannot_confirm_itself() -> None:
+    from pathlib import Path
+
+    fixture = (
+        Path(__file__).resolve().parents[1] / "fixtures/llm/reading_profile_inference.valid.json"
+    )
+    payload = json.loads(fixture.read_text())
+    validate_mapping("reading_profile_inference", payload)
+    assert schema_for("reading_profile_inference")["additionalProperties"] is False
+    payload["candidates"][0]["status"] = "confirmed"
+    with pytest.raises(SchemaError):
+        validate_mapping("reading_profile_inference", payload)
+    del payload["candidates"][0]["status"]
+    payload["insufficient_material"] = True
+    with pytest.raises(SchemaError):
+        validate_mapping("reading_profile_inference", payload)

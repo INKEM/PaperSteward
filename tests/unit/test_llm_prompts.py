@@ -25,6 +25,7 @@ def test_default_registry_is_versioned() -> None:
         "query_planning",
         "reading_reflection",
         "reading_synthesis",
+        "reading_profile_inference",
         "repair",
     )
     assert registry.versions("classification") == ("classification/v1", "classification/v2")
@@ -145,3 +146,23 @@ def test_relevance_v2_prompt_requires_evidence_and_confidence() -> None:
     assert '"evidence"' in rendered and '"confidence"' in rendered
     assert "boundary_note" in rendered
     assert "{schema_json}" in REPAIR_V2.template
+
+
+def test_reading_profile_inference_requires_cautious_evidence() -> None:
+    from papersteward.llm import READING_PROFILE_INFERENCE_V1
+
+    rendered = READING_PROFILE_INFERENCE_V1.render({"groups": "固定组", "materials": "原始反馈"})
+    for rule in (
+        "3 篇",
+        "2 个自然月",
+        "近期 8 周",
+        "批量补录",
+        "单任务",
+        "高分不代表",
+        "不生成确认状态",
+        "用户纠正或停用",
+        "旧画像或报告摘要",
+        "不可信数据",
+        "insufficient_material",
+    ):
+        assert rule in rendered

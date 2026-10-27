@@ -111,6 +111,7 @@ def test_schema_registry_freeze() -> None:
         "query_planning",
         "reading_reflection",
         "reading_synthesis",
+        "reading_profile_inference",
     }
     assert set(schema_for("classification")["required"]) == {
         "primary_tag",
@@ -169,6 +170,7 @@ def test_prompt_registry_and_fake_provider_freeze() -> None:
         "query_planning",
         "reading_reflection",
         "reading_synthesis",
+        "reading_profile_inference",
         "repair",
     )
     assert registry.get("classification").version == "classification/v2"
@@ -179,6 +181,9 @@ def test_prompt_registry_and_fake_provider_freeze() -> None:
     assert registry.get("reading_reflection").schema == "reading_reflection"
     assert registry.get("reading_synthesis").version == "reading_synthesis/v1"
     assert registry.get("reading_synthesis").schema == "reading_synthesis"
+    assert registry.get("reading_profile_inference").version == "reading_profile_inference/v1"
+    assert registry.get("reading_profile_inference").schema == "reading_profile_inference"
+    assert set(schema_for("reading_profile_inference")["required"]) == {"insufficient_material"}
     assert registry.get("repair").schema is None
 
     provider = FakeLLM()

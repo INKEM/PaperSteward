@@ -92,6 +92,7 @@ def insights_navigation() -> str:
         '<a href="/ui/reading-insights?kind=week">本周</a>'
         '<a href="/ui/reading-insights?kind=month">本月</a>'
         '<a href="/ui/reading-insights?kind=all">全部历史</a>'
+        '<a href="/ui/reading-insights/memory">研究记忆</a>'
         '<a href="/ui/reading-insights/reports">已保存回顾</a>'
         '<a href="/ui/reading-insights/assets">手工资产</a>'
         '<a href="/ui/reading-insights/export">导出副本</a>'
@@ -2141,6 +2142,18 @@ def _asset_detail_body(
         f'<p class="muted">将删除 {preview["revision_count"]} 个版本、'
         f"{preview['source_count']} 条来源引用，以及此资产自身的标题、正文与适用说明。</p>"
     )
+    memory_copies = preview.get("memory_copies", [])
+    if memory_copies:
+        body += (
+            "<p>以下研究记忆引用了此资产；删除资产后会标为需复核，本地措辞保留。"
+            "可先打开逐条删除：</p><ul>"
+        )
+        for memory_id in memory_copies:
+            body += (
+                f'<li><a href="/ui/reading-insights/memory/{escape(memory_id)}">'
+                f"{escape(memory_id)}</a></li>"
+            )
+        body += "</ul>"
     copies = preview["private_copies"]
     body += '<form method="post" action="' + url + '/delete" class="stacked-form">'
     if copies:

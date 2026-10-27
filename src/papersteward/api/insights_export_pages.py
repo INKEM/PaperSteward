@@ -86,7 +86,8 @@ def export_page(session: SessionDep, report_id: str = "") -> Response:
         + (
             "报告中已保存的资产正文与私人知识归纳；不会拼接最新资产修订。"
             if report_id
-            else "全部阅读反馈备注、阅读日期修订、资产正文、适用说明及各次修订和来源；仅支持 JSON。"
+            else "全部阅读反馈备注、阅读日期修订、资产正文、适用说明及各次修订和来源，"
+            "以及研究记忆的私人推测、用户决定和全部版本；仅支持 JSON。"
         )
         + '</p><label class="check"><input type="checkbox" name="confirm_private" value="yes">'
         "我已了解并选择下载包含私人原文的个人副本（仅个人副本需要）</label>"

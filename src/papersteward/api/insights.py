@@ -506,7 +506,7 @@ def compare_reports(report_id: str, other_id: str, session: SessionDep) -> Any:
 )
 def get_analysis_authorization(session: SessionDep, purpose: str = "reading_reflection") -> Any:
     with domain_errors():
-        if purpose not in {"reading_reflection", SYNTHESIS_PURPOSE}:
+        if purpose not in {"reading_reflection", SYNTHESIS_PURPOSE, "reading_profile_inference"}:
             raise InvalidRequestError("用途无效", details={"field": "purpose"})
         return analysis_authorization_status(session, settings=get_settings(), purpose=purpose)
 
@@ -535,7 +535,7 @@ def post_analysis_grant(body: AnalysisGrantInput, session: SessionDep) -> Any:
     summary="撤回阅读分析授权；此后发送边界一律拒绝",
 )
 def post_analysis_revoke(grant_id: str, session: SessionDep) -> Any:
-    with domain_errors(), session.begin():
+    with domain_errors(), write_tx(session):
         return revoke_analysis_authorization(session, grant_id=grant_id, now=utc_now())
 
 

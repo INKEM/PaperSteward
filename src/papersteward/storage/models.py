@@ -878,9 +878,12 @@ class ReadingDerivedCopyRow(Base):
             "source_kind IN ('asset', 'report', 'paper', 'candidate')",
             name="derived_source_allowed",
         ),
-        CheckConstraint("derived_kind IN ('report', 'candidate')", name="derived_target_allowed"),
         CheckConstraint(
-            "field_kind IN ('title', 'body', 'sanitized', 'statement', 'quote', 'synthesis')",
+            "derived_kind IN ('report', 'candidate', 'memory')", name="derived_target_allowed"
+        ),
+        CheckConstraint(
+            "field_kind IN ('title', 'body', 'sanitized', "
+            "'statement', 'quote', 'synthesis', 'memory')",
             name="derived_field_allowed",
         ),
         Index("ix_reading_derived_copy_source", "source_kind", "source_id", "source_revision"),
@@ -950,7 +953,7 @@ class ReadingAnalysisGrantRow(Base):
     __tablename__ = "reading_analysis_grant"
     __table_args__ = (
         CheckConstraint(
-            "purpose IN ('reading_reflection', 'reading_synthesis')",
+            "purpose IN ('reading_reflection', 'reading_synthesis', 'reading_profile_inference')",
             name="grant_purpose_allowed",
         ),
         CheckConstraint("scope_mode IN ('once', 'workspace')", name="grant_scope_allowed"),
@@ -1308,3 +1311,50 @@ __all__ = [
     "TagRow",
     "TaxonomyRow",
 ]
+
+
+class ReadingMemoryRow(Base):
+    """研究记忆身份；按确定性证据组去重，不写入 ResearchProfile。"""
+
+    __tablename__ = "reading_memory"
+    __table_args__ = (Index("uq_reading_memory_group", "group_key", unique=True),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReadingMemoryRevisionRow(Base):
+    """只追加的候选、用户决定和复核记录；请求键绑定操作与内容。"""
+
+    __tablename__ = "reading_memory_revision"
+    __table_args__ = (
+        CheckConstraint("kind IN ('interest', 'value_standard')", name="memory_kind_allowed"),
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'deferred', "
+            "'not_preference', 'disabled', 'needs_review')",
+            name="memory_status_allowed",
+        ),
+        CheckConstraint("scope IN ('general', 'task_only')", name="memory_scope_allowed"),
+        CheckConstraint(
+            "origin IN ('model', 'user', 'source_change')", name="memory_origin_allowed"
+        ),
+        Index("uq_reading_memory_request", "request_key", unique=True),
+    )
+    memory_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reading_memory.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    group_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
